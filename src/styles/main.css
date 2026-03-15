@@ -1,0 +1,16 @@
+@import 'tailwindcss';
+
+/* Extension-specific base styles */
+:root {
+  --ext-popup-width: 380px;
+  --ext-popup-max-height: 600px;
+}
+
+body {
+  width: var(--ext-popup-width);
+  min-height: 200px;
+  max-height: var(--ext-popup-max-height);
+  margin: 0;
+  overflow-x: hidden;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+}
