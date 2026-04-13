@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.output/
+.wxt/
+coverage/
+*.local
+.env
+.env.*
+!.env.example
+*.vsix
+*.zip
+*.crx
+.DS_Store
+.turbo/
