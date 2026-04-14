@@ -2,7 +2,7 @@
 /**
  * Prepared Presentations — Push-then-Present flow.
  *
- * Shows VPs that were pre-built from the CORTEX dashboard and
+ * Shows VPs that were pre-built from the Attestto dashboard and
  * pushed to the extension. Ready to present to verifiers on demand.
  */
 
@@ -69,7 +69,7 @@ async function copyPresentation(id: string): Promise<void> {
       <PaperAirplaneIcon class="ext-empty__icon" />
       <p class="ext-empty__title">No prepared presentations</p>
       <p class="ext-empty__desc">
-        Use "Push to Vault" from the CORTEX Share Credential page
+        Use "Push to Vault" from the Attestto Share Credential page
         to pre-build presentations for later use.
       </p>
     </div>

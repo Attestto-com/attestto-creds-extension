@@ -86,7 +86,7 @@ async function unlinkWallet(): Promise<void> {
           <p class="ext-empty__title">
             Link your Solana wallet from the
             <span style="color: var(--ext-brand-secondary); font-weight: 500">Identity Wallet</span>
-            page in the CORTEX dashboard.
+            page in the Attestto dashboard.
           </p>
           <p class="ext-empty__desc">
             Connect your wallet there, then use "Link to Vault" to push the address here.

@@ -39,7 +39,7 @@ export default {
     createDid: 'Crear DID',
     lock: 'Bloquear',
     linkedSolana: 'Billetera Solana Vinculada',
-    linkInstruction: 'Vincula tu billetera Solana desde la p\u00e1gina {page} en el panel de CORTEX.',
+    linkInstruction: 'Vincula tu billetera Solana desde la p\u00e1gina {page} en el panel de Attestto.',
     linkInstructionPage: 'Billetera de Identidad',
     linkInstructionDetail: 'Conecta tu billetera all\u00ed, luego usa "Vincular al Vault" para enviar la direcci\u00f3n aqu\u00ed.',
     tokens: 'Tokens',
@@ -107,7 +107,7 @@ export default {
     title: 'Presentaciones Preparadas',
     empty: {
       title: 'Sin presentaciones preparadas',
-      description: 'Usa "Enviar al Vault" desde la p\u00e1gina de Compartir Credencial en CORTEX para pre-construir presentaciones para uso posterior.',
+      description: 'Usa "Enviar al Vault" desde la p\u00e1gina de Compartir Credencial en Attestto para pre-construir presentaciones para uso posterior.',
     },
     remaining: '{time} restante',
     copyAndPresent: 'Copiar y Presentar',

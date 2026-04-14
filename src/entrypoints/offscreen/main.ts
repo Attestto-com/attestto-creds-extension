@@ -10,10 +10,10 @@
  *   → background.ts (Service Worker) → chrome.notifications.create
  *
  * The SSE channel is `ssi/user_{userId}` and delivers credential_offer events
- * when the user pushes a credential from the CORTEX frontend to the extension.
+ * when the user pushes a credential from the Attestto dashboard to the extension.
  */
 
-import { STORAGE_KEYS } from '../../config/app'
+import { STORAGE_KEYS } from '@/config/app'
 
 const API_BASE = 'https://api.attestto.com'
 const RECONNECT_DELAY_MS = 5_000

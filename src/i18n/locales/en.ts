@@ -39,7 +39,7 @@ export default {
     createDid: 'Create DID',
     lock: 'Lock',
     linkedSolana: 'Linked Solana Wallet',
-    linkInstruction: 'Link your Solana wallet from the {page} page in the CORTEX dashboard.',
+    linkInstruction: 'Link your Solana wallet from the {page} page in the Attestto dashboard.',
     linkInstructionPage: 'Identity Wallet',
     linkInstructionDetail: 'Connect your wallet there, then use "Link to Vault" to push the address here.',
     tokens: 'Tokens',
@@ -107,7 +107,7 @@ export default {
     title: 'Prepared Presentations',
     empty: {
       title: 'No prepared presentations',
-      description: 'Use "Push to Vault" from the CORTEX Share Credential page to pre-build presentations for later use.',
+      description: 'Use "Push to Vault" from the Attestto Share Credential page to pre-build presentations for later use.',
     },
     remaining: '{time} remaining',
     copyAndPresent: 'Copy & Present',
