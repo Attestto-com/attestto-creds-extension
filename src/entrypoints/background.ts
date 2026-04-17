@@ -22,7 +22,7 @@ import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/s
 export default defineBackground(() => {
   // ── Offscreen Document Management ──────────────────
 
-  const OFFSCREEN_PATH = 'offscreen/index.html'
+  const OFFSCREEN_PATH = 'offscreen.html'
 
   async function ensureOffscreenDocument(): Promise<void> {
     const existingContexts = await chrome.runtime.getContexts({
@@ -283,12 +283,22 @@ export default defineBackground(() => {
    *
    * If the vault has no keypair yet, we generate one (same as createDid flow).
    */
+  /** DID URI must match did:<method>:<method-specific-id> */
+  const DID_URI_RE = /^did:[a-z0-9]+:.+/
+
   async function handleDidSync(
     syncReq: DidSyncMessage['payload'],
   ): Promise<void> {
     const vault = await readVault()
     if (!vault) {
       sendDidSyncResponse(syncReq.requestId, null, null, 'Vault is locked')
+      return
+    }
+
+    // ATT-358 Bug B: reject holderDid that isn't a valid DID URI
+    if (syncReq.holderDid && !DID_URI_RE.test(syncReq.holderDid)) {
+      sendDidSyncResponse(syncReq.requestId, null, null,
+        `Invalid holderDid: "${syncReq.holderDid}" is not a DID URI`)
       return
     }
 
@@ -885,6 +895,14 @@ export default defineBackground(() => {
             return
           }
 
+          // ATT-358 Bug B: never send a non-DID string to the page
+          if (!DID_URI_RE.test(holderDid)) {
+            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId,
+              `Holder DID "${holderDid}" is not a valid DID URI`)
+            sendResponse({ ok: false, error: 'Invalid holder DID' })
+            return
+          }
+
           const credentials = (vault.credentials ?? []) as StoredCredential[]
           const vcs = credentials
             .filter((c) => c.format === 'json-ld')
@@ -930,6 +948,7 @@ export default defineBackground(() => {
         break
       }
 
+    }
     return true
   })
 
