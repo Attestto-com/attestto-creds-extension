@@ -2,7 +2,7 @@
 /**
  * Prepared Presentations — Push-then-Present flow.
  *
- * Shows VPs that were pre-built from the Attestto dashboard and
+ * Shows VPs that were pre-built from the CORTEX dashboard and
  * pushed to the extension. Ready to present to verifiers on demand.
  */
 
@@ -48,28 +48,34 @@ async function copyPresentation(id: string): Promise<void> {
 </script>
 
 <template>
-  <div style="display: flex; flex-direction: column; gap: 0.75rem">
+  <div class="space-y-3">
     <!-- Header -->
-    <div style="display: flex; align-items: center; gap: 0.5rem">
+    <div class="flex items-center gap-2">
       <button
-        style="border-radius: var(--ext-radius-md); padding: 0.25rem; cursor: pointer; background: none; border: none; color: var(--ext-text-secondary)"
+        class="rounded-md p-1 hover:bg-slate-800 transition-colors"
         @click="router.push('/credentials')"
       >
-        <ArrowLeftIcon style="width: 1rem; height: 1rem" />
+        <ArrowLeftIcon class="h-4 w-4 text-slate-400" />
       </button>
-      <PaperAirplaneIcon style="width: 1rem; height: 1rem; color: var(--ext-brand-secondary)" />
-      <h2 style="font-size: var(--ext-text-md); font-weight: 600; color: var(--ext-text-primary)">Prepared Presentations</h2>
-      <span v-if="presentations.length > 0" class="ext-badge ext-badge--brand" style="margin-left: auto">
+      <PaperAirplaneIcon class="h-4 w-4 text-indigo-400" />
+      <h2 class="text-sm font-semibold text-white">Prepared Presentations</h2>
+      <span
+        v-if="presentations.length > 0"
+        class="ml-auto rounded-full bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300"
+      >
         {{ presentations.length }}
       </span>
     </div>
 
     <!-- Empty -->
-    <div v-if="presentations.length === 0" class="ext-empty" style="padding: 1.5rem">
-      <PaperAirplaneIcon class="ext-empty__icon" />
-      <p class="ext-empty__title">No prepared presentations</p>
-      <p class="ext-empty__desc">
-        Use "Push to Vault" from the Attestto Share Credential page
+    <div
+      v-if="presentations.length === 0"
+      class="rounded-lg border border-slate-700 bg-slate-900 p-6 text-center space-y-2"
+    >
+      <PaperAirplaneIcon class="h-8 w-8 text-slate-600 mx-auto" />
+      <p class="text-xs text-slate-400">No prepared presentations</p>
+      <p class="text-[10px] text-slate-500">
+        Use "Push to Vault" from the CORTEX Share Credential page
         to pre-build presentations for later use.
       </p>
     </div>
@@ -78,39 +84,39 @@ async function copyPresentation(id: string): Promise<void> {
     <div
       v-for="prep in presentations"
       :key="prep.id"
-      class="ext-card"
-      style="display: flex; flex-direction: column; gap: 0.5rem"
+      class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2"
     >
-      <div style="display: flex; align-items: center; gap: 0.5rem">
-        <CheckBadgeIcon style="width: 1rem; height: 1rem; color: var(--ext-success)" />
-        <span style="font-size: var(--ext-text-xs); color: var(--ext-text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+      <div class="flex items-center gap-2">
+        <CheckBadgeIcon class="h-4 w-4 text-emerald-400" />
+        <span class="text-xs text-white font-medium truncate">
           {{ credentialLabel(prep.credentialId) }}
         </span>
       </div>
 
       <!-- Fields -->
-      <div style="display: flex; flex-wrap: wrap; gap: 0.25rem">
+      <div class="flex flex-wrap gap-1">
         <span
           v-for="field in prep.selectedFields"
           :key="field"
-          class="ext-badge ext-badge--brand"
+          class="rounded-full bg-indigo-500/15 px-1.5 py-0.5 text-[9px] text-indigo-300"
         >
           {{ field }}
         </span>
       </div>
 
       <!-- Expiry -->
-      <div style="display: flex; align-items: center; gap: 0.25rem; font-size: var(--ext-text-2xs)">
-        <ClockIcon style="width: 0.75rem; height: 0.75rem; color: var(--ext-text-muted)" />
-        <span :style="{ color: timeRemaining(prep.expiresAt) === 'Expired' ? 'var(--ext-error)' : 'var(--ext-text-secondary)' }">
+      <div class="flex items-center gap-1 text-[10px]">
+        <ClockIcon class="h-3 w-3 text-slate-500" />
+        <span
+          :class="timeRemaining(prep.expiresAt) === 'Expired' ? 'text-red-400' : 'text-slate-400'"
+        >
           {{ timeRemaining(prep.expiresAt) }}
         </span>
       </div>
 
       <!-- Present button -->
       <button
-        class="ext-btn ext-btn--primary ext-btn--sm"
-        style="width: 100%"
+        class="w-full rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors disabled:opacity-40"
         :disabled="timeRemaining(prep.expiresAt) === 'Expired'"
         @click="copyPresentation(prep.id)"
       >

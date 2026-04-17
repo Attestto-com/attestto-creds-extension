@@ -32,9 +32,11 @@ export interface SignResponseMessage {
 export interface CredentialOfferMessage {
   type: 'CREDENTIAL_OFFER'
   payload: {
-    format: CredentialFormat
+    format: CredentialFormat | string
     raw: string
     issuerName: string
+    /** Pre-decoded claims (used by attestto-id push format) */
+    claims?: Record<string, unknown>
   }
 }
 
@@ -144,6 +146,8 @@ export interface DidSyncMessage {
     verificationMethod: string
     /** Origin of the requesting page (for trust validation) */
     origin: string
+    /** Platform tenant ID (for multi-tenant identity context) */
+    tenantId?: string
   }
 }
 
@@ -194,6 +198,44 @@ export interface KeyRestoreMessage {
   }
 }
 
+/**
+ * Payment Request — page sends payment details to extension for approval + signing.
+ *
+ * Flow: PaymentApprovalPage → content script → background → approval popup
+ *       → user picks DID + approves → vault signs canonical payload
+ *       → response with {did, signature, publicKeyJwk} → page calls POST /payments/pay/did
+ */
+export interface PaymentRequestMessage {
+  type: 'PAYMENT_REQUEST'
+  payload: {
+    requestId: string
+    paymentRequestUuid: string
+    amount: number
+    currency: string
+    merchantName: string
+    description?: string
+    origin: string
+  }
+}
+
+/**
+ * Sign Document Request — page sends document details to extension for approval + DID signing.
+ *
+ * Flow: ExternalSigningPage → content script → background → approval popup
+ *       → user approves → vault signs canonical payload `attestto:sign:{token}:{did}:{timestamp}`
+ *       → response with {did, signature, publicKeyJwk, timestamp} → page calls sign endpoint
+ */
+export interface SignDocumentRequestMessage {
+  type: 'SIGN_DOCUMENT_REQUEST'
+  payload: {
+    requestId: string
+    signingToken: string
+    documentTitle: string
+    signerName: string
+    origin: string
+  }
+}
+
 export type ExtensionMessage =
   | NotificationReceivedMessage
   | SessionExpiredMessage
@@ -212,6 +254,8 @@ export type ExtensionMessage =
   | KeyRotateMessage
   | KeyBackupMessage
   | KeyRestoreMessage
+  | PaymentRequestMessage
+  | SignDocumentRequestMessage
 
 // ── Helpers ──────────────────────────────────────────
 

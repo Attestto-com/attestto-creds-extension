@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, toRef } from 'vue'
 import {
   LockClosedIcon,
   LockOpenIcon,
+  ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
+  LinkIcon,
 } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
+import { useSolanaTokens } from '@/composables/useSolanaTokens'
+import SolanaTokenCard from '@/components/wallet/SolanaTokenCard.vue'
 
 const wallet = useWalletStore()
 
@@ -12,59 +17,44 @@ const statusLabel = computed(() =>
   wallet.isUnlocked ? 'Wallet Unlocked' : 'Wallet Locked',
 )
 
-/** Human-readable identity label — never show raw did:jwk blobs to users */
-const identityLabel = computed(() => {
-  if (!wallet.did) return null
-  // did:web:eduardo.attestto.id → eduardo.attestto.id
-  if (wallet.did.startsWith('did:web:'))
-    return wallet.did.slice(8).replace(/:/g, '/')
-  // did:sns:name.attestto.sol → name.attestto.sol
-  if (wallet.did.startsWith('did:sns:'))
-    return wallet.did.slice(8)
-  // did:jwk:... → "Local key" (the base64 is useless to humans)
-  if (wallet.did.startsWith('did:jwk:'))
-    return 'Local key (not yet linked)'
-  // did:pkh:solana:... → shortened address
-  if (wallet.did.startsWith('did:pkh:solana:')) {
-    const addr = wallet.did.slice(14)
-    return `${addr.slice(0, 6)}…${addr.slice(-4)}`
-  }
-  // Fallback: truncate
-  return `${wallet.did.slice(0, 24)}…`
-})
+const { tokens, loading, error: tokenError, refresh } = useSolanaTokens(
+  toRef(() => wallet.linkedSolanaAddress),
+)
 
-const identityMethod = computed(() => {
-  if (!wallet.did) return ''
-  const parts = wallet.did.split(':')
-  return parts.length >= 2 ? parts.slice(0, 2).join(':') : ''
-})
+function shortenAddress(addr: string): string {
+  return `${addr.slice(0, 4)}...${addr.slice(-4)}`
+}
 
+function openExplorer(addr: string): void {
+  window.open(`https://explorer.solana.com/address/${addr}?cluster=devnet`, '_blank')
+}
 
+async function unlinkWallet(): Promise<void> {
+  await wallet.unlinkSolanaAddress()
+}
 </script>
 
 <template>
-  <div style="display: flex; flex-direction: column; gap: 1rem">
+  <div class="space-y-4">
     <!-- Status Card -->
     <div
-      class="ext-card"
-      :style="wallet.isUnlocked
-        ? { borderColor: 'rgba(16, 185, 129, 0.4)', background: 'rgba(6, 78, 59, 0.3)' }
-        : {}"
-      style="padding: 1rem"
+      class="rounded-lg border p-4"
+      :class="wallet.isUnlocked
+        ? 'border-emerald-700 bg-emerald-950/30'
+        : 'border-slate-700 bg-slate-900'"
     >
-      <div style="display: flex; align-items: center; gap: 0.75rem">
+      <div class="flex items-center gap-3">
         <component
           :is="wallet.isUnlocked ? LockOpenIcon : LockClosedIcon"
-          style="width: 1.5rem; height: 1.5rem"
-          :style="{ color: wallet.isUnlocked ? 'var(--ext-success)' : 'var(--ext-text-muted)' }"
+          class="h-6 w-6"
+          :class="wallet.isUnlocked ? 'text-emerald-400' : 'text-slate-500'"
         />
         <div>
-          <p style="font-size: var(--ext-text-md); font-weight: 600; color: var(--ext-text-primary)">{{ statusLabel }}</p>
-          <p v-if="wallet.did" style="margin-top: 0.125rem; font-size: var(--ext-text-xs); color: var(--ext-text-secondary); display: flex; align-items: center; gap: 0.375rem">
-            <span>{{ identityLabel }}</span>
-            <span style="font-size: var(--ext-text-2xs); color: var(--ext-text-muted); background: var(--ext-bg-surface-hover); padding: 0.0625rem 0.375rem; border-radius: var(--ext-radius-sm)">{{ identityMethod }}</span>
+          <p class="text-sm font-semibold text-white">{{ statusLabel }}</p>
+          <p v-if="wallet.did" class="mt-0.5 truncate text-xs text-slate-400">
+            {{ wallet.did }}
           </p>
-          <p v-else style="margin-top: 0.125rem; font-size: var(--ext-text-xs); color: var(--ext-text-muted)">
+          <p v-else class="mt-0.5 text-xs text-slate-500">
             No DID created yet
           </p>
         </div>
@@ -72,17 +62,107 @@ const identityMethod = computed(() => {
     </div>
 
     <!-- Actions -->
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem">
-      <button v-if="!wallet.isUnlocked" class="ext-btn ext-btn--primary ext-btn--md" @click="wallet.unlock()">
+    <div class="grid grid-cols-2 gap-2">
+      <button
+        v-if="!wallet.isUnlocked"
+        class="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500"
+        @click="wallet.unlock()"
+      >
         Unlock Wallet
       </button>
-      <button v-if="!wallet.did" class="ext-btn ext-btn--ghost ext-btn--md" @click="wallet.createDid()">
+      <button
+        v-if="!wallet.did"
+        class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
+        @click="wallet.createDid()"
+      >
         Create DID
       </button>
-      <button v-if="wallet.isUnlocked" class="ext-btn ext-btn--ghost ext-btn--md" @click="wallet.lock()">
+      <button
+        v-if="wallet.isUnlocked"
+        class="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
+        @click="wallet.lock()"
+      >
         Lock
       </button>
     </div>
 
+    <!-- Linked Solana Wallet -->
+    <div class="rounded-lg border border-slate-700 bg-slate-900 p-4">
+      <p class="text-xs font-semibold text-white mb-3">Linked Solana Wallet</p>
+
+      <!-- Not linked: instruction to link from dashboard -->
+      <template v-if="!wallet.linkedSolanaAddress">
+        <div class="flex flex-col items-center gap-2 py-3">
+          <LinkIcon class="h-8 w-8 text-slate-600" />
+          <p class="text-[11px] text-slate-400 text-center leading-relaxed">
+            Link your Solana wallet from the
+            <span class="text-indigo-400 font-medium">Identity Wallet</span>
+            page in the CORTEX dashboard.
+          </p>
+          <p class="text-[10px] text-slate-500 text-center">
+            Connect your wallet there, then use "Link to Vault" to push the address here.
+          </p>
+        </div>
+      </template>
+
+      <!-- Linked: show address + actions -->
+      <template v-else>
+        <div class="flex items-center gap-2">
+          <span class="rounded-md bg-slate-800 px-2 py-1 text-xs font-mono text-slate-300">
+            {{ shortenAddress(wallet.linkedSolanaAddress) }}
+          </span>
+          <button
+            class="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-0.5"
+            @click="openExplorer(wallet.linkedSolanaAddress!)"
+          >
+            Explorer
+            <ArrowTopRightOnSquareIcon class="h-3 w-3" />
+          </button>
+          <button
+            class="ml-auto text-[10px] text-red-400 hover:text-red-300"
+            @click="unlinkWallet"
+          >
+            Unlink
+          </button>
+        </div>
+
+        <!-- Token list -->
+        <div class="mt-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider">Tokens</p>
+            <button
+              class="flex items-center gap-1 text-[10px] text-indigo-400 hover:text-indigo-300"
+              :disabled="loading"
+              @click="refresh"
+            >
+              <ArrowPathIcon class="h-3 w-3" :class="{ 'animate-spin': loading }" />
+              Refresh
+            </button>
+          </div>
+
+          <!-- Loading -->
+          <div v-if="loading && tokens.length === 0" class="text-center py-3">
+            <ArrowPathIcon class="h-5 w-5 text-slate-500 animate-spin mx-auto" />
+          </div>
+
+          <!-- Error -->
+          <p v-else-if="tokenError" class="text-[10px] text-red-400 text-center py-2">
+            {{ tokenError }}
+          </p>
+
+          <!-- Empty -->
+          <p v-else-if="tokens.length === 0" class="text-[10px] text-slate-500 text-center py-2">
+            No tokens found for this wallet.
+          </p>
+
+          <!-- Token cards -->
+          <SolanaTokenCard
+            v-for="token in tokens"
+            :key="token.mint"
+            :token="token"
+          />
+        </div>
+      </template>
+    </div>
   </div>
 </template>

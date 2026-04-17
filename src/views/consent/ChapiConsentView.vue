@@ -27,10 +27,12 @@ onMounted(async () => {
     return
   }
 
+  // Unlock wallet if not already
   if (!wallet.isUnlocked) {
     await wallet.unlock()
   }
 
+  // Verify we have a DID
   if (!wallet.did) {
     error.value = 'No DID created yet. Create a DID first.'
     loading.value = false
@@ -51,6 +53,7 @@ async function approve() {
     })
 
     if (response?.ok) {
+      // Close the popup window
       window.close()
     } else {
       error.value = response?.error || 'Approval failed'
@@ -72,59 +75,74 @@ async function deny() {
 </script>
 
 <template>
-  <div style="display: flex; flex-direction: column; gap: 1rem">
+  <div class="space-y-4">
     <!-- Header -->
-    <div class="ext-header-banner ext-header-banner--identity" style="text-align: center">
-      <ShieldCheckIcon style="margin: 0 auto; width: 2rem; height: 2rem; color: var(--ext-brand-secondary)" />
-      <p class="ext-header-banner__title" style="margin-top: 0.5rem">Identity Request</p>
-      <p class="ext-header-banner__subtitle">A site is requesting your identity</p>
+    <div class="rounded-lg border border-indigo-700/50 bg-indigo-950/30 p-4 text-center">
+      <ShieldCheckIcon class="mx-auto h-8 w-8 text-indigo-400" />
+      <p class="mt-2 text-sm font-semibold text-white">Identity Request</p>
+      <p class="mt-1 text-xs text-slate-400">
+        A site is requesting your identity
+      </p>
     </div>
 
     <!-- Origin -->
-    <div class="ext-card">
-      <p class="ext-detail__label">Requesting site</p>
-      <p class="ext-detail__value" style="font-family: monospace">{{ origin || 'Unknown' }}</p>
+    <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+      <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Requesting site</p>
+      <p class="mt-1 text-xs font-mono text-white break-all">{{ origin || 'Unknown' }}</p>
     </div>
 
-    <!-- Loading -->
-    <div v-if="loading" class="ext-card" style="text-align: center; padding: 1rem">
-      <p style="font-size: var(--ext-text-xs); color: var(--ext-text-secondary)">Unlocking wallet...</p>
+    <!-- Loading: wallet unlock -->
+    <div v-if="loading" class="rounded-lg border border-slate-700 bg-slate-900 p-4 text-center">
+      <p class="text-xs text-slate-400">Unlocking wallet...</p>
     </div>
 
     <!-- No DID -->
-    <div v-else-if="!wallet.did" style="display: flex; flex-direction: column; gap: 0.75rem">
-      <div class="ext-info-box ext-info-box--warning">
-        No DID found. Create one to continue.
+    <div v-else-if="!wallet.did" class="space-y-3">
+      <div class="rounded-lg border border-amber-700/50 bg-amber-950/30 p-3">
+        <p class="text-xs text-amber-300">No DID found. Create one to continue.</p>
       </div>
-      <button class="ext-btn ext-btn--ghost ext-btn--md" style="width: 100%" @click="wallet.createDid()">
+      <button
+        class="w-full rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-slate-800"
+        @click="wallet.createDid()"
+      >
         Create DID
       </button>
     </div>
 
     <!-- Ready to approve -->
     <template v-else>
-      <div class="ext-card">
-        <p class="ext-detail__label">Your identity</p>
-        <div style="margin-top: 0.5rem; display: flex; align-items: center; gap: 0.5rem">
-          <FingerPrintIcon style="width: 1.25rem; height: 1.25rem; color: var(--ext-success); flex-shrink: 0" />
-          <p class="ext-detail__value" style="font-family: monospace">{{ wallet.did }}</p>
+      <!-- Identity to share -->
+      <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Your identity</p>
+        <div class="mt-2 flex items-center gap-2">
+          <FingerPrintIcon class="h-5 w-5 text-emerald-400 shrink-0" />
+          <p class="text-xs font-mono text-white break-all">{{ wallet.did }}</p>
         </div>
-        <p style="margin-top: 0.5rem; font-size: var(--ext-text-2xs); color: var(--ext-text-muted)">
+        <p class="mt-2 text-[10px] text-slate-500">
           This DID will be shared with the requesting site for attribution.
         </p>
       </div>
 
       <!-- Error -->
-      <div v-if="error" class="ext-info-box ext-info-box--error">{{ error }}</div>
+      <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
+        <p class="text-xs text-red-300">{{ error }}</p>
+      </div>
 
       <!-- Action buttons -->
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem">
-        <button class="ext-btn ext-btn--ghost ext-btn--md" @click="deny">
-          <XMarkIcon style="width: 1rem; height: 1rem" />
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800 flex items-center justify-center gap-1.5"
+          @click="deny"
+        >
+          <XMarkIcon class="h-4 w-4" />
           Deny
         </button>
-        <button class="ext-btn ext-btn--primary ext-btn--md" :disabled="approving" @click="approve">
-          <ShieldCheckIcon style="width: 1rem; height: 1rem" />
+        <button
+          class="rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-indigo-500 flex items-center justify-center gap-1.5 disabled:opacity-50"
+          :disabled="approving"
+          @click="approve"
+        >
+          <ShieldCheckIcon class="h-4 w-4" />
           {{ approving ? 'Approving...' : 'Approve' }}
         </button>
       </div>

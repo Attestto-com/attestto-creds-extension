@@ -17,19 +17,21 @@ function formatValue(value: unknown): string {
 </script>
 
 <template>
-  <div
-    style="display: flex; flex-direction: column; gap: 0.25rem"
-    :style="(depth ?? 0) > 0 ? { marginLeft: '0.75rem', borderLeft: '1px solid var(--ext-border)', paddingLeft: '0.5rem' } : {}"
-  >
-    <div v-for="(value, key) in claims" :key="String(key)">
+  <div class="space-y-1" :class="{ 'ml-3 border-l border-slate-700 pl-2': (depth ?? 0) > 0 }">
+    <div
+      v-for="(value, key) in claims"
+      :key="String(key)"
+    >
       <template v-if="isObject(value)">
-        <p class="ext-detail__label" style="margin-top: 0.25rem">{{ String(key) }}</p>
+        <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider mt-1">
+          {{ String(key) }}
+        </p>
         <CredentialClaimList :claims="value" :depth="(depth ?? 0) + 1" />
       </template>
       <template v-else>
-        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; padding: 0.125rem 0">
-          <span style="font-size: var(--ext-text-2xs); color: var(--ext-text-secondary); flex-shrink: 0">{{ String(key) }}</span>
-          <span style="font-size: var(--ext-text-xs); color: var(--ext-text-primary); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+        <div class="flex items-baseline justify-between gap-2 py-0.5">
+          <span class="text-[10px] text-slate-400 shrink-0">{{ String(key) }}</span>
+          <span class="text-[11px] text-slate-200 text-right truncate">
             {{ formatValue(value) }}
           </span>
         </div>

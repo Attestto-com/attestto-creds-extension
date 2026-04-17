@@ -13,10 +13,10 @@ import { signPayload } from '@/services/signing'
 import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { parseProofRequest } from '@/services/didcomm'
 import { createChapiVp } from '@/services/jsonld-vp'
-import { readVault, writeVault } from '@/utils/vault'
+import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
-import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage } from '@/utils/messaging'
+import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 
 export default defineBackground(() => {
@@ -42,11 +42,25 @@ export default defineBackground(() => {
 
   chrome.alarms.create('keepOffscreenAlive', { periodInMinutes: 4 })
 
-  chrome.alarms.onAlarm.addListener((alarm) => {
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === 'keepOffscreenAlive') {
       ensureOffscreenDocument()
     }
+    if (alarm.name === 'autoLock') {
+      // Clear session key to lock the vault
+      await chrome.storage.session.remove('attestto_ext_session_key')
+      console.log('[Attestto ID] Auto-lock triggered')
+    }
   })
+
+  // Set up auto-lock alarm from stored preference
+  async function resetAutoLockAlarm(): Promise<void> {
+    const stored = await chrome.storage.local.get('attestto_ext_auto_lock_minutes')
+    const minutes = Number(stored.attestto_ext_auto_lock_minutes) || 5
+    chrome.alarms.create('autoLock', { delayInMinutes: minutes })
+  }
+
+  resetAutoLockAlarm()
 
   // ── Pending Credential Offers ─────────────────────
 
@@ -73,6 +87,131 @@ export default defineBackground(() => {
   }
   const pendingChapiRawRequests = new Map<string, PendingChapiRawRequest>()
 
+  /** Pending payment requests waiting for user approval in the popup */
+  interface PendingPaymentRequest {
+    payReq: PaymentRequestMessage['payload']
+    senderTabId: number | null
+  }
+  const pendingPaymentRequests = new Map<string, PendingPaymentRequest>()
+
+  /** Pending document signing requests waiting for user approval in the popup */
+  interface PendingSigningRequest {
+    signReq: SignDocumentRequestMessage['payload']
+    senderTabId: number | null
+  }
+  const pendingSigningRequests = new Map<string, PendingSigningRequest>()
+
+  /**
+   * Open the approval popup for a document signing request.
+   */
+  async function handleSigningRequest(
+    signReq: SignDocumentRequestMessage['payload'],
+    senderTabId: number | null,
+  ): Promise<void> {
+    pendingSigningRequests.set(signReq.requestId, { signReq, senderTabId })
+
+    const params = new URLSearchParams({
+      signingRequest: signReq.requestId,
+      origin: signReq.origin || '',
+      documentTitle: signReq.documentTitle || '',
+      signerName: signReq.signerName || '',
+    })
+
+    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
+
+    try {
+      await chrome.windows.create({
+        url: approvalUrl,
+        type: 'popup',
+        width: 380,
+        height: 580,
+        focused: true,
+      })
+    } catch (err) {
+      console.error('[Attestto Sign] Failed to open signing approval window:', err)
+      pendingSigningRequests.delete(signReq.requestId)
+      sendSigningErrorToTab(senderTabId, signReq.requestId, 'Could not open approval window')
+    }
+  }
+
+  function sendSigningErrorToTab(tabId: number | null, requestId: string, error: string): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'SIGN_DOCUMENT_RESPONSE',
+        payload: { requestId, error },
+      })
+    }
+  }
+
+  function sendSigningResponseToTab(
+    tabId: number | null,
+    requestId: string,
+    data: { did: string; signature: string; publicKeyJwk: Record<string, string>; timestamp: string },
+  ): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'SIGN_DOCUMENT_RESPONSE',
+        payload: { requestId, ...data },
+      })
+    }
+  }
+
+  /**
+   * Open the approval popup for a payment request.
+   */
+  async function handlePaymentRequest(
+    payReq: PaymentRequestMessage['payload'],
+    senderTabId: number | null,
+  ): Promise<void> {
+    pendingPaymentRequests.set(payReq.requestId, { payReq, senderTabId })
+
+    const params = new URLSearchParams({
+      paymentRequest: payReq.requestId,
+      origin: payReq.origin || '',
+      amount: String(payReq.amount),
+      currency: payReq.currency || 'USDC',
+      merchant: payReq.merchantName || '',
+    })
+
+    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
+
+    try {
+      await chrome.windows.create({
+        url: approvalUrl,
+        type: 'popup',
+        width: 380,
+        height: 580,
+        focused: true,
+      })
+    } catch (err) {
+      console.error('[Attestto Pay] Failed to open payment approval window:', err)
+      pendingPaymentRequests.delete(payReq.requestId)
+      sendPaymentErrorToTab(senderTabId, payReq.requestId, 'Could not open approval window')
+    }
+  }
+
+  function sendPaymentErrorToTab(tabId: number | null, requestId: string, error: string): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'PAYMENT_RESPONSE',
+        payload: { requestId, error },
+      })
+    }
+  }
+
+  function sendPaymentResponseToTab(
+    tabId: number | null,
+    requestId: string,
+    data: { did: string; signature: string; publicKeyJwk: Record<string, string> },
+  ): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'PAYMENT_RESPONSE',
+        payload: { requestId, ...data },
+      })
+    }
+  }
+
   /**
    * Accept a credential offer: parse, store in vault, notify popup.
    */
@@ -84,9 +223,6 @@ export default defineBackground(() => {
     pendingOffers.delete(notificationId)
 
     try {
-      const vault = await readVault()
-      if (!vault) return null
-
       let decodedClaims: Record<string, unknown> = {}
       let types: string[] = ['VerifiableCredential']
       let issuer = offer.issuerName
@@ -109,13 +245,18 @@ export default defineBackground(() => {
           if (d.digest) disclosureDigests.push(d.digest)
         })
       } else {
-        // JSON-LD
-        const vc = JSON.parse(offer.raw) as Record<string, unknown>
-        decodedClaims = (vc.credentialSubject as Record<string, unknown>) ?? {}
-        types = (vc.type as string[]) ?? types
-        issuer = (typeof vc.issuer === 'string' ? vc.issuer : (vc.issuer as Record<string, unknown>)?.id as string) ?? issuer
-        issuedAt = (vc.issuanceDate as string) ?? issuedAt
-        expiresAt = (vc.expirationDate as string) ?? null
+        // JSON-LD or attestto-id format
+        try {
+          const vc = JSON.parse(offer.raw) as Record<string, unknown>
+          decodedClaims = (vc.credentialSubject as Record<string, unknown>) ?? vc
+          types = (vc.type as string[]) ?? types
+          issuer = (typeof vc.issuer === 'string' ? vc.issuer : (vc.issuer as Record<string, unknown>)?.id as string) ?? issuer
+          issuedAt = (vc.issuanceDate as string) ?? issuedAt
+          expiresAt = (vc.expirationDate as string) ?? null
+        } catch {
+          // Raw claims object (from attestto-id push)
+          decodedClaims = offer.claims ?? {}
+        }
       }
 
       const credential: StoredCredential = {
@@ -134,8 +275,19 @@ export default defineBackground(() => {
         },
       }
 
-      vault.credentials = [...(vault.credentials ?? []), credential]
-      await writeVault(vault)
+      // Store in public vault (always works, no passkey needed)
+      const pub = await readPublicVault()
+      if (pub) {
+        pub.credentials = [...(pub.credentials ?? []), credential]
+        await writePublicVault(pub)
+      }
+
+      // Also store in encrypted vault if unlocked
+      const vault = await readVault()
+      if (vault) {
+        vault.credentials = [...(vault.credentials ?? []), credential]
+        await writeVault(vault)
+      }
 
       return credential.id
     } catch {
@@ -208,7 +360,7 @@ export default defineBackground(() => {
         focused: true,
       })
     } catch (err) {
-      console.error('[Attestto Creds] Failed to open approval window:', err)
+      console.error('[Attestto ID] Failed to open approval window:', err)
       pendingChapiRawRequests.delete(apiReq.requestId)
       sendChapiErrorToTab(senderTabId, apiReq.requestId, 'Could not open approval window')
     }
@@ -283,22 +435,12 @@ export default defineBackground(() => {
    *
    * If the vault has no keypair yet, we generate one (same as createDid flow).
    */
-  /** DID URI must match did:<method>:<method-specific-id> */
-  const DID_URI_RE = /^did:[a-z0-9]+:.+/
-
   async function handleDidSync(
     syncReq: DidSyncMessage['payload'],
   ): Promise<void> {
     const vault = await readVault()
     if (!vault) {
       sendDidSyncResponse(syncReq.requestId, null, null, 'Vault is locked')
-      return
-    }
-
-    // ATT-358 Bug B: reject holderDid that isn't a valid DID URI
-    if (syncReq.holderDid && !DID_URI_RE.test(syncReq.holderDid)) {
-      sendDidSyncResponse(syncReq.requestId, null, null,
-        `Invalid holderDid: "${syncReq.holderDid}" is not a DID URI`)
       return
     }
 
@@ -326,13 +468,51 @@ export default defineBackground(() => {
       y: vault.privateKeyJwk.y,
     }
 
-    // Store the platform-assigned DID + verificationMethod
+    // Keep legacy fields for backward compat
     vault.holderDid = syncReq.holderDid
     vault.verificationMethod = syncReq.verificationMethod
+
+    // Upsert into linkedIdentities[]
+    if (!vault.linkedIdentities) vault.linkedIdentities = []
+
+    const existingIdx = vault.linkedIdentities.findIndex(
+      (id) => id.did === syncReq.holderDid,
+    )
+
+    const label = extractDidLabelForSync(syncReq.holderDid)
+    const now = new Date().toISOString()
+
+    if (existingIdx >= 0) {
+      vault.linkedIdentities[existingIdx].verificationMethod = syncReq.verificationMethod
+      vault.linkedIdentities[existingIdx].syncedAt = now
+      if (syncReq.tenantId) {
+        vault.linkedIdentities[existingIdx].tenantId = syncReq.tenantId
+      }
+    } else {
+      vault.linkedIdentities.push({
+        did: syncReq.holderDid,
+        label,
+        verificationMethod: syncReq.verificationMethod,
+        credentials: [],
+        syncedAt: now,
+        tenantId: syncReq.tenantId ?? null,
+      })
+    }
 
     await writeVault(vault)
 
     sendDidSyncResponse(syncReq.requestId, publicKeyJwk, syncReq.holderDid, null)
+  }
+
+  /** Extract a human-readable label from a DID. */
+  function extractDidLabelForSync(did: string): string {
+    const snsMatch = did.match(/^did:sns:(.+)$/)
+    if (snsMatch) return snsMatch[1]
+
+    const webMatch = did.match(/^did:web:(.+)$/)
+    if (webMatch) return webMatch[1].replace(/:/g, '/')
+
+    return did
   }
 
   function sendDidSyncResponse(
@@ -567,6 +747,11 @@ export default defineBackground(() => {
         sendResponse({ ok: true })
         break
 
+      case 'AUTO_LOCK_CHANGED':
+        resetAutoLockAlarm()
+        sendResponse({ ok: true })
+        break
+
       case 'SIGN_REQUEST':
         signPayload(message.payload).then((result) => {
           sendResponse(result)
@@ -574,6 +759,7 @@ export default defineBackground(() => {
         break
 
       case 'CREDENTIAL_OFFER': {
+        console.log('[Attestto ID] CREDENTIAL_OFFER received in background', message.payload)
         const offer = message.payload as CredentialOfferMessage['payload']
         const notifId = `credential-offer-${Date.now()}`
         pendingOffers.set(notifId, offer)
@@ -585,6 +771,12 @@ export default defineBackground(() => {
           message: `${offer.issuerName} wants to issue a ${offer.format.toUpperCase()} credential.`,
           buttons: [{ title: 'Accept' }, { title: 'Reject' }],
           requireInteraction: true,
+        }, (createdId) => {
+          if (chrome.runtime.lastError) {
+            console.error('[Attestto ID] Notification creation failed:', chrome.runtime.lastError.message)
+          } else {
+            console.log('[Attestto ID] Notification created:', createdId)
+          }
         })
 
         sendResponse({ ok: true })
@@ -854,6 +1046,218 @@ export default defineBackground(() => {
         sendResponse({ ok: true })
         break
 
+      // ── Document Signing Request Handler ──
+
+      case 'SIGN_DOCUMENT_REQUEST': {
+        const signReq = message.payload as SignDocumentRequestMessage['payload']
+        handleSigningRequest(signReq, _sender.tab?.id ?? null).then(() => {
+          sendResponse({ ok: true })
+        })
+        break
+      }
+
+      case 'SIGN_DOCUMENT_GET_PENDING': {
+        const signReqId = message.payload?.requestId as string
+        const pendingSign = pendingSigningRequests.get(signReqId)
+        if (pendingSign) {
+          sendResponse({ ok: true, request: pendingSign })
+        } else {
+          sendResponse({ ok: false, error: 'No pending signing request found' })
+        }
+        break
+      }
+
+      case 'SIGN_DOCUMENT_APPROVE': {
+        const signApproveId = message.payload?.requestId as string
+        const selectedSignDid = message.payload?.selectedDid as string
+        const pendingSigning = pendingSigningRequests.get(signApproveId)
+
+        if (!pendingSigning) {
+          sendResponse({ ok: false, error: 'No pending signing request' })
+          break
+        }
+        pendingSigningRequests.delete(signApproveId)
+
+        readVault().then(async (vault) => {
+          if (!vault || !vault.privateKeyJwk) {
+            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, 'Vault not ready')
+            sendResponse({ ok: false, error: 'Vault not ready' })
+            return
+          }
+
+          const holderDid = selectedSignDid || vault.holderDid || vault.did
+
+          if (!holderDid) {
+            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, 'No DID configured')
+            sendResponse({ ok: false, error: 'No DID configured' })
+            return
+          }
+
+          try {
+            const timestamp = String(Date.now())
+            // Canonical signing payload (must match backend verification)
+            const canonicalPayload = `attestto:sign:${pendingSigning.signReq.signingToken}:${holderDid}:${timestamp}`
+
+            const privateKey = await crypto.subtle.importKey(
+              'jwk',
+              vault.privateKeyJwk,
+              { name: 'ECDSA', namedCurve: 'P-256' },
+              false,
+              ['sign'],
+            )
+
+            const data = new TextEncoder().encode(canonicalPayload)
+            const signatureBuffer = await crypto.subtle.sign(
+              { name: 'ECDSA', hash: 'SHA-256' },
+              privateKey,
+              data,
+            )
+
+            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
+
+            const jwk = vault.privateKeyJwk as Record<string, string>
+            const responseData = {
+              did: holderDid,
+              signature,
+              timestamp,
+              publicKeyJwk: {
+                kty: jwk.kty || 'EC',
+                crv: jwk.crv || 'P-256',
+                x: jwk.x,
+                y: jwk.y,
+              },
+            }
+
+            sendSigningResponseToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, responseData)
+            sendResponse({ ok: true, ...responseData })
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : 'Signing failed'
+            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, errMsg)
+            sendResponse({ ok: false, error: errMsg })
+          }
+        })
+        break
+      }
+
+      case 'SIGN_DOCUMENT_DENY': {
+        const signDenyId = message.payload?.requestId as string
+        const pendingSignDeny = pendingSigningRequests.get(signDenyId)
+        if (pendingSignDeny) {
+          pendingSigningRequests.delete(signDenyId)
+          sendSigningErrorToTab(pendingSignDeny.senderTabId, pendingSignDeny.signReq.requestId, 'User declined signing')
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
+      // ── Payment Request Handler ──
+
+      case 'PAYMENT_REQUEST': {
+        const payReq = message.payload as PaymentRequestMessage['payload']
+        handlePaymentRequest(payReq, _sender.tab?.id ?? null).then(() => {
+          sendResponse({ ok: true })
+        })
+        break
+      }
+
+      // ── Payment Popup Handlers (DID-authenticated payment flow) ──
+
+      case 'PAYMENT_GET_PENDING': {
+        const payReqId = message.payload?.requestId as string
+        const pendingPay = pendingPaymentRequests.get(payReqId)
+        if (pendingPay) {
+          sendResponse({ ok: true, request: pendingPay })
+        } else {
+          sendResponse({ ok: false, error: 'No pending payment request found' })
+        }
+        break
+      }
+
+      case 'PAYMENT_APPROVE': {
+        const payApproveId = message.payload?.requestId as string
+        const selectedDid = message.payload?.selectedDid as string
+        const pendingPayment = pendingPaymentRequests.get(payApproveId)
+
+        if (!pendingPayment) {
+          sendResponse({ ok: false, error: 'No pending payment request' })
+          break
+        }
+        pendingPaymentRequests.delete(payApproveId)
+
+        readVault().then(async (vault) => {
+          if (!vault || !vault.privateKeyJwk) {
+            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, 'Vault not ready')
+            sendResponse({ ok: false, error: 'Vault not ready' })
+            return
+          }
+
+          const holderDid = selectedDid
+            || vault.holderDid
+            || vault.did
+
+          if (!holderDid) {
+            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, 'No DID configured')
+            sendResponse({ ok: false, error: 'No DID configured' })
+            return
+          }
+
+          try {
+            // Build canonical payment payload (must match backend DidPaymentResolver.buildPaymentPayload)
+            const canonicalPayload = `attestto:pay:${pendingPayment.payReq.paymentRequestUuid}:${holderDid}:${pendingPayment.payReq.amount.toFixed(2)}`
+
+            // Sign with vault's P-256 private key
+            const privateKey = await crypto.subtle.importKey(
+              'jwk',
+              vault.privateKeyJwk,
+              { name: 'ECDSA', namedCurve: 'P-256' },
+              false,
+              ['sign'],
+            )
+
+            const data = new TextEncoder().encode(canonicalPayload)
+            const signatureBuffer = await crypto.subtle.sign(
+              { name: 'ECDSA', hash: 'SHA-256' },
+              privateKey,
+              data,
+            )
+
+            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
+
+            // Public key components are already in the JWK (x, y)
+            const jwk = vault.privateKeyJwk as Record<string, string>
+            const responseData = {
+              did: holderDid,
+              signature,
+              publicKeyJwk: {
+                kty: jwk.kty || 'EC',
+                crv: jwk.crv || 'P-256',
+                x: jwk.x,
+                y: jwk.y,
+              },
+            }
+
+            sendPaymentResponseToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, responseData)
+            sendResponse({ ok: true, ...responseData })
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : 'Signing failed'
+            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, errMsg)
+            sendResponse({ ok: false, error: errMsg })
+          }
+        })
+        break
+      }
+
+      case 'PAYMENT_DENY': {
+        const payDenyId = message.payload?.requestId as string
+        const pendingPayDeny = pendingPaymentRequests.get(payDenyId)
+        if (pendingPayDeny) {
+          pendingPaymentRequests.delete(payDenyId)
+          sendPaymentErrorToTab(pendingPayDeny.senderTabId, pendingPayDeny.payReq.requestId, 'User declined payment')
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
       // ── CHAPI Popup Handlers (Phantom-style approval flow) ──
 
       case 'CHAPI_GET_PENDING': {
@@ -892,14 +1296,6 @@ export default defineBackground(() => {
           if (!holderDid) {
             sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'No DID configured')
             sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          // ATT-358 Bug B: never send a non-DID string to the page
-          if (!DID_URI_RE.test(holderDid)) {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId,
-              `Holder DID "${holderDid}" is not a valid DID URI`)
-            sendResponse({ ok: false, error: 'Invalid holder DID' })
             return
           }
 
@@ -947,8 +1343,8 @@ export default defineBackground(() => {
         sendResponse({ ok: true })
         break
       }
-
     }
+
     return true
   })
 

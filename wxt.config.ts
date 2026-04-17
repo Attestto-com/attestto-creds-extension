@@ -17,9 +17,9 @@ export default defineConfig({
   }),
 
   manifest: {
-    name: 'Attestto Creds',
+    name: 'Attestto ID',
     description:
-      'Self-sovereign identity wallet — verifiable credentials, selective disclosure, and anti-phishing protection.',
+      'Self-sovereign identity agent — passkey-secured vault, verifiable credentials, DID-authenticated payments, and privacy-preserving presentations.',
     version: '0.1.0',
 
     permissions: [

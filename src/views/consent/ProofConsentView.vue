@@ -98,42 +98,48 @@ function selectNone(): void {
 </script>
 
 <template>
-  <div style="display: flex; flex-direction: column; gap: 0.75rem">
+  <div class="space-y-3">
     <!-- Back -->
-    <div style="display: flex; align-items: center; gap: 0.5rem">
+    <div class="flex items-center gap-2">
       <button
-        style="border-radius: var(--ext-radius-md); padding: 0.25rem; cursor: pointer; background: none; border: none; color: var(--ext-text-secondary)"
+        class="rounded-md p-1 hover:bg-slate-800 transition-colors"
         @click="router.push('/credentials')"
       >
-        <ArrowLeftIcon style="width: 1rem; height: 1rem" />
+        <ArrowLeftIcon class="h-4 w-4 text-slate-400" />
       </button>
-      <h2 style="font-size: var(--ext-text-md); font-weight: 600; color: var(--ext-text-primary)">Proof Request</h2>
+      <h2 class="text-sm font-semibold text-white">Proof Request</h2>
     </div>
 
     <!-- Result: Approved -->
     <template v-if="result === 'approved'">
-      <div class="ext-header-banner ext-header-banner--pay" style="text-align: center; display: flex; flex-direction: column; gap: 0.5rem">
-        <CheckCircleIcon style="width: 2rem; height: 2rem; color: var(--ext-success); margin: 0 auto" />
-        <p style="font-size: var(--ext-text-md); font-weight: 500; color: var(--ext-success)">Presentation Shared</p>
-        <p style="font-size: var(--ext-text-2xs); color: var(--ext-text-secondary)">
+      <div class="rounded-lg border border-emerald-700 bg-emerald-950/30 p-4 text-center space-y-2">
+        <CheckCircleIcon class="h-8 w-8 text-emerald-400 mx-auto" />
+        <p class="text-sm font-medium text-emerald-300">Presentation Shared</p>
+        <p class="text-[10px] text-slate-400">
           {{ selectedCount }} field(s) disclosed to {{ request?.requesterName }}
         </p>
       </div>
-      <button class="ext-btn ext-btn--ghost ext-btn--md" style="width: 100%" @click="router.push('/credentials')">
+      <button
+        class="w-full rounded-md bg-slate-800 px-3 py-2 text-xs text-slate-300 hover:bg-slate-700"
+        @click="router.push('/credentials')"
+      >
         Back to Credentials
       </button>
     </template>
 
     <!-- Result: Declined -->
     <template v-else-if="result === 'declined'">
-      <div class="ext-header-banner ext-header-banner--auth" style="text-align: center; display: flex; flex-direction: column; gap: 0.5rem; border-color: rgba(239, 68, 68, 0.3); background: rgba(127, 29, 29, 0.3)">
-        <XCircleIcon style="width: 2rem; height: 2rem; color: var(--ext-error); margin: 0 auto" />
-        <p style="font-size: var(--ext-text-md); font-weight: 500; color: var(--ext-error)">Request Declined</p>
-        <p style="font-size: var(--ext-text-2xs); color: var(--ext-text-secondary)">
+      <div class="rounded-lg border border-red-700/50 bg-red-950/20 p-4 text-center space-y-2">
+        <XCircleIcon class="h-8 w-8 text-red-400 mx-auto" />
+        <p class="text-sm font-medium text-red-300">Request Declined</p>
+        <p class="text-[10px] text-slate-400">
           No data was shared with {{ request?.requesterName }}
         </p>
       </div>
-      <button class="ext-btn ext-btn--ghost ext-btn--md" style="width: 100%" @click="router.push('/credentials')">
+      <button
+        class="w-full rounded-md bg-slate-800 px-3 py-2 text-xs text-slate-300 hover:bg-slate-700"
+        @click="router.push('/credentials')"
+      >
         Back to Credentials
       </button>
     </template>
@@ -141,63 +147,71 @@ function selectNone(): void {
     <!-- Consent Form -->
     <template v-else-if="request">
       <!-- Requester info -->
-      <div class="ext-info-box ext-info-box--warning" style="display: flex; align-items: flex-start; gap: 0.5rem">
-        <ExclamationTriangleIcon style="width: 1rem; height: 1rem; margin-top: 0.125rem; flex-shrink: 0" />
-        <div>
-          <p style="font-size: var(--ext-text-xs); font-weight: 500">
-            {{ request.requesterName }} is requesting access
-          </p>
-          <p style="font-size: var(--ext-text-2xs); color: var(--ext-text-secondary); margin-top: 0.125rem">
-            {{ request.purpose }}
-          </p>
+      <div class="rounded-lg border border-amber-700/50 bg-amber-950/20 p-3 space-y-1">
+        <div class="flex items-start gap-2">
+          <ExclamationTriangleIcon class="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+          <div>
+            <p class="text-xs font-medium text-amber-300">
+              {{ request.requesterName }} is requesting access
+            </p>
+            <p class="text-[10px] text-slate-400 mt-0.5">
+              {{ request.purpose }}
+            </p>
+          </div>
         </div>
       </div>
 
       <!-- Credential reference -->
-      <div class="ext-card">
-        <div style="display: flex; align-items: center; gap: 0.5rem">
-          <ShieldCheckIcon style="width: 1rem; height: 1rem; color: var(--ext-brand-secondary)" />
-          <span style="font-size: var(--ext-text-xs); color: var(--ext-text-primary); font-weight: 500">{{ credentialLabel }}</span>
+      <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+        <div class="flex items-center gap-2">
+          <ShieldCheckIcon class="h-4 w-4 text-indigo-400" />
+          <span class="text-xs text-white font-medium">{{ credentialLabel }}</span>
         </div>
-        <p style="font-size: var(--ext-text-2xs); color: var(--ext-text-muted); margin-top: 0.25rem">
+        <p class="text-[10px] text-slate-500 mt-1">
           Via {{ request.transport === 'didcomm_v2' ? 'DIDComm v2 (P2P encrypted)' : request.transport === 'push_to_vault' ? 'Push to Vault' : 'Attestto Platform' }}
         </p>
       </div>
 
       <!-- Field selection -->
-      <div class="ext-card" style="display: flex; flex-direction: column; gap: 0.5rem">
-        <div style="display: flex; align-items: center; justify-content: space-between">
-          <p class="ext-detail__label" style="margin-bottom: 0">Requested Fields</p>
-          <div style="display: flex; gap: 0.5rem">
+      <div class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+            Requested Fields
+          </p>
+          <div class="flex gap-2">
             <button
-              style="font-size: 9px; color: var(--ext-brand-secondary); cursor: pointer; background: none; border: none"
+              class="text-[9px] text-indigo-400 hover:text-indigo-300"
               @click="selectAll"
-            >All</button>
+            >
+              All
+            </button>
             <button
-              style="font-size: 9px; color: var(--ext-text-muted); cursor: pointer; background: none; border: none"
+              class="text-[9px] text-slate-500 hover:text-slate-400"
               @click="selectNone"
-            >None</button>
+            >
+              None
+            </button>
           </div>
         </div>
 
         <label
           v-for="(field, idx) in fieldSelections"
           :key="idx"
-          style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.25rem; border-radius: var(--ext-radius-sm)"
+          class="flex items-center gap-2 cursor-pointer py-1 rounded px-1 hover:bg-slate-800/50 transition-colors"
         >
           <input
             v-model="field.selected"
             type="checkbox"
-            style="width: 0.875rem; height: 0.875rem"
+            class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
           />
           <component
             :is="field.selected ? EyeIcon : EyeSlashIcon"
-            style="width: 0.875rem; height: 0.875rem"
-            :style="{ color: field.selected ? 'var(--ext-brand-secondary)' : 'var(--ext-text-dim)' }"
+            class="h-3.5 w-3.5"
+            :class="field.selected ? 'text-indigo-400' : 'text-slate-600'"
           />
           <span
-            style="font-size: var(--ext-text-xs)"
-            :style="{ color: field.selected ? 'var(--ext-text-primary)' : 'var(--ext-text-muted)', textDecoration: field.selected ? 'none' : 'line-through' }"
+            class="text-[11px]"
+            :class="field.selected ? 'text-slate-200' : 'text-slate-500 line-through'"
           >
             {{ field.name }}
           </span>
@@ -205,17 +219,20 @@ function selectNone(): void {
       </div>
 
       <!-- Error -->
-      <p v-if="error" style="font-size: var(--ext-text-xs); color: var(--ext-error)">{{ error }}</p>
+      <p v-if="error" class="text-[11px] text-red-400">{{ error }}</p>
 
       <!-- Actions -->
-      <div style="display: flex; gap: 0.5rem">
-        <button class="ext-btn ext-btn--ghost ext-btn--md" style="flex: 1" :disabled="processing" @click="decline">
+      <div class="flex gap-2">
+        <button
+          class="flex-1 rounded-md bg-slate-800 px-3 py-2 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
+          :disabled="processing"
+          @click="decline"
+        >
           Decline
         </button>
         <button
-          class="ext-btn ext-btn--md"
-          :class="hasSelection ? 'ext-btn--primary' : 'ext-btn--ghost'"
-          style="flex: 1"
+          class="flex-1 rounded-md px-3 py-2 text-xs font-medium text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          :class="hasSelection ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-700'"
           :disabled="!hasSelection || processing"
           @click="approve"
         >
@@ -224,7 +241,7 @@ function selectNone(): void {
       </div>
 
       <!-- Disclosure notice -->
-      <p style="font-size: 9px; color: var(--ext-text-dim); text-align: center">
+      <p class="text-[9px] text-slate-600 text-center">
         Only the selected fields will be shared. Other credential data remains private.
       </p>
     </template>

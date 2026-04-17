@@ -116,30 +116,31 @@ async function copyToClipboard(): Promise<void> {
 </script>
 
 <template>
-  <div style="display: flex; flex-direction: column; gap: 0.75rem">
+  <div class="space-y-3">
     <!-- Back button + title -->
-    <div style="display: flex; align-items: center; gap: 0.5rem">
+    <div class="flex items-center gap-2">
       <button
-        style="border-radius: var(--ext-radius-md); padding: 0.25rem; cursor: pointer; background: none; border: none; color: var(--ext-text-secondary)"
+        class="rounded-md p-1 hover:bg-slate-800 transition-colors"
         @click="router.push('/credentials')"
       >
-        <ArrowLeftIcon style="width: 1rem; height: 1rem" />
+        <ArrowLeftIcon class="h-4 w-4 text-slate-400" />
       </button>
-      <h2 style="font-size: var(--ext-text-md); font-weight: 600; color: var(--ext-text-primary)">Present Credential</h2>
+      <h2 class="text-sm font-semibold text-white">Present Credential</h2>
     </div>
 
     <template v-if="credential">
       <!-- Credential info -->
-      <div class="ext-card">
-        <div style="display: flex; align-items: center; gap: 0.5rem">
+      <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+        <div class="flex items-center gap-2">
           <span
-            class="ext-badge"
-            :class="credential.format === 'sd-jwt' ? 'ext-badge--brand' : 'ext-badge--success'"
-            style="font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em"
+            class="rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+            :class="credential.format === 'sd-jwt'
+              ? 'bg-indigo-500/20 text-indigo-300'
+              : 'bg-emerald-500/20 text-emerald-300'"
           >
             {{ credential.format === 'sd-jwt' ? 'SD-JWT' : 'JSON-LD' }}
           </span>
-          <span style="font-size: var(--ext-text-xs); color: var(--ext-text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+          <span class="text-xs text-white font-medium truncate">
             {{ credential.types[credential.types.length - 1] }}
           </span>
         </div>
@@ -148,54 +149,68 @@ async function copyToClipboard(): Promise<void> {
       <!-- SD-JWT: Claim checkboxes -->
       <div
         v-if="credential.format === 'sd-jwt' && disclosureItems.length > 0"
-        class="ext-card"
-        style="display: flex; flex-direction: column; gap: 0.5rem"
+        class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2"
       >
-        <p class="ext-detail__label" style="margin-bottom: 0">Select claims to disclose</p>
+        <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
+          Select claims to disclose
+        </p>
         <label
           v-for="(item, idx) in disclosureItems"
           :key="idx"
-          style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.125rem 0"
+          class="flex items-center gap-2 cursor-pointer py-0.5"
         >
-          <input v-model="item.selected" type="checkbox" style="width: 0.875rem; height: 0.875rem" />
-          <span style="font-size: var(--ext-text-xs); color: var(--ext-text-secondary)">{{ item.claimName }}</span>
-          <span style="font-size: var(--ext-text-2xs); color: var(--ext-text-muted); margin-left: auto; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+          <input
+            v-model="item.selected"
+            type="checkbox"
+            class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
+          />
+          <span class="text-[11px] text-slate-300">{{ item.claimName }}</span>
+          <span class="text-[10px] text-slate-500 ml-auto truncate max-w-[120px]">
             {{ String(item.claimValue) }}
           </span>
         </label>
       </div>
 
       <!-- JSON-LD: All claims (read-only) -->
-      <div v-if="credential.format === 'json-ld'" class="ext-card">
-        <p class="ext-detail__label">All claims will be shared</p>
+      <div
+        v-if="credential.format === 'json-ld'"
+        class="rounded-lg border border-slate-700 bg-slate-900 p-3"
+      >
+        <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">
+          All claims will be shared
+        </p>
         <div
           v-for="(value, key) in credential.decodedClaims"
           :key="String(key)"
-          style="display: flex; justify-content: space-between; padding: 0.125rem 0; font-size: var(--ext-text-xs)"
+          class="flex justify-between py-0.5 text-[11px]"
         >
-          <span style="color: var(--ext-text-secondary)">{{ String(key) }}</span>
-          <span style="color: var(--ext-text-primary); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ String(value) }}</span>
+          <span class="text-slate-400">{{ String(key) }}</span>
+          <span class="text-slate-200 truncate max-w-[160px]">{{ String(value) }}</span>
         </div>
       </div>
 
       <!-- Nonce + Audience -->
-      <div style="display: flex; flex-direction: column; gap: 0.5rem">
+      <div class="space-y-2">
         <div>
-          <label class="ext-detail__label" style="display: block; margin-bottom: 0.125rem">Nonce (from verifier) *</label>
+          <label class="block text-[10px] font-medium text-slate-400 mb-0.5">
+            Nonce (from verifier) *
+          </label>
           <input
             v-model="nonce"
             type="text"
             placeholder="Enter verifier nonce"
-            style="width: 100%; border-radius: var(--ext-radius-md); border: 1px solid var(--ext-border-subtle); background: var(--ext-bg-surface-hover); padding: 0.375rem 0.625rem; font-size: var(--ext-text-xs); color: var(--ext-text-primary); outline: none"
+            class="w-full rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
           />
         </div>
         <div v-if="credential.format === 'sd-jwt'">
-          <label class="ext-detail__label" style="display: block; margin-bottom: 0.125rem">Audience (verifier ID)</label>
+          <label class="block text-[10px] font-medium text-slate-400 mb-0.5">
+            Audience (verifier ID)
+          </label>
           <input
             v-model="audience"
             type="text"
             placeholder="Optional verifier identifier"
-            style="width: 100%; border-radius: var(--ext-radius-md); border: 1px solid var(--ext-border-subtle); background: var(--ext-bg-surface-hover); padding: 0.375rem 0.625rem; font-size: var(--ext-text-xs); color: var(--ext-text-primary); outline: none"
+            class="w-full rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
           />
         </div>
       </div>
@@ -203,51 +218,61 @@ async function copyToClipboard(): Promise<void> {
       <!-- Preview toggle -->
       <button
         v-if="isReady && !generatedVp"
-        style="display: flex; align-items: center; gap: 0.25rem; font-size: var(--ext-text-xs); color: var(--ext-brand-secondary); cursor: pointer; background: none; border: none"
+        class="flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300"
         @click="showPreview = !showPreview"
       >
-        <EyeIcon style="width: 0.875rem; height: 0.875rem" />
+        <EyeIcon class="h-3.5 w-3.5" />
         {{ showPreview ? 'Hide' : 'Preview' }} what will be shared
       </button>
 
-      <div v-if="showPreview && !generatedVp" class="ext-card">
-        <p class="ext-detail__label">Shared claims:</p>
+      <div
+        v-if="showPreview && !generatedVp"
+        class="rounded-lg border border-slate-700 bg-slate-900 p-3"
+      >
+        <p class="text-[10px] font-medium text-slate-400 mb-1">Shared claims:</p>
         <div
           v-for="(value, key) in selectedClaims"
           :key="String(key)"
-          style="display: flex; justify-content: space-between; padding: 0.125rem 0; font-size: var(--ext-text-xs)"
+          class="flex justify-between py-0.5 text-[11px]"
         >
-          <span style="color: var(--ext-text-secondary)">{{ String(key) }}</span>
-          <span style="color: var(--ext-text-primary); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ String(value) }}</span>
+          <span class="text-slate-400">{{ String(key) }}</span>
+          <span class="text-slate-200 truncate max-w-[160px]">{{ String(value) }}</span>
         </div>
       </div>
 
       <!-- Generate button -->
       <button
         v-if="!generatedVp"
-        class="ext-btn ext-btn--md"
-        :class="isReady ? 'ext-btn--primary' : 'ext-btn--ghost'"
-        style="width: 100%"
         :disabled="!isReady || generating"
+        class="w-full rounded-md px-3 py-2 text-xs font-medium text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        :class="isReady ? 'bg-indigo-600 hover:bg-indigo-500' : 'bg-slate-700'"
         @click="generate"
       >
         {{ generating ? 'Generating...' : 'Generate Presentation' }}
       </button>
 
       <!-- Error -->
-      <p v-if="error" style="font-size: var(--ext-text-xs); color: var(--ext-error)">{{ error }}</p>
+      <p v-if="error" class="text-[11px] text-red-400">{{ error }}</p>
 
       <!-- Result -->
-      <div v-if="generatedVp" style="display: flex; flex-direction: column; gap: 0.5rem">
-        <p class="ext-detail__label" style="color: var(--ext-success)">Presentation Ready</p>
-        <div class="ext-card" style="max-height: 120px; overflow-y: auto; padding: 0.5rem">
-          <pre style="font-size: 9px; color: var(--ext-text-secondary); word-break: break-all; white-space: pre-wrap; font-family: monospace; margin: 0">{{ generatedVp }}</pre>
+      <div v-if="generatedVp" class="space-y-2">
+        <p class="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
+          Presentation Ready
+        </p>
+        <div class="rounded-lg border border-slate-700 bg-slate-900 p-2 max-h-[120px] overflow-y-auto">
+          <pre class="text-[9px] text-slate-300 break-all whitespace-pre-wrap font-mono">{{ generatedVp }}</pre>
         </div>
-        <button class="ext-btn ext-btn--primary ext-btn--md" style="width: 100%" @click="copyToClipboard">
-          <component :is="copied ? CheckIcon : ClipboardIcon" style="width: 0.875rem; height: 0.875rem" />
+        <button
+          class="w-full flex items-center justify-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
+          @click="copyToClipboard"
+        >
+          <component :is="copied ? CheckIcon : ClipboardIcon" class="h-3.5 w-3.5" />
           {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
         </button>
-        <button class="ext-btn ext-btn--ghost ext-btn--sm" style="width: 100%" @click="generatedVp = ''; showPreview = false">
+        <button
+          class="w-full rounded-md bg-slate-800 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
+          @click="generatedVp = ''; showPreview = false"
+        >
           Generate Another
         </button>
       </div>

@@ -128,8 +128,8 @@ export function buildCredentialHandlerScript(): string {
   // -------------------------------------------------------------------
   var ATTESTTO_DID_WALLET = {
     did: 'did:web:attestto.com:wallets:attestto-creds',
-    name: 'Attestto Creds',
-    icon: 'https://attestto.com/icons/attestto-creds-64.svg',
+    name: 'Attestto ID',
+    icon: 'https://attestto.com/icons/attestto-id-64.svg',
     version: '0.1.0',
     protocols: ['chapi', 'didcomm-v2'],
     maintainer: {
@@ -137,7 +137,7 @@ export function buildCredentialHandlerScript(): string {
       did: 'did:web:attestto.com',
       url: 'https://attestto.com'
     },
-    url: 'https://github.com/Attestto-com/attestto-creds'
+    url: 'https://github.com/Attestto-com/attestto-id-extension'
   };
 
   window.addEventListener('credential-wallet:discover', function(e) {
@@ -148,8 +148,8 @@ export function buildCredentialHandlerScript(): string {
     }));
   });
 
-  // Legacy: signal readiness for backward compat
-  window.dispatchEvent(new CustomEvent('attestto-creds-ready', {
+  // Signal readiness
+  window.dispatchEvent(new CustomEvent('attestto-id-ready', {
     detail: { version: '0.1.0', protocols: ['chapi', 'didcomm-v2'] }
   }));
 })();

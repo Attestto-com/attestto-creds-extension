@@ -7,6 +7,8 @@ import {
   FingerPrintIcon,
   LockClosedIcon,
   KeyIcon,
+  BanknotesIcon,
+  DocumentCheckIcon,
 } from '@heroicons/vue/24/outline'
 
 const wallet = useWalletStore()
@@ -16,6 +18,17 @@ const origin = ref('')
 const loading = ref(true)
 const approving = ref(false)
 const error = ref<string | null>(null)
+
+/** Payment mode — detected from URL params */
+const isPayment = ref(false)
+const paymentAmount = ref(0)
+const paymentCurrency = ref('USDC')
+const merchantName = ref('')
+
+/** Signing mode — detected from URL params */
+const isSigning = ref(false)
+const documentTitle = ref('')
+const signerName = ref('')
 
 /** Available DIDs the user can choose from */
 interface AvailableDid {
@@ -35,10 +48,35 @@ const availableDids = computed<AvailableDid[]>(() => {
 
 const selectedDid = ref<string | null>(null)
 
+const formattedAmount = computed(() => {
+  return `${paymentAmount.value.toFixed(2)} ${paymentCurrency.value}`
+})
+
 onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
-  requestId.value = params.get('chapiRequest') || ''
-  origin.value = params.get('origin') || ''
+
+  // Detect mode: signing, payment, or CHAPI
+  const signReqId = params.get('signingRequest')
+  const payReqId = params.get('paymentRequest')
+  const chapiReqId = params.get('chapiRequest')
+
+  if (signReqId) {
+    isSigning.value = true
+    requestId.value = signReqId
+    origin.value = params.get('origin') || ''
+    documentTitle.value = params.get('documentTitle') || ''
+    signerName.value = params.get('signerName') || ''
+  } else if (payReqId) {
+    isPayment.value = true
+    requestId.value = payReqId
+    origin.value = params.get('origin') || ''
+    paymentAmount.value = Number(params.get('amount') || '0')
+    paymentCurrency.value = params.get('currency') || 'USDC'
+    merchantName.value = params.get('merchant') || ''
+  } else if (chapiReqId) {
+    requestId.value = chapiReqId
+    origin.value = params.get('origin') || ''
+  }
 
   if (!requestId.value) {
     error.value = 'No request ID'
@@ -46,13 +84,8 @@ onMounted(async () => {
     return
   }
 
-  if (!wallet.isUnlocked) {
-    try {
-      await wallet.unlock()
-    } catch {
-      // Vault doesn't exist yet
-    }
-  }
+  // Load public data (always works — no passkey)
+  await wallet.loadPublicData()
 
   if (wallet.did) {
     selectedDid.value = wallet.did
@@ -66,9 +99,23 @@ async function approve() {
   error.value = null
 
   try {
+    // Unlock with passkey at the moment of signing
+    if (!wallet.isUnlocked) {
+      await wallet.unlock()
+    }
+
+    const msgType = isSigning.value
+      ? 'SIGN_DOCUMENT_APPROVE'
+      : isPayment.value ? 'PAYMENT_APPROVE' : 'CHAPI_APPROVE'
+    const payload: Record<string, string> = { requestId: requestId.value }
+
+    if ((isPayment.value || isSigning.value) && selectedDid.value) {
+      payload.selectedDid = selectedDid.value
+    }
+
     const response = await chrome.runtime.sendMessage({
-      type: 'CHAPI_APPROVE',
-      payload: { requestId: requestId.value },
+      type: msgType,
+      payload,
     })
 
     if (response?.ok) {
@@ -84,8 +131,11 @@ async function approve() {
 }
 
 async function deny() {
+  const msgType = isSigning.value
+    ? 'SIGN_DOCUMENT_DENY'
+    : isPayment.value ? 'PAYMENT_DENY' : 'CHAPI_DENY'
   await chrome.runtime.sendMessage({
-    type: 'CHAPI_DENY',
+    type: msgType,
     payload: { requestId: requestId.value },
   })
   window.close()
@@ -100,53 +150,87 @@ async function createDidAndRetry() {
 </script>
 
 <template>
-  <div style="max-width: 24rem; margin: 0 auto; padding: 1rem; display: flex; flex-direction: column; gap: 1rem">
-    <!-- Header -->
-    <div class="ext-header-banner ext-header-banner--identity" style="text-align: center">
-      <ShieldCheckIcon style="margin: 0 auto; width: 2rem; height: 2rem; color: var(--ext-brand-secondary)" />
-      <p class="ext-header-banner__title" style="margin-top: 0.5rem">Identity Request</p>
-      <p class="ext-header-banner__subtitle">A site wants to verify your identity</p>
+  <div class="mx-auto max-w-sm p-4 space-y-4">
+    <!-- Header — Signing Mode -->
+    <div v-if="isSigning" class="rounded-lg border border-blue-700/50 bg-blue-950/30 p-4 text-center">
+      <DocumentCheckIcon class="mx-auto h-8 w-8 text-blue-400" />
+      <p class="mt-2 text-sm font-semibold text-white">Sign Document</p>
+      <p class="mt-1 text-[11px] text-slate-400">
+        Sign this document with your Attestto ID
+      </p>
+    </div>
+
+    <!-- Header — Payment Mode -->
+    <div v-else-if="isPayment" class="rounded-lg border border-emerald-700/50 bg-emerald-950/30 p-4 text-center">
+      <BanknotesIcon class="mx-auto h-8 w-8 text-emerald-400" />
+      <p class="mt-2 text-sm font-semibold text-white">Payment Request</p>
+      <p class="mt-1 text-[11px] text-slate-400">
+        Approve this payment with your identity
+      </p>
+    </div>
+
+    <!-- Header — Identity Mode -->
+    <div v-else class="rounded-lg border border-indigo-700/50 bg-indigo-950/30 p-4 text-center">
+      <ShieldCheckIcon class="mx-auto h-8 w-8 text-indigo-400" />
+      <p class="mt-2 text-sm font-semibold text-white">Identity Request</p>
+      <p class="mt-1 text-[11px] text-slate-400">
+        A site wants to verify your identity
+      </p>
+    </div>
+
+    <!-- Signing Details -->
+    <div v-if="isSigning" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+      <div class="flex items-center justify-between">
+        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Document</p>
+        <p class="text-xs font-medium text-white">{{ documentTitle || 'Untitled' }}</p>
+      </div>
+      <div v-if="signerName" class="flex items-center justify-between">
+        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Signing as</p>
+        <p class="text-xs text-white">{{ signerName }}</p>
+      </div>
+    </div>
+
+    <!-- Payment Details -->
+    <div v-if="isPayment" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+      <div class="flex items-center justify-between">
+        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Amount</p>
+        <p class="text-base font-semibold text-white">{{ formattedAmount }}</p>
+      </div>
+      <div v-if="merchantName" class="flex items-center justify-between">
+        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">To</p>
+        <p class="text-xs text-white">{{ merchantName }}</p>
+      </div>
     </div>
 
     <!-- Origin -->
-    <div class="ext-card">
-      <p class="ext-detail__label">Requesting site</p>
-      <p class="ext-detail__value" style="font-family: monospace; margin-top: 0.25rem">{{ origin || 'Unknown' }}</p>
+    <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+      <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Requesting site</p>
+      <p class="mt-1 text-xs font-mono text-white break-all">{{ origin || 'Unknown' }}</p>
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="ext-card" style="padding: 1.5rem; text-align: center">
-      <p style="font-size: var(--ext-text-xs); color: var(--ext-text-secondary)">Loading wallet...</p>
+    <div v-if="loading" class="rounded-lg border border-slate-700 bg-slate-900 p-6 text-center">
+      <p class="text-xs text-slate-400">Loading wallet...</p>
     </div>
 
-    <!-- Wallet locked / no DID -->
-    <template v-else-if="!wallet.isUnlocked || !wallet.did">
-      <div class="ext-info-box ext-info-box--warning" style="text-align: center; padding: 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.75rem">
-        <component
-          :is="!wallet.isUnlocked ? LockClosedIcon : KeyIcon"
-          style="width: 1.5rem; height: 1.5rem"
-        />
-        <p style="font-size: var(--ext-text-xs)">
-          {{ !wallet.isUnlocked ? 'Wallet is locked' : 'No DID created yet' }}
-        </p>
+    <!-- No DID created yet -->
+    <template v-else-if="!wallet.did">
+      <div class="rounded-lg border border-amber-700/50 bg-amber-950/30 p-4 text-center space-y-3">
+        <KeyIcon class="mx-auto h-6 w-6 text-amber-400" />
+        <p class="text-xs text-amber-200">No DID created yet</p>
       </div>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem">
+      <div class="grid grid-cols-2 gap-2">
         <button
-          v-if="!wallet.isUnlocked"
-          class="ext-btn ext-btn--primary ext-btn--md"
-          @click="wallet.unlock()"
-        >
-          Unlock
-        </button>
-        <button
-          v-if="wallet.isUnlocked && !wallet.did"
-          class="ext-btn ext-btn--primary ext-btn--md"
+          class="rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-indigo-500"
           @click="createDidAndRetry()"
         >
           Create DID
         </button>
-        <button class="ext-btn ext-btn--ghost ext-btn--md" @click="deny">
+        <button
+          class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
+          @click="deny"
+        >
           Cancel
         </button>
       </div>
@@ -154,49 +238,67 @@ async function createDidAndRetry() {
 
     <!-- Ready to approve -->
     <template v-else>
-      <!-- Identity to share -->
-      <div class="ext-header-banner ext-header-banner--pay" style="display: flex; flex-direction: column; gap: 0.5rem">
-        <p class="ext-detail__label">Share this identity</p>
+      <!-- DID Picker -->
+      <div
+        class="rounded-lg border p-3 space-y-2"
+        :class="isPayment ? 'border-emerald-700/50 bg-emerald-950/20' : 'border-emerald-700/50 bg-emerald-950/20'"
+      >
+        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">
+          {{ isSigning ? 'Sign with this identity' : isPayment ? 'Pay from this identity' : 'Share this identity' }}
+        </p>
         <div
           v-for="d in availableDids"
           :key="d.did"
-          class="ext-card"
-          :style="selectedDid === d.did
-            ? { borderColor: 'var(--ext-success-solid)', background: 'rgba(6, 78, 59, 0.3)' }
-            : { cursor: 'pointer' }"
-          style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem"
+          class="flex items-center gap-2 rounded-md p-2"
+          :class="selectedDid === d.did
+            ? 'border border-emerald-600 bg-emerald-950/30'
+            : 'border border-slate-700 hover:bg-slate-800 cursor-pointer'"
           @click="selectedDid = d.did"
         >
-          <FingerPrintIcon style="width: 1rem; height: 1rem; color: var(--ext-success); flex-shrink: 0" />
-          <div style="flex: 1; min-width: 0">
-            <p style="font-size: var(--ext-text-xs); font-weight: 500; color: var(--ext-text-primary)">{{ d.label }}</p>
-            <p style="font-size: var(--ext-text-2xs); font-family: monospace; color: var(--ext-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ d.did }}</p>
+          <FingerPrintIcon class="h-4 w-4 text-emerald-400 shrink-0" />
+          <div class="flex-1 min-w-0">
+            <p class="text-[11px] font-medium text-white">{{ d.label }}</p>
+            <p class="text-[10px] font-mono text-slate-400 truncate">{{ d.did }}</p>
           </div>
-          <span class="ext-badge ext-badge--muted">{{ d.method }}</span>
+          <span class="text-[9px] px-1.5 py-0.5 rounded-full border border-slate-600 text-slate-400">{{ d.method }}</span>
         </div>
       </div>
 
-      <p style="font-size: var(--ext-text-2xs); color: var(--ext-text-muted); text-align: center; line-height: 1.5">
-        Your DID will be shared with <strong style="color: var(--ext-text-secondary)">{{ origin }}</strong> for identity attribution.
+      <!-- Context text -->
+      <p v-if="isSigning" class="text-[10px] text-slate-500 text-center leading-relaxed">
+        Your digital signature will be applied to <strong class="text-slate-300">{{ documentTitle || 'this document' }}</strong>.
+        This is a legally binding action.
+      </p>
+      <p v-else-if="isPayment" class="text-[10px] text-slate-500 text-center leading-relaxed">
+        Your payment of <strong class="text-emerald-300">{{ formattedAmount }}</strong> will be signed with your selected identity and sent to <strong class="text-slate-300">{{ origin }}</strong>.
+      </p>
+      <p v-else class="text-[10px] text-slate-500 text-center leading-relaxed">
+        Your DID will be shared with <strong class="text-slate-300">{{ origin }}</strong> for identity attribution.
         No private keys are disclosed.
       </p>
 
       <!-- Error -->
-      <div v-if="error" class="ext-info-box ext-info-box--error">{{ error }}</div>
+      <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
+        <p class="text-xs text-red-300">{{ error }}</p>
+      </div>
 
       <!-- Action buttons -->
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem">
-        <button class="ext-btn ext-btn--ghost ext-btn--md" @click="deny">
-          <XMarkIcon style="width: 1rem; height: 1rem" />
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800 flex items-center justify-center gap-1.5"
+          @click="deny"
+        >
+          <XMarkIcon class="h-4 w-4" />
           Deny
         </button>
         <button
-          class="ext-btn ext-btn--primary ext-btn--md"
+          class="flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-medium text-white disabled:opacity-50"
+          :class="isSigning ? 'bg-blue-600 hover:bg-blue-500' : isPayment ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'"
           :disabled="approving || !selectedDid"
           @click="approve"
         >
-          <ShieldCheckIcon style="width: 1rem; height: 1rem" />
-          {{ approving ? 'Approving...' : 'Approve' }}
+          <component :is="isSigning ? DocumentCheckIcon : isPayment ? BanknotesIcon : ShieldCheckIcon" class="h-4 w-4" />
+          {{ approving ? 'Signing...' : (isSigning ? 'Sign' : isPayment ? 'Pay' : 'Approve') }}
         </button>
       </div>
     </template>

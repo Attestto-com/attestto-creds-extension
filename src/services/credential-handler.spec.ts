@@ -15,10 +15,10 @@ describe('Credential Handler Script', () => {
     expect(script).toContain('navigator.credentials.get')
   })
 
-  it('contains attestto-creds-ready event dispatch', () => {
+  it('contains attestto-id-ready event dispatch', () => {
     const script = buildCredentialHandlerScript()
 
-    expect(script).toContain('attestto-creds-ready')
+    expect(script).toContain('attestto-id-ready')
   })
 
   it('contains credential-wallet:discover listener', () => {

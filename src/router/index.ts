@@ -9,13 +9,13 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      name: 'wallet',
-      component: () => import('@/views/wallet/WalletView.vue'),
+      name: 'home',
+      component: () => import('@/views/identity/IdentityListView.vue'),
     },
     {
-      path: '/credentials',
-      name: 'credentials',
-      component: () => import('@/views/credentials/CredentialsView.vue'),
+      path: '/identity/:did',
+      name: 'identity-detail',
+      component: () => import('@/views/identity/IdentityDetailView.vue'),
     },
     {
       path: '/credentials/:id/present',

@@ -12,29 +12,29 @@ function openExplorer(mint: string): void {
 
 <template>
   <button
-    class="ext-card ext-card--hover"
-    style="width: 100%; display: flex; align-items: center; gap: 0.75rem; text-align: left; cursor: pointer"
+    class="w-full flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-800/50 p-3 text-left hover:bg-slate-800 transition-colors"
     @click="openExplorer(token.mint)"
   >
-    <div style="min-width: 0; flex: 1">
-      <div style="display: flex; align-items: center; gap: 0.5rem">
-        <p style="font-size: var(--ext-text-xs); font-weight: 500; color: var(--ext-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2">
+        <p class="text-xs font-medium text-white truncate">
           {{ token.symbol !== 'Unknown' ? token.symbol : token.name }}
         </p>
         <span
-          class="ext-badge"
-          :class="token.isToken2022 ? 'ext-badge--brand' : 'ext-badge--info'"
-          style="font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em"
+          class="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+          :class="token.isToken2022
+            ? 'bg-purple-500/20 text-purple-300'
+            : 'bg-blue-500/20 text-blue-300'"
         >
           {{ token.isToken2022 ? 'Token-2022' : 'SPL' }}
         </span>
       </div>
-      <p style="margin-top: 0.125rem; font-size: var(--ext-text-2xs); color: var(--ext-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+      <p class="mt-0.5 text-[10px] text-slate-400 truncate">
         {{ token.name }}
       </p>
     </div>
-    <div style="text-align: right; flex-shrink: 0">
-      <p style="font-size: var(--ext-text-xs); font-weight: 600; color: var(--ext-text-primary)">{{ token.balance }}</p>
+    <div class="text-right shrink-0">
+      <p class="text-xs font-semibold text-white">{{ token.balance }}</p>
     </div>
   </button>
 </template>

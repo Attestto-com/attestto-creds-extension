@@ -1,16 +1,57 @@
 /**
  * Shared vault read/write utilities.
  *
- * Centralizes encrypted vault I/O so that wallet.ts, credentials.ts,
- * and any future store can share the same persistence layer.
+ * Two storage layers:
+ *   PUBLIC  — unencrypted chrome.storage.local. Credentials, DIDs, identities.
+ *             Always readable without passkey. No private keys here.
+ *   PRIVATE — AES-encrypted chrome.storage.local. Contains only the signing
+ *             private key (privateKeyJwk). Requires passkey PRF to decrypt.
  */
 
 import type { VaultData } from '@/stores/wallet'
 import { encryptVault, decryptVault } from '@/utils/crypto'
 import { STORAGE_KEYS } from '@/config/app'
+import type { StoredCredential, StoredKeyShare, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
+import type { LinkedIdentity } from '@/stores/wallet'
 
 /**
- * Read and decrypt the vault from chrome.storage.local.
+ * Public vault data — always readable, no encryption.
+ * Contains everything EXCEPT the private signing key.
+ */
+export interface PublicVaultData {
+  did: string | null
+  credentials: StoredCredential[]
+  linkedSolanaAddress: string | null
+  keyShares: StoredKeyShare[]
+  proofRequests: ProofAccessRequest[]
+  preparedPresentations: PreparedPresentation[]
+  verificationMethod?: string
+  holderDid?: string | null
+  linkedIdentities?: LinkedIdentity[]
+}
+
+// ── Public vault (always readable) ──────────────────────────
+
+/**
+ * Read public vault data. No passkey needed.
+ */
+export async function readPublicVault(): Promise<PublicVaultData | null> {
+  const local = await chrome.storage.local.get(STORAGE_KEYS.PUBLIC_VAULT)
+  const data = local[STORAGE_KEYS.PUBLIC_VAULT] as PublicVaultData | undefined
+  return data ?? null
+}
+
+/**
+ * Write public vault data. No passkey needed.
+ */
+export async function writePublicVault(data: PublicVaultData): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.PUBLIC_VAULT]: data })
+}
+
+// ── Private vault (encrypted, passkey required) ─────────────
+
+/**
+ * Read and decrypt the private vault (signing key only).
  * Returns null if no vault or session key exists.
  */
 export async function readVault(): Promise<VaultData | null> {
@@ -39,4 +80,23 @@ export async function writeVault(data: VaultData): Promise<void> {
 
   const encrypted = await encryptVault(data, keyBase64)
   await chrome.storage.local.set({ [STORAGE_KEYS.VAULT]: encrypted })
+}
+
+/**
+ * Sync public vault from full vault data.
+ * Call after any vault write to keep public data in sync.
+ */
+export async function syncPublicVault(vault: VaultData): Promise<void> {
+  const pub: PublicVaultData = {
+    did: vault.did,
+    credentials: vault.credentials,
+    linkedSolanaAddress: vault.linkedSolanaAddress,
+    keyShares: vault.keyShares,
+    proofRequests: vault.proofRequests,
+    preparedPresentations: vault.preparedPresentations,
+    verificationMethod: vault.verificationMethod,
+    holderDid: vault.holderDid,
+    linkedIdentities: vault.linkedIdentities,
+  }
+  await writePublicVault(pub)
 }

@@ -40,17 +40,18 @@ function openMintExplorer(): void {
 </script>
 
 <template>
-  <div class="ext-card" style="overflow: hidden; padding: 0">
+  <div class="rounded-lg border border-slate-700 bg-slate-900 overflow-hidden">
     <!-- Header -->
     <button
-      style="width: 100%; display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem; text-align: left; cursor: pointer; background: none; border: none; transition: background 0.15s"
+      class="w-full flex items-center gap-2 p-3 text-left hover:bg-slate-800/50 transition-colors"
       @click="expanded = !expanded"
     >
       <!-- Format pill -->
       <span
-        class="ext-badge"
-        :class="credential.format === 'sd-jwt' ? 'ext-badge--brand' : 'ext-badge--success'"
-        style="font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; flex-shrink: 0"
+        class="shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider"
+        :class="credential.format === 'sd-jwt'
+          ? 'bg-indigo-500/20 text-indigo-300'
+          : 'bg-emerald-500/20 text-emerald-300'"
       >
         {{ credential.format === 'sd-jwt' ? 'SD-JWT' : 'JSON-LD' }}
       </span>
@@ -58,32 +59,31 @@ function openMintExplorer(): void {
       <!-- On-chain badge -->
       <button
         v-if="mintAddress"
-        class="ext-badge ext-badge--brand"
-        style="font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; flex-shrink: 0; cursor: pointer; border: none"
+        class="shrink-0 rounded-full bg-purple-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-purple-300 hover:bg-purple-500/30 transition-colors"
         @click.stop="openMintExplorer"
       >
         On-Chain
       </button>
 
-      <div style="min-width: 0; flex: 1">
-        <p style="font-size: var(--ext-text-xs); font-weight: 500; color: var(--ext-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+      <div class="min-w-0 flex-1">
+        <p class="text-xs font-medium text-white truncate">
           {{ credential.types[credential.types.length - 1] ?? 'Credential' }}
         </p>
-        <p style="font-size: var(--ext-text-2xs); color: var(--ext-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+        <p class="text-[10px] text-slate-400 truncate">
           {{ credential.issuer }}
         </p>
       </div>
 
       <component
         :is="expanded ? ChevronUpIcon : ChevronDownIcon"
-        style="width: 1rem; height: 1rem; color: var(--ext-text-muted); flex-shrink: 0"
+        class="h-4 w-4 text-slate-500 shrink-0"
       />
     </button>
 
     <!-- Expanded content -->
-    <div v-if="expanded" style="border-top: 1px solid var(--ext-border); padding: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem">
+    <div v-if="expanded" class="border-t border-slate-800 p-3 space-y-3">
       <!-- Dates -->
-      <div style="display: flex; gap: 1rem; font-size: var(--ext-text-2xs); color: var(--ext-text-secondary)">
+      <div class="flex gap-4 text-[10px] text-slate-400">
         <span>Issued: {{ formatDate(credential.issuedAt) }}</span>
         <span v-if="credential.expiresAt">
           Expires: {{ formatDate(credential.expiresAt) }}
@@ -92,27 +92,26 @@ function openMintExplorer(): void {
 
       <!-- Claims -->
       <div>
-        <p class="ext-detail__label">
+        <p class="text-[10px] font-medium text-slate-400 mb-1">
           {{ claimCount }} claim{{ claimCount !== 1 ? 's' : '' }}
         </p>
         <CredentialClaimList :claims="credential.decodedClaims" />
       </div>
 
       <!-- Actions -->
-      <div style="display: flex; gap: 0.5rem; padding-top: 0.25rem">
+      <div class="flex gap-2 pt-1">
         <button
-          class="ext-btn ext-btn--primary ext-btn--sm"
-          style="flex: 1"
+          class="flex-1 flex items-center justify-center gap-1 rounded-md bg-indigo-600 px-2 py-1.5 text-[11px] font-medium text-white hover:bg-indigo-500 transition-colors"
           @click.stop="emit('share', credential.id)"
         >
-          <ShareIcon style="width: 0.875rem; height: 0.875rem" />
+          <ShareIcon class="h-3.5 w-3.5" />
           Share
         </button>
         <button
-          class="ext-btn ext-btn--danger ext-btn--sm"
+          class="flex items-center justify-center gap-1 rounded-md bg-slate-800 px-2 py-1.5 text-[11px] font-medium text-red-400 hover:bg-red-900/30 transition-colors"
           @click.stop="emit('delete', credential.id)"
         >
-          <TrashIcon style="width: 0.875rem; height: 0.875rem" />
+          <TrashIcon class="h-3.5 w-3.5" />
         </button>
       </div>
     </div>

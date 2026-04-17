@@ -12,19 +12,19 @@ export default defineContentScript({
   world: 'MAIN',
 
   main() {
-    console.log('[Attestto Creds] MAIN world script loaded')
+    console.log('[Attestto ID] MAIN world script loaded')
 
     // -----------------------------------------------------------------
     // Credential Wallet Discovery Protocol (identity-bridge compatible)
     // -----------------------------------------------------------------
 
     // Read the extension icon URL shared by the ISOLATED content script
-    const extensionIcon = document.documentElement.getAttribute('data-attestto-creds-icon')
-      || 'https://attestto.com/icons/attestto-creds-64.svg'
+    const extensionIcon = document.documentElement.getAttribute('data-attestto-id-icon')
+      || 'https://attestto.com/icons/attestto-id-64.svg'
 
     const ATTESTTO_WALLET = {
       did: 'did:web:attestto.com:wallets:attestto-creds',
-      name: 'Attestto Creds',
+      name: 'Attestto ID',
       icon: extensionIcon,
       version: '0.1.0',
       protocols: ['chapi' as const, 'didcomm-v2' as const],
@@ -33,13 +33,13 @@ export default defineContentScript({
         did: 'did:web:attestto.com',
         url: 'https://attestto.com',
       },
-      url: 'https://github.com/Attestto-com/attestto-creds-extension',
+      url: 'https://github.com/Attestto-com/attestto-id-extension',
     }
 
     window.addEventListener('credential-wallet:discover', (e: Event) => {
       const detail = (e as CustomEvent<{ nonce: string }>).detail
       if (!detail?.nonce) return
-      console.log('[Attestto Creds] Discovery request, nonce:', detail.nonce)
+      console.log('[Attestto ID] Discovery request, nonce:', detail.nonce)
       window.dispatchEvent(
         new CustomEvent('credential-wallet:announce', {
           detail: { nonce: detail.nonce, wallet: ATTESTTO_WALLET },
@@ -54,7 +54,7 @@ export default defineContentScript({
     try {
       const originalGet = navigator.credentials?.get?.bind(navigator.credentials)
       if (!originalGet) {
-        console.warn('[Attestto Creds] navigator.credentials.get not available')
+        console.warn('[Attestto ID] navigator.credentials.get not available')
         return
       }
 
@@ -158,12 +158,12 @@ export default defineContentScript({
         })
       }
     } catch (err) {
-      console.warn('[Attestto Creds] Could not override navigator.credentials.get:', err)
+      console.warn('[Attestto ID] Could not override navigator.credentials.get:', err)
     }
 
     // Signal readiness
     window.dispatchEvent(
-      new CustomEvent('attestto-creds-ready', {
+      new CustomEvent('attestto-id-ready', {
         detail: { version: '0.1.0', protocols: ['chapi', 'didcomm-v2'] },
       }),
     )

@@ -20,14 +20,14 @@ export default defineContentScript({
   world: 'ISOLATED',
 
   main() {
-    console.log('[Attestto Creds] Content script loaded on', window.location.href)
+    console.log('[Attestto ID] Content script loaded on', window.location.href)
 
     // Mark the page so any site can detect Attestto Creds is installed
-    document.documentElement.setAttribute('data-attestto-creds', 'true')
+    document.documentElement.setAttribute('data-attestto-id', 'true')
 
     // Share the extension icon URL with the MAIN world (for wallet discovery)
     document.documentElement.setAttribute(
-      'data-attestto-creds-icon',
+      'data-attestto-id-icon',
       chrome.runtime.getURL('icon/48.png'),
     )
 
@@ -165,6 +165,101 @@ export default defineContentScript({
         return
       }
 
+      // Payment Request — page asks extension to approve + sign a payment
+      if (msgType === 'ATTESTTO_PAYMENT_REQUEST') {
+        const { requestId, paymentRequestUuid, amount, currency, merchantName, description } = event.data
+        chrome.runtime.sendMessage(
+          {
+            type: 'PAYMENT_REQUEST',
+            payload: {
+              requestId,
+              paymentRequestUuid,
+              amount,
+              currency: currency || 'USDC',
+              merchantName,
+              description: description || '',
+              origin: window.location.origin,
+            },
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              window.postMessage({
+                type: 'ATTESTTO_PAYMENT_RESPONSE',
+                requestId,
+                error: 'Extension not available',
+              }, '*')
+            }
+          },
+        )
+        return
+      }
+
+      // Document Signing Request — page asks extension to DID-sign a document
+      if (msgType === 'ATTESTTO_SIGN_REQUEST') {
+        const { requestId, signingToken, documentTitle, signerName } = event.data
+        chrome.runtime.sendMessage(
+          {
+            type: 'SIGN_DOCUMENT_REQUEST',
+            payload: {
+              requestId,
+              signingToken,
+              documentTitle,
+              signerName,
+              origin: window.location.origin,
+            },
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              window.postMessage({
+                type: 'ATTESTTO_SIGN_RESPONSE',
+                requestId,
+                error: 'Extension not available',
+              }, '*')
+            }
+          },
+        )
+        return
+      }
+
+      // Push credential to extension vault (dashboard → extension)
+      if (msgType === 'ATTESTTO_CREDENTIAL_PUSH') {
+        const { requestId, credential } = event.data
+        console.log('[Attestto ID] CREDENTIAL_PUSH received in content script', { requestId, credential })
+        chrome.runtime.sendMessage(
+          {
+            type: 'CREDENTIAL_OFFER',
+            payload: {
+              requestId,
+              format: credential.format || 'attestto-id',
+              raw: credential.raw || '',
+              issuerName: credential.issuer || 'Attestto Platform',
+              claims: credential.claims || {},
+              origin: window.location.origin,
+            },
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('[Attestto ID] CREDENTIAL_PUSH → runtime error:', chrome.runtime.lastError.message)
+              window.postMessage({
+                type: 'ATTESTTO_CREDENTIAL_PUSH_RESPONSE',
+                requestId,
+                success: false,
+                error: 'Extension not available',
+              }, '*')
+            } else {
+              console.log('[Attestto ID] CREDENTIAL_PUSH → background responded:', response)
+              window.postMessage({
+                type: 'ATTESTTO_CREDENTIAL_PUSH_RESPONSE',
+                requestId,
+                success: !!response?.ok,
+                error: response?.error,
+              }, '*')
+            }
+          },
+        )
+        return
+      }
+
       // Reshare a stored VP (dashboard → extension)
       if (msgType === 'ATTESTTO_RESHARE_VP') {
         const { requestId, credentialId, selectedFields } = event.data
@@ -250,6 +345,29 @@ export default defineContentScript({
           type: 'ATTESTTO_KEY_RESTORE_RESPONSE',
           requestId: message.payload.requestId,
           success: message.payload.success,
+          error: message.payload.error,
+        }, '*')
+      }
+
+      if (message.type === 'SIGN_DOCUMENT_RESPONSE') {
+        window.postMessage({
+          type: 'ATTESTTO_SIGN_RESPONSE',
+          requestId: message.payload.requestId,
+          did: message.payload.did,
+          signature: message.payload.signature,
+          publicKeyJwk: message.payload.publicKeyJwk,
+          timestamp: message.payload.timestamp,
+          error: message.payload.error,
+        }, '*')
+      }
+
+      if (message.type === 'PAYMENT_RESPONSE') {
+        window.postMessage({
+          type: 'ATTESTTO_PAYMENT_RESPONSE',
+          requestId: message.payload.requestId,
+          did: message.payload.did,
+          signature: message.payload.signature,
+          publicKeyJwk: message.payload.publicKeyJwk,
           error: message.payload.error,
         }, '*')
       }
