@@ -221,6 +221,35 @@ export default defineContentScript({
         return
       }
 
+      // Attestto self-attested PDF signing (ATT-364) — page sends raw
+      // canonical payload bytes (base64), wallet signs with Ed25519,
+      // returns 64-byte sig + 32-byte pubkey (both base64).
+      if (msgType === 'ATTESTTO_SIGN_PDF_REQUEST') {
+        const { requestId, payloadB64, fileName, documentHash } = event.data
+        chrome.runtime.sendMessage(
+          {
+            type: 'SIGN_ATTESTTO_PDF_REQUEST',
+            payload: {
+              requestId,
+              payloadB64,
+              fileName: fileName || 'document.pdf',
+              documentHash: documentHash || '',
+              origin: window.location.origin,
+            },
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              window.postMessage({
+                type: 'ATTESTTO_SIGN_PDF_RESPONSE',
+                requestId,
+                error: 'Extension not available',
+              }, window.location.origin)
+            }
+          },
+        )
+        return
+      }
+
       // Push credential to extension vault (dashboard → extension)
       if (msgType === 'ATTESTTO_CREDENTIAL_PUSH') {
         const { requestId, credential } = event.data
@@ -359,6 +388,17 @@ export default defineContentScript({
           timestamp: message.payload.timestamp,
           error: message.payload.error,
         }, '*')
+      }
+
+      if (message.type === 'SIGN_ATTESTTO_PDF_RESPONSE') {
+        window.postMessage({
+          type: 'ATTESTTO_SIGN_PDF_RESPONSE',
+          requestId: message.payload.requestId,
+          did: message.payload.did,
+          signature: message.payload.signature,
+          publicKey: message.payload.publicKey,
+          error: message.payload.error,
+        }, window.location.origin)
       }
 
       if (message.type === 'PAYMENT_RESPONSE') {

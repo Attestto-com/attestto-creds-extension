@@ -236,6 +236,34 @@ export interface SignDocumentRequestMessage {
   }
 }
 
+/**
+ * Attestto self-attested PDF signing (ATT-364).
+ *
+ * Different from SIGN_DOCUMENT_REQUEST: this signs raw bytes (the
+ * canonical Attestto VC payload from attestto-self-sign.ts) with the
+ * vault's Ed25519 key, NOT the legacy P-256 key. The result is a
+ * 64-byte ed25519 signature + 32-byte raw public key, both base64.
+ *
+ * Flow: verify.attestto.com /sign/ → wallet adapter → content script
+ *       → background → approval popup → user approves
+ *       → vault signs raw payload bytes with Ed25519
+ *       → response with {signature, publicKey, did}
+ */
+export interface SignAttesttoPdfRequestMessage {
+  type: 'SIGN_ATTESTTO_PDF_REQUEST'
+  payload: {
+    requestId: string
+    /** Base64 of the canonical Attestto VC payload bytes to sign. */
+    payloadB64: string
+    /** Human-readable file name shown to the user in the approval UI. */
+    fileName: string
+    /** SHA-256 of the original document (hex). Shown to user. */
+    documentHash: string
+    /** Origin requesting the signature. */
+    origin: string
+  }
+}
+
 export type ExtensionMessage =
   | NotificationReceivedMessage
   | SessionExpiredMessage
@@ -256,6 +284,7 @@ export type ExtensionMessage =
   | KeyRestoreMessage
   | PaymentRequestMessage
   | SignDocumentRequestMessage
+  | SignAttesttoPdfRequestMessage
 
 // ── Helpers ──────────────────────────────────────────
 

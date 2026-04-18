@@ -31,6 +31,16 @@ export interface VaultData {
   /** Local device keypair DID (did:jwk:...) — used as fallback signer */
   did: string | null
   privateKeyJwk: JsonWebKey | null
+  /**
+   * Ed25519 keypair for Attestto self-attested PDF signing (ATT-364).
+   * Lives alongside the legacy P-256 key — does NOT replace it.
+   * Generated lazily on first PDF sign request. Independent of did/holderDid.
+   *
+   * publicKey is stored as raw 32 bytes base64 (the form
+   * `attestto-self-attested.ts` verifier consumes directly).
+   */
+  ed25519PrivateKeyJwk?: JsonWebKey | null
+  ed25519PublicKeyB64?: string | null
   /** @deprecated Use linkedIdentities[].credentials instead */
   credentials: StoredCredential[]
   linkedSolanaAddress: string | null

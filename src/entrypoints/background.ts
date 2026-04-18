@@ -16,7 +16,7 @@ import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
-import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage } from '@/utils/messaging'
+import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 
 export default defineBackground(() => {
@@ -101,6 +101,13 @@ export default defineBackground(() => {
   }
   const pendingSigningRequests = new Map<string, PendingSigningRequest>()
 
+  /** Pending Attestto self-attested PDF sign requests (ATT-364) */
+  interface PendingAttesttoPdfRequest {
+    req: SignAttesttoPdfRequestMessage['payload']
+    senderTabId: number | null
+  }
+  const pendingAttesttoPdfRequests = new Map<string, PendingAttesttoPdfRequest>()
+
   /**
    * Open the approval popup for a document signing request.
    */
@@ -154,6 +161,114 @@ export default defineBackground(() => {
         payload: { requestId, ...data },
       })
     }
+  }
+
+  // ── Attestto self-attested PDF signing (ATT-364) ─────────────────
+
+  /**
+   * Open the approval popup for an Attestto self-attested PDF sign request.
+   */
+  async function handleAttesttoPdfRequest(
+    req: SignAttesttoPdfRequestMessage['payload'],
+    senderTabId: number | null,
+  ): Promise<void> {
+    pendingAttesttoPdfRequests.set(req.requestId, { req, senderTabId })
+
+    const params = new URLSearchParams({
+      attesttoPdfRequest: req.requestId,
+      origin: req.origin || '',
+      fileName: req.fileName || '',
+      documentHash: req.documentHash || '',
+    })
+
+    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
+
+    try {
+      await chrome.windows.create({
+        url: approvalUrl,
+        type: 'popup',
+        width: 380,
+        height: 580,
+        focused: true,
+      })
+    } catch (err) {
+      console.error('[Attestto Sign] Failed to open Attestto PDF approval window:', err)
+      pendingAttesttoPdfRequests.delete(req.requestId)
+      sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'Could not open approval window')
+    }
+  }
+
+  function sendAttesttoPdfErrorToTab(tabId: number | null, requestId: string, error: string): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'SIGN_ATTESTTO_PDF_RESPONSE',
+        payload: { requestId, error },
+      })
+    }
+  }
+
+  function sendAttesttoPdfResponseToTab(
+    tabId: number | null,
+    requestId: string,
+    data: { did: string; signature: string; publicKey: string },
+  ): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'SIGN_ATTESTTO_PDF_RESPONSE',
+        payload: { requestId, ...data },
+      })
+    }
+  }
+
+  /**
+   * Get or lazily create the vault's Ed25519 keypair (ATT-364).
+   *
+   * Lives alongside the legacy P-256 key — does NOT replace it. Used
+   * exclusively for Attestto self-attested PDF signing where the
+   * verifier only accepts Ed25519. Persists across sessions.
+   *
+   * Returns the unwrapped CryptoKey ready to sign + the raw 32-byte
+   * public key as base64.
+   */
+  async function getOrCreateEd25519Key(): Promise<{
+    privateKey: CryptoKey
+    publicKeyB64: string
+  } | null> {
+    const vault = await readVault()
+    if (!vault) return null
+
+    if (vault.ed25519PrivateKeyJwk && vault.ed25519PublicKeyB64) {
+      try {
+        const privateKey = await crypto.subtle.importKey(
+          'jwk',
+          vault.ed25519PrivateKeyJwk,
+          { name: 'Ed25519' },
+          false,
+          ['sign'],
+        )
+        return { privateKey, publicKeyB64: vault.ed25519PublicKeyB64 }
+      } catch (err) {
+        console.warn('[Attestto Sign] Existing Ed25519 key import failed, regenerating:', err)
+      }
+    }
+
+    // First-time generation. Web Crypto Ed25519 is supported in
+    // Chromium 113+ / Firefox 130+ / Safari 17+.
+    const keyPair = (await crypto.subtle.generateKey(
+      { name: 'Ed25519' },
+      true,
+      ['sign', 'verify'],
+    )) as CryptoKeyPair
+
+    const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
+    const rawPub = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey))
+    const publicKeyB64 = btoa(String.fromCharCode(...rawPub))
+
+    vault.ed25519PrivateKeyJwk = privateKeyJwk
+    vault.ed25519PublicKeyB64 = publicKeyB64
+    await writeVault(vault)
+
+    return { privateKey: keyPair.privateKey, publicKeyB64 }
   }
 
   /**
@@ -1145,6 +1260,106 @@ export default defineBackground(() => {
         if (pendingSignDeny) {
           pendingSigningRequests.delete(signDenyId)
           sendSigningErrorToTab(pendingSignDeny.senderTabId, pendingSignDeny.signReq.requestId, 'User declined signing')
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
+      // ── Attestto self-attested PDF signing (ATT-364) ───────────────
+
+      case 'SIGN_ATTESTTO_PDF_REQUEST': {
+        const apdfReq = message.payload as SignAttesttoPdfRequestMessage['payload']
+        handleAttesttoPdfRequest(apdfReq, _sender.tab?.id ?? null).then(() => {
+          sendResponse({ ok: true })
+        })
+        break
+      }
+
+      case 'SIGN_ATTESTTO_PDF_GET_PENDING': {
+        const apdfId = message.payload?.requestId as string
+        const pendingApdf = pendingAttesttoPdfRequests.get(apdfId)
+        if (pendingApdf) {
+          sendResponse({ ok: true, request: pendingApdf })
+        } else {
+          sendResponse({ ok: false, error: 'No pending Attestto PDF sign request found' })
+        }
+        break
+      }
+
+      case 'SIGN_ATTESTTO_PDF_APPROVE': {
+        const apdfApproveId = message.payload?.requestId as string
+        const selectedApdfDid = message.payload?.selectedDid as string
+        const pendingApdf = pendingAttesttoPdfRequests.get(apdfApproveId)
+
+        if (!pendingApdf) {
+          sendResponse({ ok: false, error: 'No pending Attestto PDF sign request' })
+          break
+        }
+        pendingAttesttoPdfRequests.delete(apdfApproveId)
+
+        ;(async () => {
+          try {
+            const vault = await readVault()
+            if (!vault) {
+              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, 'Vault not ready')
+              sendResponse({ ok: false, error: 'Vault not ready' })
+              return
+            }
+
+            const ed = await getOrCreateEd25519Key()
+            if (!ed) {
+              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, 'Could not load Ed25519 key')
+              sendResponse({ ok: false, error: 'Could not load Ed25519 key' })
+              return
+            }
+
+            // Decode the canonical payload bytes the page sent. The
+            // background does NOT inspect or re-canonicalize them —
+            // the verify-side composable is the single source of
+            // truth for the canonical shape (lockstep contract).
+            const payloadBytes = Uint8Array.from(atob(pendingApdf.req.payloadB64), (c) => c.charCodeAt(0))
+
+            const sigBuf = await crypto.subtle.sign(
+              { name: 'Ed25519' },
+              ed.privateKey,
+              payloadBytes as BufferSource,
+            )
+            const sigBytes = new Uint8Array(sigBuf)
+            if (sigBytes.length !== 64) {
+              throw new Error(`Unexpected Ed25519 signature length: ${sigBytes.length}`)
+            }
+            const signatureB64 = btoa(String.fromCharCode(...sigBytes))
+
+            // Issuer DID — honestly labels what this key actually is.
+            // Not a fake did:key. The verifier doesn't resolve DIDs;
+            // it uses the embedded raw publicKey for verification.
+            const holderDid = selectedApdfDid
+              || vault.holderDid
+              || `did:key-vault:ed25519-${ed.publicKeyB64.slice(0, 12)}`
+
+            const responseData = {
+              did: holderDid,
+              signature: signatureB64,
+              publicKey: ed.publicKeyB64,
+            }
+
+            sendAttesttoPdfResponseToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, responseData)
+            sendResponse({ ok: true, ...responseData })
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : 'Attestto PDF signing failed'
+            sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, errMsg)
+            sendResponse({ ok: false, error: errMsg })
+          }
+        })()
+        break
+      }
+
+      case 'SIGN_ATTESTTO_PDF_DENY': {
+        const apdfDenyId = message.payload?.requestId as string
+        const pendingApdfDeny = pendingAttesttoPdfRequests.get(apdfDenyId)
+        if (pendingApdfDeny) {
+          pendingAttesttoPdfRequests.delete(apdfDenyId)
+          sendAttesttoPdfErrorToTab(pendingApdfDeny.senderTabId, pendingApdfDeny.req.requestId, 'User declined signing')
         }
         sendResponse({ ok: true })
         break
