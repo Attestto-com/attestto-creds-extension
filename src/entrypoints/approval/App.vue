@@ -35,6 +35,9 @@ const isAttesttoPdf = ref(false)
 const attesttoPdfFileName = ref('')
 const attesttoPdfHash = ref('')
 
+/** Auth (login) mode — detected from URL params (ATT-123) */
+const isAuth = ref(false)
+
 /** Available DIDs the user can choose from */
 interface AvailableDid {
   did: string
@@ -60,13 +63,18 @@ const formattedAmount = computed(() => {
 onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
 
-  // Detect mode: attestto PDF, signing, payment, or CHAPI
+  // Detect mode: auth (login), attestto PDF, signing, payment, or CHAPI
+  const authReqId = params.get('authRequest')
   const signReqId = params.get('signingRequest')
   const payReqId = params.get('paymentRequest')
   const chapiReqId = params.get('chapiRequest')
   const attesttoPdfReqId = params.get('attesttoPdfRequest')
 
-  if (attesttoPdfReqId) {
+  if (authReqId) {
+    isAuth.value = true
+    requestId.value = authReqId
+    origin.value = params.get('origin') || ''
+  } else if (attesttoPdfReqId) {
     isAttesttoPdf.value = true
     requestId.value = attesttoPdfReqId
     origin.value = params.get('origin') || ''
@@ -116,14 +124,16 @@ async function approve() {
       await wallet.unlock()
     }
 
-    const msgType = isAttesttoPdf.value
-      ? 'SIGN_ATTESTTO_PDF_APPROVE'
-      : isSigning.value
-        ? 'SIGN_DOCUMENT_APPROVE'
-        : isPayment.value ? 'PAYMENT_APPROVE' : 'CHAPI_APPROVE'
+    const msgType = isAuth.value
+      ? 'AUTH_APPROVE'
+      : isAttesttoPdf.value
+        ? 'SIGN_ATTESTTO_PDF_APPROVE'
+        : isSigning.value
+          ? 'SIGN_DOCUMENT_APPROVE'
+          : isPayment.value ? 'PAYMENT_APPROVE' : 'CHAPI_APPROVE'
     const payload: Record<string, string> = { requestId: requestId.value }
 
-    if ((isPayment.value || isSigning.value || isAttesttoPdf.value) && selectedDid.value) {
+    if ((isAuth.value || isPayment.value || isSigning.value || isAttesttoPdf.value) && selectedDid.value) {
       payload.selectedDid = selectedDid.value
     }
 
@@ -145,11 +155,13 @@ async function approve() {
 }
 
 async function deny() {
-  const msgType = isAttesttoPdf.value
-    ? 'SIGN_ATTESTTO_PDF_DENY'
-    : isSigning.value
-      ? 'SIGN_DOCUMENT_DENY'
-      : isPayment.value ? 'PAYMENT_DENY' : 'CHAPI_DENY'
+  const msgType = isAuth.value
+    ? 'AUTH_DENY'
+    : isAttesttoPdf.value
+      ? 'SIGN_ATTESTTO_PDF_DENY'
+      : isSigning.value
+        ? 'SIGN_DOCUMENT_DENY'
+        : isPayment.value ? 'PAYMENT_DENY' : 'CHAPI_DENY'
   await chrome.runtime.sendMessage({
     type: msgType,
     payload: { requestId: requestId.value },
@@ -167,8 +179,17 @@ async function createDidAndRetry() {
 
 <template>
   <div class="mx-auto max-w-sm p-4 space-y-4">
+    <!-- Header — Auth (Login) Mode (ATT-123) -->
+    <div v-if="isAuth" class="rounded-lg border border-purple-700/50 bg-purple-950/30 p-4 text-center">
+      <LockClosedIcon class="mx-auto h-8 w-8 text-purple-400" />
+      <p class="mt-2 text-sm font-semibold text-white">Sign In</p>
+      <p class="mt-1 text-[11px] text-slate-400">
+        Confirm your identity to sign in
+      </p>
+    </div>
+
     <!-- Header — Attestto self-attested PDF Sign Mode (ATT-364) -->
-    <div v-if="isAttesttoPdf" class="rounded-lg border border-blue-700/50 bg-blue-950/30 p-4 text-center">
+    <div v-else-if="isAttesttoPdf" class="rounded-lg border border-blue-700/50 bg-blue-950/30 p-4 text-center">
       <DocumentCheckIcon class="mx-auto h-8 w-8 text-blue-400" />
       <p class="mt-2 text-sm font-semibold text-white">Sign PDF</p>
       <p class="mt-1 text-[11px] text-slate-400">
@@ -281,7 +302,7 @@ async function createDidAndRetry() {
         :class="isPayment ? 'border-emerald-700/50 bg-emerald-950/20' : 'border-emerald-700/50 bg-emerald-950/20'"
       >
         <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">
-          {{ (isSigning || isAttesttoPdf) ? 'Sign with this identity' : isPayment ? 'Pay from this identity' : 'Share this identity' }}
+          {{ isAuth ? 'Sign in with this identity' : (isSigning || isAttesttoPdf) ? 'Sign with this identity' : isPayment ? 'Pay from this identity' : 'Share this identity' }}
         </p>
         <div
           v-for="d in availableDids"
@@ -302,7 +323,11 @@ async function createDidAndRetry() {
       </div>
 
       <!-- Context text -->
-      <p v-if="isAttesttoPdf" class="text-[10px] text-slate-500 text-center leading-relaxed">
+      <p v-if="isAuth" class="text-[10px] text-slate-500 text-center leading-relaxed">
+        You're signing in to <strong class="text-slate-300">{{ origin }}</strong> with your Attestto ID.
+        A stateless proof-of-possession will be signed — no credentials are shared.
+      </p>
+      <p v-else-if="isAttesttoPdf" class="text-[10px] text-slate-500 text-center leading-relaxed">
         Your Attestto self-attested signature (Ed25519) will be embedded into <strong class="text-slate-300">{{ attesttoPdfFileName }}</strong>.
         The signed PDF will be verifiable on <strong class="text-slate-300">verify.attestto.com</strong>.
       </p>
@@ -334,12 +359,12 @@ async function createDidAndRetry() {
         </button>
         <button
           class="flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-medium text-white disabled:opacity-50"
-          :class="(isSigning || isAttesttoPdf) ? 'bg-blue-600 hover:bg-blue-500' : isPayment ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'"
+          :class="isAuth ? 'bg-purple-600 hover:bg-purple-500' : (isSigning || isAttesttoPdf) ? 'bg-blue-600 hover:bg-blue-500' : isPayment ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'"
           :disabled="approving || !selectedDid"
           @click="approve"
         >
-          <component :is="(isSigning || isAttesttoPdf) ? DocumentCheckIcon : isPayment ? BanknotesIcon : ShieldCheckIcon" class="h-4 w-4" />
-          {{ approving ? 'Signing...' : ((isSigning || isAttesttoPdf) ? 'Sign' : isPayment ? 'Pay' : 'Approve') }}
+          <component :is="isAuth ? LockClosedIcon : (isSigning || isAttesttoPdf) ? DocumentCheckIcon : isPayment ? BanknotesIcon : ShieldCheckIcon" class="h-4 w-4" />
+          {{ approving ? 'Signing...' : (isAuth ? 'Sign In' : (isSigning || isAttesttoPdf) ? 'Sign' : isPayment ? 'Pay' : 'Approve') }}
         </button>
       </div>
     </template>

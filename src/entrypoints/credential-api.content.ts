@@ -194,6 +194,33 @@ export default defineContentScript({
         return
       }
 
+      // DID Authentication Request — login page asks extension to sign a proof-of-possession
+      // (ATT-123 — restored on attestto-creds-extension after standalone-repo extraction dropped it)
+      if (msgType === 'ATTESTTO_AUTH_REQUEST') {
+        const { requestId, nonce, timestamp } = event.data
+        chrome.runtime.sendMessage(
+          {
+            type: 'AUTH_REQUEST',
+            payload: {
+              requestId,
+              nonce,
+              timestamp,
+              origin: window.location.origin,
+            },
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              window.postMessage({
+                type: 'ATTESTTO_AUTH_RESPONSE',
+                requestId,
+                error: 'Extension not available',
+              }, window.location.origin)
+            }
+          },
+        )
+        return
+      }
+
       // Document Signing Request — page asks extension to DID-sign a document
       if (msgType === 'ATTESTTO_SIGN_REQUEST') {
         const { requestId, signingToken, documentTitle, signerName } = event.data
@@ -376,6 +403,18 @@ export default defineContentScript({
           success: message.payload.success,
           error: message.payload.error,
         }, '*')
+      }
+
+      if (message.type === 'AUTH_RESPONSE') {
+        window.postMessage({
+          type: 'ATTESTTO_AUTH_RESPONSE',
+          requestId: message.payload.requestId,
+          did: message.payload.did,
+          signature: message.payload.signature,
+          nonce: message.payload.nonce,
+          timestamp: message.payload.timestamp,
+          error: message.payload.error,
+        }, window.location.origin)
       }
 
       if (message.type === 'SIGN_DOCUMENT_RESPONSE') {

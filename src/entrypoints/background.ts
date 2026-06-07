@@ -101,6 +101,16 @@ export default defineBackground(() => {
   }
   const pendingSigningRequests = new Map<string, PendingSigningRequest>()
 
+  /** Pending DID authentication requests (login via extension — ATT-123) */
+  interface PendingAuthRequest {
+    requestId: string
+    nonce: string
+    timestamp: string
+    origin: string
+    senderTabId: number | null
+  }
+  const pendingAuthRequests = new Map<string, PendingAuthRequest>()
+
   /** Pending Attestto self-attested PDF sign requests (ATT-364) */
   interface PendingAttesttoPdfRequest {
     req: SignAttesttoPdfRequestMessage['payload']
@@ -158,6 +168,64 @@ export default defineBackground(() => {
     if (tabId) {
       chrome.tabs.sendMessage(tabId, {
         type: 'SIGN_DOCUMENT_RESPONSE',
+        payload: { requestId, ...data },
+      })
+    }
+  }
+
+  // ── DID Authentication (login via extension — ATT-123) ──────────
+
+  /**
+   * Open the approval popup for a DID authentication (login) request.
+   * The popup signs `attestto:auth:{origin}:{nonce}:{timestamp}:{did}` with the
+   * vault's P-256 key. Backend verifies via stateless proof-of-possession at
+   * POST /auth/did/verify.
+   */
+  async function handleAuthRequest(
+    authReq: { requestId: string; nonce: string; timestamp: string; origin: string },
+    senderTabId: number | null,
+  ): Promise<void> {
+    pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
+
+    const params = new URLSearchParams({
+      authRequest: authReq.requestId,
+      origin: authReq.origin || '',
+    })
+
+    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
+
+    try {
+      await chrome.windows.create({
+        url: approvalUrl,
+        type: 'popup',
+        width: 420,
+        height: 620,
+        focused: true,
+      })
+    } catch (err) {
+      console.error('[Attestto ID] Failed to open auth approval window:', err)
+      pendingAuthRequests.delete(authReq.requestId)
+      sendAuthErrorToTab(senderTabId, authReq.requestId, 'Could not open approval window')
+    }
+  }
+
+  function sendAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'AUTH_RESPONSE',
+        payload: { requestId, error },
+      })
+    }
+  }
+
+  function sendAuthResponseToTab(
+    tabId: number | null,
+    requestId: string,
+    data: { did: string; signature: string; nonce: string; timestamp: string },
+  ): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'AUTH_RESPONSE',
         payload: { requestId, ...data },
       })
     }
@@ -1260,6 +1328,103 @@ export default defineBackground(() => {
         if (pendingSignDeny) {
           pendingSigningRequests.delete(signDenyId)
           sendSigningErrorToTab(pendingSignDeny.senderTabId, pendingSignDeny.signReq.requestId, 'User declined signing')
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
+      // ── DID Authentication Request Handler (login via extension — ATT-123) ──
+
+      case 'AUTH_REQUEST': {
+        const authReq = message.payload as { requestId: string; nonce: string; timestamp: string; origin: string }
+        handleAuthRequest(authReq, _sender.tab?.id ?? null).then(() => {
+          sendResponse({ ok: true })
+        })
+        return true // async sendResponse
+      }
+
+      case 'AUTH_GET_PENDING': {
+        const authReqId = message.payload?.requestId as string
+        const pendingAuth = pendingAuthRequests.get(authReqId)
+        if (pendingAuth) {
+          sendResponse({ ok: true, request: pendingAuth })
+        } else {
+          sendResponse({ ok: false, error: 'No pending auth request found' })
+        }
+        break
+      }
+
+      case 'AUTH_APPROVE': {
+        const authApproveId = message.payload?.requestId as string
+        const selectedAuthDid = message.payload?.selectedDid as string | undefined
+        const pendingAuthReq = pendingAuthRequests.get(authApproveId)
+
+        if (!pendingAuthReq) {
+          sendResponse({ ok: false, error: 'No pending auth request' })
+          break
+        }
+        pendingAuthRequests.delete(authApproveId)
+
+        readVault().then(async (vault) => {
+          if (!vault || !vault.privateKeyJwk) {
+            sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'Vault not ready')
+            sendResponse({ ok: false, error: 'Vault not ready' })
+            return
+          }
+
+          const holderDid = selectedAuthDid || vault.holderDid || vault.did
+
+          if (!holderDid) {
+            sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'No identity configured')
+            sendResponse({ ok: false, error: 'No identity configured' })
+            return
+          }
+
+          try {
+            // Canonical auth payload — MUST match backend DidAuthController:
+            //   attestto:auth:{origin}:{nonce}:{timestamp}:{did}
+            const canonicalPayload = `attestto:auth:${pendingAuthReq.origin}:${pendingAuthReq.nonce}:${pendingAuthReq.timestamp}:${holderDid}`
+
+            const privateKey = await crypto.subtle.importKey(
+              'jwk',
+              vault.privateKeyJwk,
+              { name: 'ECDSA', namedCurve: 'P-256' },
+              false,
+              ['sign'],
+            )
+
+            const data = new TextEncoder().encode(canonicalPayload)
+            const signatureBuffer = await crypto.subtle.sign(
+              { name: 'ECDSA', hash: 'SHA-256' },
+              privateKey,
+              data,
+            )
+
+            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
+
+            const responseData = {
+              did: holderDid,
+              signature,
+              nonce: pendingAuthReq.nonce,
+              timestamp: pendingAuthReq.timestamp,
+            }
+            sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
+            sendResponse({ ok: true, ...responseData })
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : 'Auth signing failed'
+            sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, errMsg)
+            sendResponse({ ok: false, error: errMsg })
+          }
+        })
+        return true // async sendResponse
+      }
+
+      case 'AUTH_DENY': {
+        const authDenyId = message.payload?.requestId as string
+        const pendingAuthDeny = pendingAuthRequests.get(authDenyId)
+        if (pendingAuthDeny) {
+          pendingAuthRequests.delete(authDenyId)
+          sendAuthErrorToTab(pendingAuthDeny.senderTabId, pendingAuthDeny.requestId, 'User declined')
         }
         sendResponse({ ok: true })
         break
