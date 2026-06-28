@@ -23,11 +23,16 @@ Built with [WXT](https://wxt.dev) (Manifest V3), Vue 3, and Tailwind CSS 4.
 ```
 popup/                  Vue 3 app (memory router, Pinia stores)
   ├── WalletView        DID status, lock/unlock, linked Solana wallet
+  ├── IdentityListView  Linked platform identities (did:sns, did:web, did:pkh)
   ├── CredentialsView   Stored VCs list, pending proof requests
   ├── PresentView       Selective disclosure + VP generation
   ├── ConsentView       Field-level approve/decline for proof requests
   ├── PreparedView      Push-then-present VPs ready for verifiers
-  └── SettingsView      Quick settings + link to full options page
+  └── SettingsView      Auto-lock, Trusted Sites (origin → preferred identity)
+
+approval/               Standalone Chrome window (not toolbar popup)
+                        Used for sign / auth / payment / CHAPI consent.
+                        Clickjacking-immune — runs in its own window, not iframable.
 
 background.ts           MV3 Service Worker
   ├── Crypto signing    P-256 ECDSA via Web Crypto API
@@ -90,7 +95,7 @@ npm run test:coverage     # Coverage report
 npm run type-check        # vue-tsc type checking
 ```
 
-101 tests across 10 spec files covering: Shamir (20), DIDComm (12), JSON-LD VP (15), did:jwk (10), DID Sync + Key Rotation (13), SD-JWT (5), Signing (3), Credential Handler (11), Credentials Store (7), Solana Tokens (5).
+123 tests across 13 spec files covering: Shamir (20), DIDComm (12), JSON-LD VP (15), did:jwk (10), DID Sync + Key Rotation (13), SD-JWT (5), Signing (3), Credential Handler (11), Credentials Store (7), Solana Tokens (5), wallet store (6), trusted-origins (8), site-identity-prefs (8).
 
 ## Message Protocol
 
@@ -227,6 +232,10 @@ window.postMessage({
 | **Signing** | P-256 ECDSA via Web Crypto API |
 | **Key backup** | 2-of-3 Shamir GF(256) — device + cloud + guardian sub-shares |
 | **Consent** | Every proof request requires explicit user approval with field-level control |
+| **Sign / auth UI** | Opens a separate Chrome window (not in-page) — clickjacking-immune, not iframable |
+| **Origin trust gate** | Identity-sync (`attestto-id` credential offers) requires first-sight user consent per origin; subsequent syncs from approved origins are silent. Map in `chrome.storage.local`. |
+| **Per-site identity preference** | When a user picks an identity for a given origin, the wallet remembers it and default-selects it on subsequent requests. User-revocable from Settings → Trusted Sites. |
+| **`trustedIssuers` filter** | When a site declares `trustedIssuers` on a sign/auth request (v0.5.0 of `@attestto/id-wallet-adapter`), the wallet filters the user's identities so they don't sign with one the site would reject. |
 | **CSP** | `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'` |
 | **PII** | Credentials stored locally, presentations built on-device, nothing transmitted without consent |
 
@@ -252,10 +261,12 @@ src/
 │   ├── proof-requests.ts   Pending proof requests + prepared presentations
 │   └── wallet.ts           DID, keys, linked Solana address
 ├── utils/
-│   ├── vault.ts            Encrypted read/write to chrome.storage.local
-│   ├── did-jwk.ts          did:jwk generation + self-resolving DID Document
-│   ├── crypto.ts           AES-256-GCM encrypt/decrypt helpers
-│   └── messaging.ts        Typed chrome.runtime message definitions
+│   ├── vault.ts                   Dual-vault read/write (encrypted + public mirror)
+│   ├── did-jwk.ts                 did:jwk generation + self-resolving DID Document
+│   ├── crypto.ts                  AES-256-GCM encrypt/decrypt helpers
+│   ├── messaging.ts               Typed chrome.runtime message definitions
+│   ├── trusted-origins.ts         Per-origin trust gate for identity-sync
+│   └── site-identity-prefs.ts     Per-origin preferred identity (default selection)
 ├── composables/
 │   └── useSolanaTokens.ts  Fetch SPL + Token-2022 balances
 ├── components/             Reusable Vue components

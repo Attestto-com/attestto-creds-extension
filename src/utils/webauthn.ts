@@ -13,6 +13,20 @@
  */
 
 import { STORAGE_KEYS } from '@/config/app'
+import { deriveKeyFromPassphrase, generateAndStoreSalt, readSalt } from './passphrase-kdf'
+
+export type KdfMethod = 'prf' | 'passphrase'
+
+/** Read which KDF method was selected at setup time. */
+export async function getKdfMethod(): Promise<KdfMethod | null> {
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.KDF_METHOD)
+  const method = stored[STORAGE_KEYS.KDF_METHOD] as KdfMethod | undefined
+  return method ?? null
+}
+
+async function setKdfMethod(method: KdfMethod): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEYS.KDF_METHOD]: method })
+}
 
 // ── Encoding Helpers ────────────────────────────────────
 
@@ -83,12 +97,44 @@ async function deriveAesKey(prfSecret: ArrayBuffer, salt: ArrayBuffer): Promise<
 // ── WebAuthn Setup (first time) ─────────────────────────
 
 /**
- * Register a new passkey with PRF extension support.
- * Returns the derived AES key (base64) for vault encryption.
- *
- * Stores credential ID and PRF salt in chrome.storage.local.
+ * Result of probing whether the authenticator supports PRF.
+ * Used by the setup view to decide whether to ask for a passphrase.
  */
-export async function setupPasskey(): Promise<string> {
+export interface SetupResult {
+  /** AES key (base64) for vault encryption — already cached in session */
+  aesKeyBase64: string
+  /** Which KDF method was actually used */
+  method: KdfMethod
+}
+
+/**
+ * Register a new passkey and derive the vault key.
+ *
+ * If the authenticator supports the WebAuthn PRF extension → use it (HKDF over PRF output).
+ * If not → fall back to Argon2id over a user-supplied passphrase (must be provided).
+ *
+ * @param passphrase  Required iff PRF turns out to be unsupported. The setup view should
+ *                    probe by calling `probePrfSupport()` first if it needs to know in advance.
+ */
+export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
+  // If a previous setup attempt created a passkey but failed mid-flow (e.g. PRF
+  // unsupported AND no passphrase was supplied), the credential ID is already
+  // persisted. Reusing it here prevents stacking orphan passkeys in the user's
+  // keychain on every retry.
+  const existing = await chrome.storage.local.get(STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID)
+  if (existing[STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID] && passphrase) {
+    // Passkey already in keychain from a previous attempt. PRF must have been
+    // unsupported (otherwise setup would have completed). Use passphrase KDF
+    // without prompting the authenticator again.
+    const salt = await generateAndStoreSalt()
+    const aesKeyBase64 = await deriveKeyFromPassphrase(passphrase, salt)
+    await setKdfMethod('passphrase')
+    await chrome.storage.session.set({
+      [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64,
+    })
+    return { aesKeyBase64, method: 'passphrase' }
+  }
+
   const prfSalt = crypto.getRandomValues(new Uint8Array(32))
 
   const credential = await navigator.credentials.create({
@@ -120,49 +166,75 @@ export async function setupPasskey(): Promise<string> {
     throw new Error('Passkey registration cancelled')
   }
 
-  const response = credential.response as AuthenticatorAttestationResponse
-  const extensions = (credential.getClientExtensionResults?.() ?? {}) as AuthExtensionsOutput
-
-  // Check PRF support
-  const prfResult = extensions.prf?.results?.first
-  let aesKeyBase64: string
-
-  if (prfResult) {
-    // PRF supported — derive key from PRF output
-    aesKeyBase64 = await deriveAesKey(prfResult, prfSalt.buffer)
-  } else {
-    // PRF not supported — fall back to random key stored in session
-    // This is less secure but allows the extension to work on older authenticators
-    const fallbackKey = await crypto.subtle.generateKey(
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt'],
-    )
-    const raw = await crypto.subtle.exportKey('raw', fallbackKey)
-    aesKeyBase64 = btoa(String.fromCharCode(...new Uint8Array(raw)))
-  }
-
-  // Persist credential ID and salt
+  // Persist credential ID + PRF salt IMMEDIATELY, before we know whether PRF
+  // worked. This guarantees the next retry can reuse this passkey instead of
+  // asking the authenticator to mint another one.
   await chrome.storage.local.set({
     [STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID]: toBase64Url(credential.rawId),
     [STORAGE_KEYS.PRF_SALT]: toBase64Url(prfSalt.buffer),
   })
+
+  const extensions = (credential.getClientExtensionResults?.() ?? {}) as AuthExtensionsOutput
+  const prfResult = extensions.prf?.results?.first
+  let aesKeyBase64: string
+  let method: KdfMethod
+
+  if (prfResult) {
+    // PRF supported — deterministically derive key from PRF output.
+    // Vault is recoverable after any browser restart via passkey re-prompt.
+    aesKeyBase64 = await deriveAesKey(prfResult, prfSalt.buffer)
+    method = 'prf'
+  } else {
+    // PRF NOT supported — require passphrase for deterministic recovery.
+    if (!passphrase) {
+      throw new Error(
+        'PRF_REQUIRES_PASSPHRASE: This authenticator does not support WebAuthn PRF. ' +
+        'Please set a passphrase to encrypt your vault — it will be required to unlock.',
+      )
+    }
+    const salt = await generateAndStoreSalt()
+    aesKeyBase64 = await deriveKeyFromPassphrase(passphrase, salt)
+    method = 'passphrase'
+  }
+
+  await setKdfMethod(method)
 
   // Cache the derived key in session storage (cleared on browser close)
   await chrome.storage.session.set({
     [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64,
   })
 
-  return aesKeyBase64
+  return { aesKeyBase64, method }
 }
+
 
 // ── WebAuthn Unlock (returning user) ────────────────────
 
 /**
- * Unlock the vault using an existing passkey.
- * Returns the derived AES key (base64) for vault decryption.
+ * Unlock the vault. Routes by the KDF method recorded at setup time:
+ *   - 'prf'        → WebAuthn assertion + PRF → HKDF-derived AES key
+ *   - 'passphrase' → passphrase + Argon2id → AES key
+ *
+ * The passphrase parameter is REQUIRED if the vault was set up with passphrase KDF.
+ * Throws a tagged error (`PASSPHRASE_REQUIRED`) if unlock requires a passphrase but
+ * none was supplied — the unlock UI uses that to know to prompt.
  */
-export async function unlockWithPasskey(): Promise<string> {
+export async function unlockWithPasskey(passphrase?: string): Promise<string> {
+  const method = (await getKdfMethod()) ?? 'prf' // legacy vaults default to prf
+
+  if (method === 'passphrase') {
+    if (!passphrase) {
+      throw new Error('PASSPHRASE_REQUIRED: This vault was set up with a passphrase. Enter it to unlock.')
+    }
+    const salt = await readSalt()
+    const aesKeyBase64 = await deriveKeyFromPassphrase(passphrase, salt)
+    await chrome.storage.session.set({
+      [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64,
+    })
+    return aesKeyBase64
+  }
+
+  // PRF path
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID,
     STORAGE_KEYS.PRF_SALT,
@@ -201,21 +273,18 @@ export async function unlockWithPasskey(): Promise<string> {
   const extensions = (assertion.getClientExtensionResults?.() ?? {}) as AuthExtensionsOutput
   const prfResult = extensions.prf?.results?.first
 
-  let aesKeyBase64: string
-
-  if (prfResult) {
-    // Derive the same AES key from PRF output
-    aesKeyBase64 = await deriveAesKey(prfResult, prfSalt)
-  } else {
-    // PRF not available — check if we have a fallback session key
-    const session = await chrome.storage.session.get(STORAGE_KEYS.SESSION_KEY)
-    const sessionKey = session[STORAGE_KEYS.SESSION_KEY] as string | undefined
-    if (sessionKey) {
-      aesKeyBase64 = sessionKey
-    } else {
-      throw new Error('PRF not supported and no session key — vault cannot be unlocked')
-    }
+  if (!prfResult) {
+    // Vault was supposedly set up with PRF, but this unlock attempt returned none.
+    // Most common cause: a legacy vault from before passphrase-recovery shipped.
+    // No safe path forward — the vault is unrecoverable. User must reset.
+    throw new Error(
+      'PRF_UNAVAILABLE: Your authenticator did not return a PRF secret. ' +
+      'If this is a legacy vault, it cannot be unlocked and the wallet must be reset.',
+    )
   }
+
+  // Derive the same AES key from PRF output
+  const aesKeyBase64 = await deriveAesKey(prfResult, prfSalt)
 
   // Cache in session storage
   await chrome.storage.session.set({

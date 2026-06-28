@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useWalletStore } from '@/stores/wallet'
+import { getPreferredIdentity, setPreferredIdentity } from '@/utils/site-identity-prefs'
 import {
   ShieldCheckIcon,
   XMarkIcon,
@@ -9,6 +10,7 @@ import {
   KeyIcon,
   BanknotesIcon,
   DocumentCheckIcon,
+  TrashIcon,
 } from '@heroicons/vue/24/outline'
 
 const wallet = useWalletStore()
@@ -18,6 +20,12 @@ const origin = ref('')
 const loading = ref(true)
 const approving = ref(false)
 const error = ref<string | null>(null)
+
+// Unlock flow state — set by the unlock-error catch below.
+const passphrase = ref('')
+const showPassphraseField = ref(false)
+const showResetVault = ref(false)
+const resetConfirm = ref(false)
 
 /** Payment mode — detected from URL params */
 const isPayment = ref(false)
@@ -38,6 +46,12 @@ const attesttoPdfHash = ref('')
 /** Auth (login) mode — detected from URL params (ATT-123) */
 const isAuth = ref(false)
 
+/** Credential offer mode — identity sync or VC issuance push */
+const isCredentialOffer = ref(false)
+const credentialOfferId = ref('')
+const credentialOfferFormat = ref('')
+const credentialOfferIssuer = ref('')
+
 /** Available DIDs the user can choose from */
 interface AvailableDid {
   did: string
@@ -46,12 +60,15 @@ interface AvailableDid {
 }
 
 const availableDids = computed<AvailableDid[]>(() => {
-  const dids: AvailableDid[] = []
-  if (wallet.did) {
-    const method = wallet.did.split(':').slice(0, 2).join(':')
-    dids.push({ did: wallet.did, label: 'Wallet Key', method })
-  }
-  return dids
+  // Prefer platform-synced identities (did:sns, did:web, did:pkh, etc.) — these
+  // are the ones the user knowingly created and expects to sign in with.
+  // The local did:jwk fallback is intentionally NOT surfaced here; it's a
+  // device-bound primitive, not a user-facing identity choice.
+  return wallet.linkedIdentities.map((identity) => ({
+    did: identity.did,
+    label: identity.label,
+    method: identity.did.split(':').slice(0, 2).join(':'),
+  }))
 })
 
 const selectedDid = ref<string | null>(null)
@@ -63,14 +80,22 @@ const formattedAmount = computed(() => {
 onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
 
-  // Detect mode: auth (login), attestto PDF, signing, payment, or CHAPI
+  // Detect mode: credential-offer, auth (login), attestto PDF, signing, payment, or CHAPI
+  const credentialOfferParam = params.get('credentialOfferId')
   const authReqId = params.get('authRequest')
   const signReqId = params.get('signingRequest')
   const payReqId = params.get('paymentRequest')
   const chapiReqId = params.get('chapiRequest')
   const attesttoPdfReqId = params.get('attesttoPdfRequest')
 
-  if (authReqId) {
+  if (credentialOfferParam) {
+    isCredentialOffer.value = true
+    credentialOfferId.value = credentialOfferParam
+    requestId.value = credentialOfferParam
+    credentialOfferFormat.value = params.get('format') || ''
+    credentialOfferIssuer.value = params.get('issuerName') || 'A site'
+    origin.value = params.get('origin') || ''
+  } else if (authReqId) {
     isAuth.value = true
     requestId.value = authReqId
     origin.value = params.get('origin') || ''
@@ -107,8 +132,14 @@ onMounted(async () => {
   // Load public data (always works — no passkey)
   await wallet.loadPublicData()
 
-  if (wallet.did) {
-    selectedDid.value = wallet.did
+  // Default-select: prefer the identity the user chose last time for this origin
+  // (if it still exists), otherwise the first available platform-synced identity.
+  // availableDids is sourced from wallet.linkedIdentities only — local did:jwk
+  // is intentionally excluded.
+  if (availableDids.value.length > 0) {
+    const remembered = await getPreferredIdentity(origin.value)
+    const stillAvailable = remembered && availableDids.value.some((d) => d.did === remembered)
+    selectedDid.value = stillAvailable ? remembered : availableDids.value[0].did
   }
 
   loading.value = false
@@ -119,9 +150,46 @@ async function approve() {
   error.value = null
 
   try {
-    // Unlock with passkey at the moment of signing
+    // Credential-offer mode: no vault unlock needed — just accept the offer
+    // (the background handler also records origin as trusted for identity offers).
+    if (isCredentialOffer.value) {
+      const resp = await chrome.runtime.sendMessage({
+        type: 'CREDENTIAL_OFFER_APPROVE',
+        payload: { notifId: credentialOfferId.value },
+      })
+      if (resp?.ok) {
+        window.close()
+      } else {
+        error.value = resp?.error || 'Failed to accept credential offer'
+      }
+      return
+    }
+
+    // Unlock the vault at the moment of signing. Vaults set up with a
+    // passphrase need it passed here; ones using PRF unlock silently.
     if (!wallet.isUnlocked) {
-      await wallet.unlock()
+      try {
+        await wallet.unlock(showPassphraseField.value ? passphrase.value : undefined)
+      } catch (unlockErr) {
+        const msg = unlockErr instanceof Error ? unlockErr.message : 'Unlock failed'
+
+        // Vault set up with passphrase KDF — reveal field and let the user retry
+        if (msg.startsWith('PASSPHRASE_REQUIRED')) {
+          showPassphraseField.value = true
+          error.value = 'Enter your recovery passphrase to sign in.'
+          return
+        }
+
+        // PRF-only vault on an authenticator that no longer returns a PRF
+        // secret — unrecoverable. Reset is the only path forward.
+        if (msg.startsWith('PRF_UNAVAILABLE')) {
+          showResetVault.value = true
+          error.value = 'Your vault cannot be unlocked on this device. Reset and set it up again to continue.'
+          return
+        }
+
+        throw unlockErr
+      }
     }
 
     const msgType = isAuth.value
@@ -143,6 +211,11 @@ async function approve() {
     })
 
     if (response?.ok) {
+      // Persist the user's identity choice for this origin so the next prompt
+      // defaults to the same selection.
+      if (selectedDid.value && origin.value) {
+        await setPreferredIdentity(origin.value, selectedDid.value)
+      }
       window.close()
     } else {
       error.value = response?.error || 'Approval failed'
@@ -155,6 +228,14 @@ async function approve() {
 }
 
 async function deny() {
+  if (isCredentialOffer.value) {
+    await chrome.runtime.sendMessage({
+      type: 'CREDENTIAL_OFFER_DENY',
+      payload: { notifId: credentialOfferId.value },
+    })
+    window.close()
+    return
+  }
   const msgType = isAuth.value
     ? 'AUTH_DENY'
     : isAttesttoPdf.value
@@ -175,10 +256,105 @@ async function createDidAndRetry() {
     selectedDid.value = wallet.did
   }
 }
+
+async function handleResetVault() {
+  if (!resetConfirm.value) {
+    resetConfirm.value = true
+    return
+  }
+  approving.value = true
+  try {
+    await wallet.resetWallet()
+    // Vault is gone. The signing flow can't continue — tell the page to abandon
+    // this request so it can prompt the user to start over from scratch.
+    await chrome.runtime.sendMessage({
+      type: isAuth.value
+        ? 'AUTH_DENY'
+        : isAttesttoPdf.value
+          ? 'SIGN_ATTESTTO_PDF_DENY'
+          : isSigning.value
+            ? 'SIGN_DOCUMENT_DENY'
+            : isPayment.value ? 'PAYMENT_DENY' : 'CHAPI_DENY',
+      payload: { requestId: requestId.value },
+    })
+    window.close()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Reset failed'
+  } finally {
+    approving.value = false
+  }
+}
 </script>
 
 <template>
   <div class="mx-auto max-w-sm p-4 space-y-4">
+    <!-- ═══════════════════════════════════════════════════════════════
+         CREDENTIAL OFFER MODE — short-circuits the DID-picker UX
+         (used when a site pushes an identity or VC to be stored)
+         ═══════════════════════════════════════════════════════════════ -->
+    <template v-if="isCredentialOffer">
+      <div class="rounded-lg border border-indigo-700/50 bg-indigo-950/30 p-4 text-center">
+        <ShieldCheckIcon class="mx-auto h-8 w-8 text-indigo-400" />
+        <p class="mt-2 text-sm font-semibold text-white">
+          {{ credentialOfferFormat === 'attestto-id' ? 'Add Identity?' : 'Add Credential?' }}
+        </p>
+        <p class="mt-1 text-[11px] text-slate-400">
+          {{ credentialOfferFormat === 'attestto-id'
+            ? 'A site wants to sync an identity to your wallet'
+            : 'A site wants to add a verifiable credential to your wallet' }}
+        </p>
+      </div>
+
+      <div class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+        <div>
+          <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Requesting site</p>
+          <p class="mt-1 text-xs font-mono text-white break-all">{{ origin || 'Unknown' }}</p>
+        </div>
+        <div>
+          <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Issuer</p>
+          <p class="mt-1 text-xs text-white">{{ credentialOfferIssuer || 'Unknown' }}</p>
+        </div>
+        <div>
+          <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Format</p>
+          <p class="mt-1 text-xs font-mono text-slate-300">{{ credentialOfferFormat }}</p>
+        </div>
+      </div>
+
+      <p v-if="credentialOfferFormat === 'attestto-id'" class="text-[10px] text-slate-500 text-center leading-relaxed">
+        Approving will trust <strong class="text-slate-300">{{ origin }}</strong> for future identity syncs (silent, no further prompts).
+        You can revoke this at any time from Settings → Trusted Sites.
+      </p>
+      <p v-else class="text-[10px] text-slate-500 text-center leading-relaxed">
+        The credential will be stored locally in your wallet. No private keys leave this device.
+      </p>
+
+      <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
+        <p class="text-xs text-red-300">{{ error }}</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800 flex items-center justify-center gap-1.5"
+          @click="deny"
+        >
+          <XMarkIcon class="h-4 w-4" />
+          Deny
+        </button>
+        <button
+          class="flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50"
+          :disabled="approving"
+          @click="approve"
+        >
+          <ShieldCheckIcon class="h-4 w-4" />
+          {{ approving ? 'Adding...' : 'Approve' }}
+        </button>
+      </div>
+    </template>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         ALL OTHER MODES (auth, signing, payment, CHAPI, etc.)
+         ═══════════════════════════════════════════════════════════════ -->
+    <template v-else>
     <!-- Header — Auth (Login) Mode (ATT-123) -->
     <div v-if="isAuth" class="rounded-lg border border-purple-700/50 bg-purple-950/30 p-4 text-center">
       <LockClosedIcon class="mx-auto h-8 w-8 text-purple-400" />
@@ -343,13 +519,46 @@ async function createDidAndRetry() {
         No private keys are disclosed.
       </p>
 
+      <!-- Passphrase field — revealed when unlock returned PASSPHRASE_REQUIRED -->
+      <div v-if="showPassphraseField" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
+          Recovery passphrase
+        </label>
+        <input
+          v-model="passphrase"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Enter your passphrase"
+          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
+          @keyup.enter="approve"
+        />
+      </div>
+
       <!-- Error -->
       <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
         <p class="text-xs text-red-300">{{ error }}</p>
       </div>
 
-      <!-- Action buttons -->
-      <div class="grid grid-cols-2 gap-2">
+      <!-- Reset vault panel — only when unlock returned PRF_UNAVAILABLE -->
+      <div v-if="showResetVault" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3 space-y-2">
+        <p class="text-[11px] font-semibold text-red-300">Reset required</p>
+        <p class="text-[10px] text-slate-400 leading-relaxed">
+          Wiping the vault will delete <strong>all credentials, DIDs, and identities</strong> stored locally.
+          You'll need to set up the vault again and re-sync your identities from the platform.
+        </p>
+        <button
+          class="w-full rounded-md px-3 py-2 text-xs font-medium text-white flex items-center justify-center gap-1.5"
+          :class="resetConfirm ? 'bg-red-600 hover:bg-red-500' : 'bg-red-900/60 hover:bg-red-800/60 border border-red-700/50'"
+          :disabled="approving"
+          @click="handleResetVault"
+        >
+          <TrashIcon class="h-3.5 w-3.5" />
+          {{ resetConfirm ? 'Confirm — wipe everything' : 'Reset vault' }}
+        </button>
+      </div>
+
+      <!-- Action buttons — hidden when the reset panel is shown (no recovery path) -->
+      <div v-if="!showResetVault" class="grid grid-cols-2 gap-2">
         <button
           class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800 flex items-center justify-center gap-1.5"
           @click="deny"
@@ -367,6 +576,7 @@ async function createDidAndRetry() {
           {{ approving ? 'Signing...' : (isAuth ? 'Sign In' : (isSigning || isAttesttoPdf) ? 'Sign' : isPayment ? 'Pay' : 'Approve') }}
         </button>
       </div>
+    </template>
     </template>
   </div>
 </template>

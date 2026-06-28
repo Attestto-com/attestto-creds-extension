@@ -25,7 +25,9 @@ const identities = computed<IdentityItem[]>(() => {
   }))
 })
 
-const PLATFORM_URL = 'https://attestto.net'
+const PLATFORM_URL = 'https://app.attestto.com'
+const ONBOARDING_PATH = '/onboarding'
+const UNLOCK_PATH = '/lock'
 
 function selectIdentity(did: string): void {
   router.push({ name: 'identity-detail', params: { did: encodeURIComponent(did) } })
@@ -77,7 +79,7 @@ function selectIdentity(did: string): void {
       </div>
 
       <a
-        :href="`${PLATFORM_URL}/app/register?src=extension`"
+        :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
         target="_blank"
         class="block w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
       >
@@ -87,7 +89,7 @@ function selectIdentity(did: string): void {
       <p class="text-[10px] text-slate-500">
         Already have an account?
         <a
-          :href="`${PLATFORM_URL}/app/login?src=extension`"
+          :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
           target="_blank"
           class="text-indigo-400 hover:text-indigo-300"
         >

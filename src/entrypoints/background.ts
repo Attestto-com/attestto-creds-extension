@@ -14,10 +14,12 @@ import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { parseProofRequest } from '@/services/didcomm'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
+import type { LinkedIdentity } from '@/stores/wallet'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
+import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 
 export default defineBackground(() => {
   // ── Offscreen Document Management ──────────────────
@@ -31,11 +33,134 @@ export default defineBackground(() => {
 
     if (existingContexts.length > 0) return
 
-    await chrome.offscreen.createDocument({
-      url: OFFSCREEN_PATH,
-      reasons: ['BLOBS' as chrome.offscreen.Reason],
-      justification: 'Maintain WebSocket connection for real-time wallet notifications',
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_PATH,
+        reasons: ['BLOBS' as chrome.offscreen.Reason],
+        justification: 'Maintain WebSocket connection for real-time wallet notifications',
+      })
+    } catch (err) {
+      // Race: another caller created the document between our check and create.
+      // The exact error is "Only a single offscreen document may be created." — safe to ignore.
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!msg.includes('Only a single offscreen document')) throw err
+    }
+  }
+
+  // ── Approval window placement ──────────────────────
+  // Position approval popups at the top-right of the focused window (Phantom/MetaMask style)
+  // instead of Chrome's default (0, 0) which lands them in the corner of the display.
+  async function computeApprovalPosition(
+    width: number,
+    height: number,
+  ): Promise<{ left: number; top: number }> {
+    try {
+      const current = await chrome.windows.getCurrent()
+      const winLeft = current.left ?? 0
+      const winTop = current.top ?? 0
+      const winWidth = current.width ?? 1280
+      void height
+      return {
+        left: Math.max(0, Math.round(winLeft + winWidth - width - 16)),
+        top: Math.max(0, Math.round(winTop + 80)),
+      }
+    } catch {
+      return { left: 100, top: 100 }
+    }
+  }
+
+  // ── Approval window lifecycle tracking ─────────────
+  // When the user dismisses an approval window without clicking approve/deny, we
+  // must send an error back to the originating page so it doesn't hang. We also
+  // run a per-request timeout backstop in case onRemoved never fires.
+  //
+  // Flow: open*Window registers a cleanup → user closes window OR backstop fires
+  // → cleanup runs (page gets error, pending map is purged). On approve/deny,
+  // the handler calls `unregister` BEFORE sending its response so the cleanup
+  // becomes a no-op.
+
+  const windowCleanups = new Map<number, () => void>()
+
+  // 5 minutes — generous backstop. The page-side TIMEOUT_MS is 30s, so the page
+  // will reject first in nearly all cases. This catches the pathological case
+  // where chrome.windows.onRemoved never fires (extension crash, page closed
+  // before popup, etc.) so pending maps don't leak forever.
+  const PENDING_REQUEST_BACKSTOP_MS = 5 * 60 * 1000
+
+  function registerApprovalWindow(
+    windowId: number | undefined,
+    cleanup: () => void,
+  ): () => void {
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const unregister = (): void => {
+      if (windowId !== undefined) windowCleanups.delete(windowId)
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+
+    const wrapped = (): void => {
+      unregister()
+      try {
+        cleanup()
+      } catch (err) {
+        console.error('[Attestto ID] Approval window cleanup failed:', err)
+      }
+    }
+
+    if (windowId !== undefined) {
+      windowCleanups.set(windowId, wrapped)
+    }
+    timer = setTimeout(wrapped, PENDING_REQUEST_BACKSTOP_MS)
+    return unregister
+  }
+
+  chrome.windows.onRemoved.addListener((windowId) => {
+    const cleanup = windowCleanups.get(windowId)
+    if (cleanup) cleanup()
+  })
+
+  /**
+   * Open the dedicated approval window for a credential offer (identity sync OR VC issuance).
+   * Replaces the OS-notification flow which is unreliable across platforms.
+   */
+  async function openCredentialOfferApprovalWindow(
+    notifId: string,
+    offer: CredentialOfferMessage['payload'],
+    origin: string | null,
+  ): Promise<void> {
+    const params = new URLSearchParams({
+      credentialOfferId: notifId,
+      format: offer.format,
+      issuerName: offer.issuerName,
+      origin: origin ?? '',
     })
+    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
+    try {
+      const pos = await computeApprovalPosition(420, 560)
+      const win = await chrome.windows.create({
+        url: approvalUrl,
+        type: 'popup',
+        width: 420,
+        height: 560,
+        left: pos.left,
+        top: pos.top,
+        focused: true,
+      })
+      // Credential offers are notification-style: the page sent CREDENTIAL_PUSH
+      // and already got `pendingConsent: true`. No outstanding promise on the
+      // page side, so cleanup just purges the local pending map.
+      const unregister = registerApprovalWindow(win?.id, () => {
+        pendingOffers.delete(notifId)
+      })
+      const pending = pendingOffers.get(notifId)
+      if (pending) pending.unregister = unregister
+    } catch (err) {
+      console.error('[Attestto ID] Failed to open credential offer approval window:', err)
+      pendingOffers.delete(notifId)
+    }
   }
 
   // ── Alarms — keep offscreen alive ──────────────────
@@ -64,7 +189,12 @@ export default defineBackground(() => {
 
   // ── Pending Credential Offers ─────────────────────
 
-  const pendingOffers = new Map<string, CredentialOfferMessage['payload']>()
+  interface PendingOffer {
+    offer: CredentialOfferMessage['payload']
+    origin: string | null
+    unregister?: () => void
+  }
+  const pendingOffers = new Map<string, PendingOffer>()
 
   // ── Pending CHAPI Requests (waiting for user consent via popup) ──
 
@@ -84,6 +214,7 @@ export default defineBackground(() => {
   interface PendingChapiRawRequest {
     apiReq: CredentialApiRequestMessage['payload']
     senderTabId: number | null
+    unregister?: () => void
   }
   const pendingChapiRawRequests = new Map<string, PendingChapiRawRequest>()
 
@@ -91,6 +222,7 @@ export default defineBackground(() => {
   interface PendingPaymentRequest {
     payReq: PaymentRequestMessage['payload']
     senderTabId: number | null
+    unregister?: () => void
   }
   const pendingPaymentRequests = new Map<string, PendingPaymentRequest>()
 
@@ -98,6 +230,7 @@ export default defineBackground(() => {
   interface PendingSigningRequest {
     signReq: SignDocumentRequestMessage['payload']
     senderTabId: number | null
+    unregister?: () => void
   }
   const pendingSigningRequests = new Map<string, PendingSigningRequest>()
 
@@ -108,6 +241,7 @@ export default defineBackground(() => {
     timestamp: string
     origin: string
     senderTabId: number | null
+    unregister?: () => void
   }
   const pendingAuthRequests = new Map<string, PendingAuthRequest>()
 
@@ -115,6 +249,7 @@ export default defineBackground(() => {
   interface PendingAttesttoPdfRequest {
     req: SignAttesttoPdfRequestMessage['payload']
     senderTabId: number | null
+    unregister?: () => void
   }
   const pendingAttesttoPdfRequests = new Map<string, PendingAttesttoPdfRequest>()
 
@@ -137,13 +272,24 @@ export default defineBackground(() => {
     const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
 
     try {
-      await chrome.windows.create({
+      const pos = await computeApprovalPosition(380, 580)
+      const win = await chrome.windows.create({
         url: approvalUrl,
         type: 'popup',
         width: 380,
         height: 580,
+        left: pos.left,
+        top: pos.top,
         focused: true,
       })
+      const unregister = registerApprovalWindow(win?.id, () => {
+        if (pendingSigningRequests.has(signReq.requestId)) {
+          pendingSigningRequests.delete(signReq.requestId)
+          sendSigningErrorToTab(senderTabId, signReq.requestId, 'User cancelled — approval window closed')
+        }
+      })
+      const pending = pendingSigningRequests.get(signReq.requestId)
+      if (pending) pending.unregister = unregister
     } catch (err) {
       console.error('[Attestto Sign] Failed to open signing approval window:', err)
       pendingSigningRequests.delete(signReq.requestId)
@@ -195,13 +341,24 @@ export default defineBackground(() => {
     const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
 
     try {
-      await chrome.windows.create({
+      const pos = await computeApprovalPosition(420, 620)
+      const win = await chrome.windows.create({
         url: approvalUrl,
         type: 'popup',
         width: 420,
         height: 620,
+        left: pos.left,
+        top: pos.top,
         focused: true,
       })
+      const unregister = registerApprovalWindow(win?.id, () => {
+        if (pendingAuthRequests.has(authReq.requestId)) {
+          pendingAuthRequests.delete(authReq.requestId)
+          sendAuthErrorToTab(senderTabId, authReq.requestId, 'User cancelled — approval window closed')
+        }
+      })
+      const pending = pendingAuthRequests.get(authReq.requestId)
+      if (pending) pending.unregister = unregister
     } catch (err) {
       console.error('[Attestto ID] Failed to open auth approval window:', err)
       pendingAuthRequests.delete(authReq.requestId)
@@ -221,7 +378,7 @@ export default defineBackground(() => {
   function sendAuthResponseToTab(
     tabId: number | null,
     requestId: string,
-    data: { did: string; signature: string; nonce: string; timestamp: string },
+    data: { did: string; signature: string; nonce: string; timestamp: string; publicKeyJwk: Record<string, string> },
   ): void {
     if (tabId) {
       chrome.tabs.sendMessage(tabId, {
@@ -252,13 +409,24 @@ export default defineBackground(() => {
     const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
 
     try {
-      await chrome.windows.create({
+      const pos = await computeApprovalPosition(380, 580)
+      const win = await chrome.windows.create({
         url: approvalUrl,
         type: 'popup',
         width: 380,
         height: 580,
+        left: pos.left,
+        top: pos.top,
         focused: true,
       })
+      const unregister = registerApprovalWindow(win?.id, () => {
+        if (pendingAttesttoPdfRequests.has(req.requestId)) {
+          pendingAttesttoPdfRequests.delete(req.requestId)
+          sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'User cancelled — approval window closed')
+        }
+      })
+      const pending = pendingAttesttoPdfRequests.get(req.requestId)
+      if (pending) pending.unregister = unregister
     } catch (err) {
       console.error('[Attestto Sign] Failed to open Attestto PDF approval window:', err)
       pendingAttesttoPdfRequests.delete(req.requestId)
@@ -359,13 +527,24 @@ export default defineBackground(() => {
     const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
 
     try {
-      await chrome.windows.create({
+      const pos = await computeApprovalPosition(380, 580)
+      const win = await chrome.windows.create({
         url: approvalUrl,
         type: 'popup',
         width: 380,
         height: 580,
+        left: pos.left,
+        top: pos.top,
         focused: true,
       })
+      const unregister = registerApprovalWindow(win?.id, () => {
+        if (pendingPaymentRequests.has(payReq.requestId)) {
+          pendingPaymentRequests.delete(payReq.requestId)
+          sendPaymentErrorToTab(senderTabId, payReq.requestId, 'User cancelled — approval window closed')
+        }
+      })
+      const pending = pendingPaymentRequests.get(payReq.requestId)
+      if (pending) pending.unregister = unregister
     } catch (err) {
       console.error('[Attestto Pay] Failed to open payment approval window:', err)
       pendingPaymentRequests.delete(payReq.requestId)
@@ -401,9 +580,18 @@ export default defineBackground(() => {
   async function acceptCredentialOffer(
     notificationId: string,
   ): Promise<string | null> {
-    const offer = pendingOffers.get(notificationId)
-    if (!offer) return null
+    const pending = pendingOffers.get(notificationId)
+    if (!pending) return null
+    const { offer, origin } = pending
     pendingOffers.delete(notificationId)
+
+    // Identity-format sync from a freshly-approved origin: remember it so the
+    // next offer from this origin can be accepted silently. Other formats
+    // (sd-jwt, json-ld) are one-off issuance events, not recurring sync — no
+    // benefit to persisting trust for them.
+    if (offer.format === 'attestto-id' && origin) {
+      await recordTrustedOrigin(origin)
+    }
 
     try {
       let decodedClaims: Record<string, unknown> = {}
@@ -458,24 +646,90 @@ export default defineBackground(() => {
         },
       }
 
-      // Store in public vault (always works, no passkey needed)
-      const pub = await readPublicVault()
-      if (pub) {
-        pub.credentials = [...(pub.credentials ?? []), credential]
-        await writePublicVault(pub)
+      // Identity-format offers (attestto-id) carry a didUri that should populate
+      // linkedIdentities[] so the popup's IdentityListView shows the identity.
+      // The credential itself is still stored for record-keeping.
+      const identityDid = offer.format === 'attestto-id'
+        ? (decodedClaims.didUri as string | undefined)
+        : undefined
+
+      // Store in public vault (always works, no passkey needed). Create an
+      // empty public vault if the read returned null — otherwise the offer
+      // silently disappears, which is exactly the bug that "I pushed an
+      // identity and nothing showed up" was hiding.
+      const pub = (await readPublicVault()) ?? {
+        did: null,
+        credentials: [],
+        linkedSolanaAddress: null,
+        keyShares: [],
+        proofRequests: [],
+        preparedPresentations: [],
       }
+      pub.credentials = [...(pub.credentials ?? []), credential]
+      if (identityDid) {
+        pub.linkedIdentities = upsertIdentity(
+          pub.linkedIdentities ?? [],
+          identityDid,
+          credential,
+        )
+      }
+      await writePublicVault(pub)
 
       // Also store in encrypted vault if unlocked
       const vault = await readVault()
       if (vault) {
         vault.credentials = [...(vault.credentials ?? []), credential]
+        if (identityDid) {
+          vault.linkedIdentities = upsertIdentity(
+            vault.linkedIdentities ?? [],
+            identityDid,
+            credential,
+          )
+        }
         await writeVault(vault)
+        await syncPublicVault(vault)
       }
 
       return credential.id
     } catch {
       return null
     }
+  }
+
+  /**
+   * Upsert an identity DID into linkedIdentities[], attaching the credential
+   * that carried it. Used by acceptCredentialOffer for `attestto-id` format.
+   */
+  function upsertIdentity(
+    list: LinkedIdentity[],
+    did: string,
+    credential: StoredCredential,
+  ): LinkedIdentity[] {
+    const now = new Date().toISOString()
+    const idx = list.findIndex((id) => id.did === did)
+    if (idx >= 0) {
+      const existing = list[idx]
+      const hasCred = existing.credentials.some((c) => c.id === credential.id)
+      return list.map((id, i) =>
+        i === idx
+          ? {
+              ...id,
+              syncedAt: now,
+              credentials: hasCred ? id.credentials : [...id.credentials, credential],
+            }
+          : id,
+      )
+    }
+    return [
+      ...list,
+      {
+        did,
+        label: extractDidLabelForSync(did),
+        credentials: [credential],
+        syncedAt: now,
+        tenantId: null,
+      },
+    ]
   }
 
   // ── Notification Button Handling ───────────────────
@@ -535,13 +789,24 @@ export default defineBackground(() => {
     )
 
     try {
-      await chrome.windows.create({
+      const pos = await computeApprovalPosition(380, 520)
+      const win = await chrome.windows.create({
         url: approvalUrl,
         type: 'popup',
         width: 380,
         height: 520,
+        left: pos.left,
+        top: pos.top,
         focused: true,
       })
+      const unregister = registerApprovalWindow(win?.id, () => {
+        if (pendingChapiRawRequests.has(apiReq.requestId)) {
+          pendingChapiRawRequests.delete(apiReq.requestId)
+          sendChapiErrorToTab(senderTabId, apiReq.requestId, 'User cancelled — approval window closed')
+        }
+      })
+      const pending = pendingChapiRawRequests.get(apiReq.requestId)
+      if (pending) pending.unregister = unregister
     } catch (err) {
       console.error('[Attestto ID] Failed to open approval window:', err)
       pendingChapiRawRequests.delete(apiReq.requestId)
@@ -683,6 +948,7 @@ export default defineBackground(() => {
     }
 
     await writeVault(vault)
+    await syncPublicVault(vault)
 
     sendDidSyncResponse(syncReq.requestId, publicKeyJwk, syncReq.holderDid, null)
   }
@@ -913,7 +1179,7 @@ export default defineBackground(() => {
 
   // ── Message Router ─────────────────────────────────
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
       case 'NOTIFICATION_RECEIVED':
         chrome.notifications.create({
@@ -935,6 +1201,52 @@ export default defineBackground(() => {
         sendResponse({ ok: true })
         break
 
+      // ── Credential Offer Approval Window Handlers ───
+      case 'CREDENTIAL_OFFER_GET_PENDING': {
+        const notifId = message.payload?.notifId as string | undefined
+        if (!notifId) {
+          sendResponse({ ok: false, error: 'No notifId provided' })
+          break
+        }
+        const pending = pendingOffers.get(notifId)
+        if (!pending) {
+          sendResponse({ ok: false, error: 'Offer not found or already handled' })
+          break
+        }
+        sendResponse({
+          ok: true,
+          offer: {
+            format: pending.offer.format,
+            issuerName: pending.offer.issuerName,
+          },
+          origin: pending.origin,
+        })
+        break
+      }
+
+      case 'CREDENTIAL_OFFER_APPROVE': {
+        const notifId = message.payload?.notifId as string | undefined
+        if (!notifId) {
+          sendResponse({ ok: false, error: 'No notifId provided' })
+          break
+        }
+        pendingOffers.get(notifId)?.unregister?.()
+        acceptCredentialOffer(notifId).then((credentialId) => {
+          sendResponse({ ok: !!credentialId, credentialId })
+        })
+        return true // async
+      }
+
+      case 'CREDENTIAL_OFFER_DENY': {
+        const notifId = message.payload?.notifId as string | undefined
+        if (notifId) {
+          pendingOffers.get(notifId)?.unregister?.()
+          pendingOffers.delete(notifId)
+        }
+        sendResponse({ ok: true })
+        break
+      }
+
       case 'SIGN_REQUEST':
         signPayload(message.payload).then((result) => {
           sendResponse(result)
@@ -944,25 +1256,32 @@ export default defineBackground(() => {
       case 'CREDENTIAL_OFFER': {
         console.log('[Attestto ID] CREDENTIAL_OFFER received in background', message.payload)
         const offer = message.payload as CredentialOfferMessage['payload']
+        const senderOrigin = sender?.origin ?? sender?.url ?? null
         const notifId = `credential-offer-${Date.now()}`
-        pendingOffers.set(notifId, offer)
+        pendingOffers.set(notifId, { offer, origin: senderOrigin })
 
-        chrome.notifications.create(notifId, {
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icon/48.png'),
-          title: 'New Credential',
-          message: `${offer.issuerName} wants to issue a ${offer.format.toUpperCase()} credential.`,
-          buttons: [{ title: 'Accept' }, { title: 'Reject' }],
-          requireInteraction: true,
-        }, (createdId) => {
-          if (chrome.runtime.lastError) {
-            console.error('[Attestto ID] Notification creation failed:', chrome.runtime.lastError.message)
-          } else {
-            console.log('[Attestto ID] Notification created:', createdId)
-          }
-        })
+        // Identity-format offers (attestto-id): auto-accept ONLY if the user
+        // previously approved this origin. Untrusted origins (or any non-identity
+        // format) route through the dedicated approval window — reliable across
+        // platforms, unlike OS notifications which silently fail on macOS Brave.
+        if (offer.format === 'attestto-id') {
+          isOriginTrusted(senderOrigin).then((trusted) => {
+            if (trusted) {
+              acceptCredentialOffer(notifId).then((credentialId) => {
+                console.log('[Attestto ID] Identity offer auto-accepted (trusted origin):', credentialId)
+              })
+              sendResponse({ ok: true, autoAccepted: true })
+              return
+            }
+            openCredentialOfferApprovalWindow(notifId, offer, senderOrigin)
+            sendResponse({ ok: true, pendingConsent: true })
+          })
+          return true // keep sendResponse channel open for async trust check
+        }
 
-        sendResponse({ ok: true })
+        // Non-identity formats (sd-jwt, json-ld) — also route through approval window.
+        openCredentialOfferApprovalWindow(notifId, offer, senderOrigin)
+        sendResponse({ ok: true, pendingConsent: true })
         break
       }
 
@@ -1084,7 +1403,7 @@ export default defineBackground(() => {
 
         if (apiReq.protocol === 'chapi') {
           // CHAPI standard — open popup for user consent (Phantom-style)
-          handleChapiRequest(apiReq, _sender.tab?.id ?? null).then(() => {
+          handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
             sendResponse({ ok: true })
           })
         } else {
@@ -1233,7 +1552,7 @@ export default defineBackground(() => {
 
       case 'SIGN_DOCUMENT_REQUEST': {
         const signReq = message.payload as SignDocumentRequestMessage['payload']
-        handleSigningRequest(signReq, _sender.tab?.id ?? null).then(() => {
+        handleSigningRequest(signReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -1259,6 +1578,7 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No pending signing request' })
           break
         }
+        pendingSigning.unregister?.()
         pendingSigningRequests.delete(signApproveId)
 
         readVault().then(async (vault) => {
@@ -1326,6 +1646,7 @@ export default defineBackground(() => {
         const signDenyId = message.payload?.requestId as string
         const pendingSignDeny = pendingSigningRequests.get(signDenyId)
         if (pendingSignDeny) {
+          pendingSignDeny.unregister?.()
           pendingSigningRequests.delete(signDenyId)
           sendSigningErrorToTab(pendingSignDeny.senderTabId, pendingSignDeny.signReq.requestId, 'User declined signing')
         }
@@ -1337,7 +1658,7 @@ export default defineBackground(() => {
 
       case 'AUTH_REQUEST': {
         const authReq = message.payload as { requestId: string; nonce: string; timestamp: string; origin: string }
-        handleAuthRequest(authReq, _sender.tab?.id ?? null).then(() => {
+        handleAuthRequest(authReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         return true // async sendResponse
@@ -1363,6 +1684,7 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No pending auth request' })
           break
         }
+        pendingAuthReq.unregister?.()
         pendingAuthRequests.delete(authApproveId)
 
         readVault().then(async (vault) => {
@@ -1381,9 +1703,12 @@ export default defineBackground(() => {
           }
 
           try {
-            // Canonical auth payload — MUST match backend DidAuthController:
-            //   attestto:auth:{origin}:{nonce}:{timestamp}:{did}
-            const canonicalPayload = `attestto:auth:${pendingAuthReq.origin}:${pendingAuthReq.nonce}:${pendingAuthReq.timestamp}:${holderDid}`
+            // Canonical auth payload — MUST match backend DidAuthController
+            // exactly. The page may pass an explicit `audience`; if it doesn't,
+            // we fall back to origin (matching CORTEX's `audience ?? origin`).
+            //   ${nonce}|${audience||origin}|${origin}|${timestamp}
+            const audience = pendingAuthReq.origin
+            const canonicalPayload = `${pendingAuthReq.nonce}|${audience}|${pendingAuthReq.origin}|${pendingAuthReq.timestamp}`
 
             const privateKey = await crypto.subtle.importKey(
               'jwk',
@@ -1402,11 +1727,21 @@ export default defineBackground(() => {
 
             const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
 
+            // Surface the public-key half of the vault JWK so the backend can
+            // verify the signature even when no user_extension_keys row exists
+            // yet (TOFU flow / fresh integrations).
+            const jwk = vault.privateKeyJwk as Record<string, string>
             const responseData = {
               did: holderDid,
               signature,
               nonce: pendingAuthReq.nonce,
               timestamp: pendingAuthReq.timestamp,
+              publicKeyJwk: {
+                kty: jwk.kty || 'EC',
+                crv: jwk.crv || 'P-256',
+                x: jwk.x,
+                y: jwk.y,
+              },
             }
             sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
             sendResponse({ ok: true, ...responseData })
@@ -1423,6 +1758,7 @@ export default defineBackground(() => {
         const authDenyId = message.payload?.requestId as string
         const pendingAuthDeny = pendingAuthRequests.get(authDenyId)
         if (pendingAuthDeny) {
+          pendingAuthDeny.unregister?.()
           pendingAuthRequests.delete(authDenyId)
           sendAuthErrorToTab(pendingAuthDeny.senderTabId, pendingAuthDeny.requestId, 'User declined')
         }
@@ -1434,7 +1770,7 @@ export default defineBackground(() => {
 
       case 'SIGN_ATTESTTO_PDF_REQUEST': {
         const apdfReq = message.payload as SignAttesttoPdfRequestMessage['payload']
-        handleAttesttoPdfRequest(apdfReq, _sender.tab?.id ?? null).then(() => {
+        handleAttesttoPdfRequest(apdfReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -1460,6 +1796,7 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No pending Attestto PDF sign request' })
           break
         }
+        pendingApdf.unregister?.()
         pendingAttesttoPdfRequests.delete(apdfApproveId)
 
         ;(async () => {
@@ -1523,6 +1860,7 @@ export default defineBackground(() => {
         const apdfDenyId = message.payload?.requestId as string
         const pendingApdfDeny = pendingAttesttoPdfRequests.get(apdfDenyId)
         if (pendingApdfDeny) {
+          pendingApdfDeny.unregister?.()
           pendingAttesttoPdfRequests.delete(apdfDenyId)
           sendAttesttoPdfErrorToTab(pendingApdfDeny.senderTabId, pendingApdfDeny.req.requestId, 'User declined signing')
         }
@@ -1534,7 +1872,7 @@ export default defineBackground(() => {
 
       case 'PAYMENT_REQUEST': {
         const payReq = message.payload as PaymentRequestMessage['payload']
-        handlePaymentRequest(payReq, _sender.tab?.id ?? null).then(() => {
+        handlePaymentRequest(payReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -1562,6 +1900,7 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No pending payment request' })
           break
         }
+        pendingPayment.unregister?.()
         pendingPaymentRequests.delete(payApproveId)
 
         readVault().then(async (vault) => {
@@ -1631,6 +1970,7 @@ export default defineBackground(() => {
         const payDenyId = message.payload?.requestId as string
         const pendingPayDeny = pendingPaymentRequests.get(payDenyId)
         if (pendingPayDeny) {
+          pendingPayDeny.unregister?.()
           pendingPaymentRequests.delete(payDenyId)
           sendPaymentErrorToTab(pendingPayDeny.senderTabId, pendingPayDeny.payReq.requestId, 'User declined payment')
         }
@@ -1658,6 +1998,7 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No pending request' })
           break
         }
+        pending.unregister?.()
         pendingChapiRawRequests.delete(approveReqId)
 
         readVault().then(async (vault) => {
@@ -1717,6 +2058,7 @@ export default defineBackground(() => {
         const denyReqId = message.payload?.requestId as string
         const pendingDeny = pendingChapiRawRequests.get(denyReqId)
         if (pendingDeny) {
+          pendingDeny.unregister?.()
           pendingChapiRawRequests.delete(denyReqId)
           sendChapiErrorToTab(pendingDeny.senderTabId, pendingDeny.apiReq.requestId, 'User declined')
         }

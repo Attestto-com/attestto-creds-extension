@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { LockClosedIcon, Cog6ToothIcon } from '@heroicons/vue/24/outline'
+import { LockClosedIcon, FingerPrintIcon, Cog6ToothIcon } from '@heroicons/vue/24/outline'
 import { APP_NAME } from '@/config/app'
+
+defineProps<{
+  isUnlocked: boolean
+}>()
 
 defineEmits<{
   lock: []
+  unlock: []
   settings: []
 }>()
 </script>
@@ -21,11 +26,20 @@ defineEmits<{
           <Cog6ToothIcon class="h-4 w-4" />
         </button>
         <button
+          v-if="isUnlocked"
           class="rounded-md p-1 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
           title="Lock"
           @click="$emit('lock')"
         >
           <LockClosedIcon class="h-4 w-4" />
+        </button>
+        <button
+          v-else
+          class="rounded-md p-1 text-indigo-400 hover:bg-slate-800 hover:text-indigo-300"
+          title="Unlock with passkey"
+          @click="$emit('unlock')"
+        >
+          <FingerPrintIcon class="h-4 w-4" />
         </button>
       </div>
     </div>

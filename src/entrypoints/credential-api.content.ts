@@ -22,10 +22,17 @@ export default defineContentScript({
   main() {
     console.log('[Attestto ID] Content script loaded on', window.location.href)
 
-    // Mark the page so any site can detect Attestto Creds is installed
+    // Mark the page so any site can detect Attestto Creds is installed.
+    // `data-attestto-creds` is the documented detection signal (per README + CORTEX page check).
+    // `data-attestto-id` is the legacy attribute kept for backwards compatibility — remove next release.
+    document.documentElement.setAttribute('data-attestto-creds', 'true')
     document.documentElement.setAttribute('data-attestto-id', 'true')
 
     // Share the extension icon URL with the MAIN world (for wallet discovery)
+    document.documentElement.setAttribute(
+      'data-attestto-creds-icon',
+      chrome.runtime.getURL('icon/48.png'),
+    )
     document.documentElement.setAttribute(
       'data-attestto-id-icon',
       chrome.runtime.getURL('icon/48.png'),
@@ -413,6 +420,7 @@ export default defineContentScript({
           signature: message.payload.signature,
           nonce: message.payload.nonce,
           timestamp: message.payload.timestamp,
+          publicKeyJwk: message.payload.publicKeyJwk,
           error: message.payload.error,
         }, window.location.origin)
       }

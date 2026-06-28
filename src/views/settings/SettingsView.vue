@@ -7,10 +7,14 @@ import {
   ArrowTopRightOnSquareIcon,
   InformationCircleIcon,
   ArrowLeftIcon,
+  ShieldCheckIcon,
+  TrashIcon,
 } from '@heroicons/vue/24/outline'
 import { useRouter } from 'vue-router'
 import { useWalletStore } from '@/stores/wallet'
 import { APP_VERSION, STORAGE_KEYS } from '@/config/app'
+import { getTrustedOrigins, revokeTrustedOrigin } from '@/utils/trusted-origins'
+import { getAllPreferences, clearPreferredIdentity } from '@/utils/site-identity-prefs'
 
 const router = useRouter()
 const wallet = useWalletStore()
@@ -20,11 +24,53 @@ const AUTO_LOCK_OPTIONS = [1, 5, 10, 30, 60]
 
 const autoLockMinutes = ref(5)
 
+interface TrustedSiteRow {
+  origin: string
+  trustedSince: string
+  lastUsed: string
+  preferredDid: string | null
+  preferredLabel: string | null
+}
+
+const trustedSites = ref<TrustedSiteRow[]>([])
+
+async function loadTrustedSites(): Promise<void> {
+  const [trustedMap, prefsMap] = await Promise.all([
+    getTrustedOrigins(),
+    getAllPreferences(),
+  ])
+  const labelFor = (did: string): string => {
+    const found = wallet.linkedIdentities.find((id) => id.did === did)
+    return found?.label ?? did.split(':').slice(0, 2).join(':')
+  }
+  trustedSites.value = Object.entries(trustedMap)
+    .map(([origin, record]) => {
+      const did = prefsMap[origin] ?? null
+      return {
+        origin,
+        trustedSince: record.trustedSince,
+        lastUsed: record.lastUsed,
+        preferredDid: did,
+        preferredLabel: did ? labelFor(did) : null,
+      }
+    })
+    .sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : -1))
+}
+
+async function revokeSite(origin: string): Promise<void> {
+  await Promise.all([
+    revokeTrustedOrigin(origin),
+    clearPreferredIdentity(origin),
+  ])
+  await loadTrustedSites()
+}
+
 onMounted(async () => {
   const stored = await chrome.storage.local.get(AUTO_LOCK_KEY)
   if (stored[AUTO_LOCK_KEY]) {
     autoLockMinutes.value = Number(stored[AUTO_LOCK_KEY])
   }
+  await loadTrustedSites()
 })
 
 async function setAutoLock(minutes: number): Promise<void> {
@@ -64,7 +110,7 @@ function goBack(): void {
 }
 
 function openDashboard(): void {
-  window.open('https://attestto.net', '_blank')
+  window.open('https://app.attestto.com', '_blank')
 }
 
 function openHelp(): void {
@@ -104,6 +150,36 @@ function openHelp(): void {
         <span class="text-[11px] text-slate-300">{{ platform.label }}</span>
         <span v-if="platform.count > 0" class="text-[10px] text-slate-500">{{ platform.count }} {{ platform.count === 1 ? 'identity' : 'identities' }}</span>
         <span class="ml-auto text-[10px] font-mono text-slate-500">{{ platform.origin }}</span>
+      </div>
+    </div>
+
+    <!-- Trusted Sites -->
+    <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+      <div class="flex items-center gap-2 mb-2">
+        <ShieldCheckIcon class="h-4 w-4 text-slate-400" />
+        <p class="text-xs font-medium text-white">Trusted Sites</p>
+      </div>
+      <div v-if="trustedSites.length === 0" class="text-[11px] text-slate-500">
+        No sites approved yet. Approving an identity sync from a site adds it here.
+      </div>
+      <div
+        v-for="site in trustedSites"
+        :key="site.origin"
+        class="flex items-center gap-2 rounded-md bg-slate-800/50 px-2 py-1.5 mb-1.5 last:mb-0"
+      >
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-[11px] font-mono text-slate-300">{{ site.origin }}</p>
+          <p v-if="site.preferredLabel" class="truncate text-[10px] text-slate-500">
+            Signs in as <span class="text-slate-400">{{ site.preferredLabel }}</span>
+          </p>
+        </div>
+        <button
+          class="rounded-md p-1 text-slate-500 hover:bg-slate-700 hover:text-red-400 transition-colors"
+          :title="`Revoke trust for ${site.origin}`"
+          @click="revokeSite(site.origin)"
+        >
+          <TrashIcon class="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
 

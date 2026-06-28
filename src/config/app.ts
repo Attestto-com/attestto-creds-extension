@@ -12,4 +12,12 @@ export const STORAGE_KEYS = {
   WEBAUTHN_CREDENTIAL_ID: 'attestto_ext_webauthn_cred_id',
   /** Base64url-encoded PRF salt used to derive the vault encryption key */
   PRF_SALT: 'attestto_ext_prf_salt',
+  /** Origins the user has approved for silent identity-offer sync ({origin: {trustedSince, lastUsed}}) */
+  TRUSTED_ORIGINS: 'attestto_ext_trusted_origins',
+  /** Per-site identity preference ({origin: did}) — default selection in approval popup */
+  SITE_IDENTITY_PREFS: 'attestto_ext_site_identity_prefs',
+  /** Which KDF method was used at setup: 'prf' (passkey PRF) or 'passphrase' (Argon2id) */
+  KDF_METHOD: 'attestto_ext_kdf_method',
+  /** Base64url-encoded salt used for Argon2id passphrase KDF */
+  PASSPHRASE_SALT: 'attestto_ext_passphrase_salt',
 } as const

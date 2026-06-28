@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { encryptVault, generateEncryptionKey } from '@/utils/crypto'
 import { readVault, writeVault, readPublicVault, syncPublicVault } from '@/utils/vault'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
-import { setupPasskey, unlockWithPasskey, hasPasskey } from '@/utils/webauthn'
+import { setupPasskey, unlockWithPasskey, hasPasskey, getKdfMethod } from '@/utils/webauthn'
 import { STORAGE_KEYS } from '@/config/app'
 import { PublicKey } from '@solana/web3.js'
 import type { StoredCredential, StoredKeyShare, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
@@ -117,7 +117,13 @@ export const useWalletStore = defineStore('wallet', () => {
   /**
    * Load public vault data — always works, no passkey needed.
    * Call on extension popup mount to show credentials immediately.
+   *
+   * Also installs a one-time chrome.storage.onChanged listener (per store
+   * instance) so the popup auto-refreshes whenever the background mutates
+   * the public vault — e.g. when an `attestto-id` credential offer is
+   * auto-accepted on a trusted origin while the popup is already open.
    */
+  let storageListenerInstalled = false
   async function loadPublicData(): Promise<void> {
     const pub = await readPublicVault()
     if (pub) {
@@ -126,14 +132,39 @@ export const useWalletStore = defineStore('wallet', () => {
       linkedIdentities.value = pub.linkedIdentities ?? []
     }
     isLoaded.value = true
+
+    if (!storageListenerInstalled && typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+      storageListenerInstalled = true
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== 'local') return
+        if (!(STORAGE_KEYS.PUBLIC_VAULT in changes)) return
+        const next = changes[STORAGE_KEYS.PUBLIC_VAULT].newValue as
+          | { did: string | null; linkedSolanaAddress: string | null; linkedIdentities?: LinkedIdentity[] }
+          | undefined
+        if (!next) {
+          did.value = null
+          linkedSolanaAddress.value = null
+          linkedIdentities.value = []
+          return
+        }
+        did.value = next.did
+        linkedSolanaAddress.value = next.linkedSolanaAddress ?? null
+        linkedIdentities.value = next.linkedIdentities ?? []
+      })
+    }
   }
 
   /**
    * First-time setup: register a passkey and create an empty vault.
-   * The passkey's PRF output is used to derive the vault encryption key.
+   * If PRF is supported by the authenticator → use it (touch-ID unlock).
+   * If not → the supplied passphrase is used via Argon2id (passphrase-prompt unlock).
+   *
+   * @param passphrase  Required iff PRF is unavailable. The setup view should always
+   *                    pass it (if user filled the field) so we can route correctly.
    */
-  async function setup(): Promise<void> {
-    const aesKeyBase64 = await setupPasskey()
+  async function setup(passphrase?: string): Promise<void> {
+    const setupResult = await setupPasskey(passphrase)
+    const aesKeyBase64 = setupResult.aesKeyBase64
 
     // Generate vault signing keypair
     const keyPair = await crypto.subtle.generateKey(
@@ -172,15 +203,19 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
-   * Unlock the vault using the registered passkey.
-   * WebAuthn PRF re-derives the same AES key used during setup.
+   * Unlock the vault.
+   * - If vault was set up with PRF: triggers passkey assertion, PRF re-derives the AES key.
+   * - If vault was set up with passphrase: requires the passphrase param (Argon2id re-derives).
+   *
+   * If `passphrase` is needed but not provided, throws an error tagged `PASSPHRASE_REQUIRED`
+   * so the unlock UI can prompt for it and call unlock again.
    */
-  async function unlock(): Promise<void> {
+  async function unlock(passphrase?: string): Promise<void> {
     // If no passkey registered, fall back to legacy unlock (session key)
     const passkeyExists = await hasPasskey()
 
     if (passkeyExists) {
-      await unlockWithPasskey()
+      await unlockWithPasskey(passphrase)
     }
 
     // Read vault with the session key (set by unlockWithPasskey or legacy)
@@ -221,6 +256,26 @@ export const useWalletStore = defineStore('wallet', () => {
     // Clear the session key so private key can't be read without re-auth
     // Public data (did, credentials, identities) stays accessible
     chrome.storage.session.remove(STORAGE_KEYS.SESSION_KEY)
+  }
+
+  /**
+   * **Destructive.** Wipe ALL wallet state — vault, public mirror, passkey credential ID,
+   * PRF salt, passphrase salt, KDF method, trusted origins, site preferences, session key.
+   *
+   * Used to escape a vault that can't be unlocked (e.g., legacy vaults set up before
+   * passphrase recovery shipped, where PRF turned out to be unavailable). The user is
+   * then sent back through onboarding.
+   */
+  async function resetWallet(): Promise<void> {
+    await chrome.storage.local.clear()
+    await chrome.storage.session.clear()
+    _privateKeyJwk = null
+    did.value = null
+    isUnlocked.value = false
+    isSetUp.value = false
+    isLoaded.value = false
+    linkedSolanaAddress.value = null
+    linkedIdentities.value = []
   }
 
   /**
@@ -413,6 +468,7 @@ export const useWalletStore = defineStore('wallet', () => {
     setup,
     unlock,
     lock,
+    resetWallet,
     createDid,
     getPrivateKey,
     getPublicKeyJwk,
