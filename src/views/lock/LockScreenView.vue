@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { FingerPrintIcon, KeyIcon, TrashIcon, ChevronDownIcon, ChevronUpIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
-import { APP_NAME } from '@/config/app'
+import ExtensionHeader from '@/components/layout/ExtensionHeader.vue'
 
 const wallet = useWalletStore()
 const loading = ref(true)
@@ -112,15 +112,12 @@ async function handleReset(): Promise<void> {
 </script>
 
 <template>
-  <div class="flex min-h-[400px] flex-col items-center justify-center px-6">
-    <!-- Logo area -->
-    <div class="mb-6 text-center">
-      <div class="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600/20">
-        <FingerPrintIcon class="h-8 w-8 text-indigo-400" />
-      </div>
-      <h1 class="text-lg font-bold text-white">{{ APP_NAME }}</h1>
-      <p class="mt-1 text-[11px] text-slate-500">Your self-sovereign identity</p>
-    </div>
+  <!-- Shared extension chrome (header + content) so the lock/setup view feels
+       like the same surface as IdentityListView post-unlock. `minimal` hides
+       settings/lock/unlock buttons that would have no meaningful target here. -->
+  <div class="flex min-h-[400px] flex-col">
+    <ExtensionHeader :is-unlocked="false" minimal />
+    <div class="flex flex-1 flex-col items-center justify-center px-6 py-6">
 
     <!-- Loading -->
     <div v-if="loading" class="text-xs text-slate-500">Loading...</div>
@@ -232,5 +229,6 @@ async function handleReset(): Promise<void> {
 
     <!-- Version -->
     <p class="mt-6 text-[9px] text-slate-700">v0.1.0</p>
+    </div>
   </div>
 </template>

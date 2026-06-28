@@ -341,12 +341,15 @@ export default defineBackground(() => {
     const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
 
     try {
-      const pos = await computeApprovalPosition(420, 620)
+      // Aligned with other approval modes (380 wide) after the compact-header
+      // refactor — the old 420×620 was sized for the bigger hero card. Height
+      // dropped to 460 to remove the empty bottom gap visible at 620.
+      const pos = await computeApprovalPosition(380, 460)
       const win = await chrome.windows.create({
         url: approvalUrl,
         type: 'popup',
-        width: 420,
-        height: 620,
+        width: 380,
+        height: 460,
         left: pos.left,
         top: pos.top,
         focused: true,

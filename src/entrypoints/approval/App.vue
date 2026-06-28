@@ -287,7 +287,10 @@ async function handleResetVault() {
 </script>
 
 <template>
-  <div class="mx-auto max-w-sm p-4 space-y-4">
+  <!-- Fills the popup window. Background.ts sets per-mode width/height that
+       matches the content; constraining with mx-auto+max-w-sm here was leaving
+       gutters on wider windows. Padding only — width follows the window. -->
+  <div class="p-4 space-y-4">
     <!-- ═══════════════════════════════════════════════════════════════
          CREDENTIAL OFFER MODE — short-circuits the DID-picker UX
          (used when a site pushes an identity or VC to be stored)
@@ -355,49 +358,33 @@ async function handleResetVault() {
          ALL OTHER MODES (auth, signing, payment, CHAPI, etc.)
          ═══════════════════════════════════════════════════════════════ -->
     <template v-else>
-    <!-- Header — Auth (Login) Mode (ATT-123) -->
-    <div v-if="isAuth" class="rounded-lg border border-purple-700/50 bg-purple-950/30 p-4 text-center">
-      <LockClosedIcon class="mx-auto h-8 w-8 text-purple-400" />
-      <p class="mt-2 text-sm font-semibold text-white">Sign In</p>
-      <p class="mt-1 text-[11px] text-slate-400">
-        Confirm your identity to sign in
-      </p>
+    <!-- Mode headers — compact icon+title row.
+         Subtitle dropped: the action button at bottom restates the verb
+         ("Sign In" / "Pay" / "Approve"), so the duplicated copy in the hero
+         was burning vertical space without adding meaning. -->
+    <div v-if="isAuth" class="flex items-center gap-2 px-1">
+      <LockClosedIcon class="h-5 w-5 text-purple-400" />
+      <p class="text-sm font-semibold text-white">Sign In</p>
     </div>
 
-    <!-- Header — Attestto self-attested PDF Sign Mode (ATT-364) -->
-    <div v-else-if="isAttesttoPdf" class="rounded-lg border border-blue-700/50 bg-blue-950/30 p-4 text-center">
-      <DocumentCheckIcon class="mx-auto h-8 w-8 text-blue-400" />
-      <p class="mt-2 text-sm font-semibold text-white">Sign PDF</p>
-      <p class="mt-1 text-[11px] text-slate-400">
-        Attestto self-attested signature (Ed25519)
-      </p>
+    <div v-else-if="isAttesttoPdf" class="flex items-center gap-2 px-1">
+      <DocumentCheckIcon class="h-5 w-5 text-blue-400" />
+      <p class="text-sm font-semibold text-white">Sign PDF</p>
     </div>
 
-    <!-- Header — Signing Mode -->
-    <div v-else-if="isSigning" class="rounded-lg border border-blue-700/50 bg-blue-950/30 p-4 text-center">
-      <DocumentCheckIcon class="mx-auto h-8 w-8 text-blue-400" />
-      <p class="mt-2 text-sm font-semibold text-white">Sign Document</p>
-      <p class="mt-1 text-[11px] text-slate-400">
-        Sign this document with your Attestto ID
-      </p>
+    <div v-else-if="isSigning" class="flex items-center gap-2 px-1">
+      <DocumentCheckIcon class="h-5 w-5 text-blue-400" />
+      <p class="text-sm font-semibold text-white">Sign Document</p>
     </div>
 
-    <!-- Header — Payment Mode -->
-    <div v-else-if="isPayment" class="rounded-lg border border-emerald-700/50 bg-emerald-950/30 p-4 text-center">
-      <BanknotesIcon class="mx-auto h-8 w-8 text-emerald-400" />
-      <p class="mt-2 text-sm font-semibold text-white">Payment Request</p>
-      <p class="mt-1 text-[11px] text-slate-400">
-        Approve this payment with your identity
-      </p>
+    <div v-else-if="isPayment" class="flex items-center gap-2 px-1">
+      <BanknotesIcon class="h-5 w-5 text-emerald-400" />
+      <p class="text-sm font-semibold text-white">Payment Request</p>
     </div>
 
-    <!-- Header — Identity Mode -->
-    <div v-else class="rounded-lg border border-indigo-700/50 bg-indigo-950/30 p-4 text-center">
-      <ShieldCheckIcon class="mx-auto h-8 w-8 text-indigo-400" />
-      <p class="mt-2 text-sm font-semibold text-white">Identity Request</p>
-      <p class="mt-1 text-[11px] text-slate-400">
-        A site wants to verify your identity
-      </p>
+    <div v-else class="flex items-center gap-2 px-1">
+      <ShieldCheckIcon class="h-5 w-5 text-indigo-400" />
+      <p class="text-sm font-semibold text-white">Identity Request</p>
     </div>
 
     <!-- Attestto self-attested PDF Sign Details (ATT-364) -->
@@ -501,7 +488,7 @@ async function handleResetVault() {
       <!-- Context text -->
       <p v-if="isAuth" class="text-[10px] text-slate-500 text-center leading-relaxed">
         You're signing in to <strong class="text-slate-300">{{ origin }}</strong> with your Attestto ID.
-        A stateless proof-of-possession will be signed — no credentials are shared.
+        We'll prove it's you without sharing any personal data.
       </p>
       <p v-else-if="isAttesttoPdf" class="text-[10px] text-slate-500 text-center leading-relaxed">
         Your Attestto self-attested signature (Ed25519) will be embedded into <strong class="text-slate-300">{{ attesttoPdfFileName }}</strong>.
