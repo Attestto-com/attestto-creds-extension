@@ -22,6 +22,8 @@ export const STORAGE_KEYS = {
   PASSPHRASE_SALT: 'attestto_ext_passphrase_salt',
   /** User TOFU pin store ({host: {domain, addedAt, properties}}) — anti-phishing trust pin, per-device */
   PIN_STORE: 'attestto_pin_store',
+  /** User-reported block list ({host: {domain, blockedAt, reason, sharedWithCommunity}}) — anti-phishing user-distrust, per-device */
+  BLOCKLIST_STORE: 'attestto_blocklist_store',
   /** First-seen-per-host timestamp map ({host: ISO}) — local-only baseline for site age signal */
   FIRST_SEEN: 'attestto_first_seen',
 } as const

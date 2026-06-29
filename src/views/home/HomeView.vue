@@ -1,46 +1,28 @@
 <script setup lang="ts">
 /**
- * Popup home — the sole trust surface (ATT-724 + ATT-726).
+ * Popup home — anti-phishing first, identity optional.
  *
- * The on-page bar was removed because any on-page UI is inherently spoofable
- * (a malicious site can fake a green bar or hide a red one). The browser-
- * chrome surfaces — toolbar icon, popup-after-click, notifications — are the
- * only ones the page cannot reach. So the popup is now the authoritative
- * place where trust claims live and where trust-changing actions happen.
+ * Restructured 2026-06-29 per Eduardo: anti-phishing is the universal
+ * always-on value prop; identity is a secondary optional feature. The big
+ * "Set up identity" CTA that previously dominated the first-run view is
+ * demoted to a small footer link; the per-tab verdict card (with
+ * Trust/Report CTAs) is now the primary surface for every user, with or
+ * without identity.
  *
- * Two modes per Eduardo's wireframes 2026-06-29:
+ * Layout (top → bottom):
  *
- *   1. First run (no pins AND no identity) — single focused welcome card.
- *   2. Returning user (has at least one pin OR identity) — dashboard:
- *      trusted-sites avatar grid + identity row.
- *
- * Rules from the wireframes:
- *
- *   - Reflect real state only. No loading apologies. No pre-rendered
- *     placeholders for unbuilt features.
- *   - Less text, more CTAs and icons.
- *
- * OPEN ITEMS:
- *
- *   - Active-tab state card was previously shown here, sourced from the
- *     on-page bar via a chrome.tabs.sendMessage round-trip. With the bar
- *     gone, we don't yet have an authoritative source for per-tab state
- *     (Trust Registry queries land in ATT-630). When that ships, the active
- *     tab card returns here with state derived from Trust Registry + pin
- *     store + cert verifier (ATT-705), all read from the popup directly.
- *   - Toolbar icon color (the unspoofable nudge that replaces the bar) is
- *     ATT-727 work.
- *   - chrome.notifications for RED state is also ATT-727 work.
- *   - Trusted-sites avatars use Google's s2 favicon CDN — leaks pin domains
- *     on each popup open. Acceptable for v0; revisit with local caching
- *     under ATT-723.
+ *   1. CurrentSiteCard           — verdict + state-driven CTAs (always)
+ *   2. Trusted sites grid        — only if pins exist
+ *   3. Identity row              — only if identity exists
+ *   4. Footer identity link      — only if NO identity (small, no purple)
  */
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ShieldCheckIcon, ChevronDownIcon } from '@heroicons/vue/24/outline'
+import { ChevronDownIcon } from '@heroicons/vue/24/outline'
 import { useRouter } from 'vue-router'
 import { useWalletStore } from '@/stores/wallet'
 import { listPins, type PinRecord } from '@/utils/pin-store'
+import CurrentSiteCard from './CurrentSiteCard.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -58,8 +40,6 @@ const identities = computed(() =>
     credentialCount: i.credentials.length,
   })),
 )
-
-const showDashboard = computed(() => pins.value.length > 0 || identities.value.length > 0)
 
 onMounted(async () => {
   await wallet.loadPublicData()
@@ -90,49 +70,14 @@ const overflowTrustedCount = computed(() => Math.max(0, pins.value.length - FIRS
 
 <template>
   <div class="space-y-3">
-    <div v-if="loading" class="px-1 py-4 text-xs text-slate-500">{{ t('common.loading') }}</div>
+    <!-- Per-tab verdict card — always at top, before anything else loads.
+         Renders its own loading state internally. -->
+    <CurrentSiteCard />
 
-    <!-- FIRST RUN — single focused welcome card -->
-    <template v-else-if="!showDashboard">
-      <div class="rounded-lg border border-slate-700 bg-slate-900 p-4">
-        <div class="flex items-start gap-3">
-          <div class="flex size-9 shrink-0 items-center justify-center rounded-full bg-emerald-950/60 ring-1 ring-emerald-500/40">
-            <ShieldCheckIcon class="size-5 text-emerald-400" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <h2 class="text-sm font-semibold text-white">{{ t('home.firstRun.title') }}</h2>
-            <p class="mt-1 text-xs leading-relaxed text-slate-300">{{ t('home.firstRun.body') }}</p>
-          </div>
-        </div>
+    <div v-if="loading" class="px-1 text-[11px] text-slate-500">{{ t('common.loading') }}</div>
 
-        <a
-          :href="`${PLATFORM_URL}/onboarding?src=extension`"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="mt-4 block w-full rounded-lg bg-violet-600 px-4 py-2.5 text-center text-xs font-medium text-white hover:bg-violet-500"
-        >
-          {{ t('home.firstRun.cta') }}
-        </a>
-
-        <p class="mt-2 text-center text-[11px] text-slate-400">
-          {{ t('home.firstRun.alreadyHave') }}
-          <a
-            :href="`${PLATFORM_URL}/lock?src=extension`"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-violet-300 hover:text-violet-200"
-          >{{ t('home.firstRun.signIn') }}</a>
-        </p>
-
-        <div class="mt-4 border-t border-slate-800 pt-3 text-center text-[10px] text-slate-500">
-          {{ t('home.firstRun.footer') }}
-        </div>
-      </div>
-    </template>
-
-    <!-- RETURNING USER — dashboard -->
     <template v-else>
-      <!-- Trusted sites grid -->
+      <!-- Trusted sites grid — only if user has pinned anything -->
       <section v-if="pins.length > 0" class="rounded-lg border border-slate-700 bg-slate-900 p-3">
         <div class="mb-2 flex items-center justify-between">
           <span class="text-[10px] font-medium uppercase tracking-wider text-slate-500">
@@ -175,7 +120,7 @@ const overflowTrustedCount = computed(() => Math.max(0, pins.value.length - FIRS
         </div>
       </section>
 
-      <!-- Identity row -->
+      <!-- Identity row — only if identity exists -->
       <section v-if="identities.length > 0" class="rounded-lg border border-slate-700 bg-slate-900">
         <button
           v-for="identity in identities"
@@ -195,21 +140,20 @@ const overflowTrustedCount = computed(() => Math.max(0, pins.value.length - FIRS
         </button>
       </section>
 
-      <!-- Identity upgrade prompt (has pins but no identity) -->
-      <section
+      <!-- Identity footer — only if NO identity. Small, no purple, opt-in framing.
+           Anti-phishing already works without this step. -->
+      <div
         v-else
-        class="rounded-lg border border-dashed border-slate-700 bg-slate-950/50 p-3"
+        class="px-1 pt-1 text-center text-[11px] text-slate-500"
       >
-        <p class="text-xs text-slate-300">{{ t('home.identity.upgradeBody') }}</p>
+        {{ t('home.currentSite.identityFooter') }}
         <a
           :href="`${PLATFORM_URL}/onboarding?src=extension`"
           target="_blank"
           rel="noopener noreferrer"
-          class="mt-2 inline-block text-[11px] text-violet-300 hover:text-violet-200"
-        >
-          {{ t('home.identity.setupLink') }}
-        </a>
-      </section>
+          class="ml-1 text-violet-400 hover:text-violet-300"
+        >{{ t('home.currentSite.setUpLink') }}</a>
+      </div>
     </template>
   </div>
 </template>

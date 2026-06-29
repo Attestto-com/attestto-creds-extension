@@ -30,6 +30,7 @@
  */
 
 import { isPinned, onPinStoreChanged } from '@/utils/pin-store'
+import { isBlocked, onBlocklistChanged } from '@/utils/blocklist-store'
 import { readSettings } from '@/utils/settings-config'
 import { lookupHost } from '@/utils/trust-registry'
 import { homographState } from '@/utils/homograph'
@@ -93,19 +94,23 @@ const redNotifiedThisSession = new Set<string>()
  *
  * Precedence (high → low):
  *
- *   1. Homograph RED          — strongest negative signal. Brand-squat
- *                               (registered institution's brand label on a
- *                               non-canonical host) overrides everything,
- *                               including a user pin. Rationale: a user
- *                               could have pinned a phishing site before
- *                               the squat was detected — we still warn.
- *   2. Pin store GREEN-PINNED — user-explicit trust beats institutional
- *                               trust. If they pin a non-registered domain,
- *                               that is their decision.
- *   3. Registry GREEN-VERIFIED — institutional allowlist match.
- *   4. Homograph YELLOW       — weaker signals (punycode-only, etc.).
- *   5. Cert verifier YELLOW   — future (ATT-705 backend service).
- *   6. NEUTRAL                — default.
+ *   1. User blocklist RED     — strongest negative signal. User explicitly
+ *                               reported / blocked this host. Overrides
+ *                               everything, including their own pin (if
+ *                               they accidentally pinned then later
+ *                               blocked, blocked wins).
+ *   2. Homograph RED          — brand-squat (registered institution's
+ *                               brand label on a non-canonical host)
+ *                               overrides pin / registry. A user could
+ *                               have pinned a phishing site before the
+ *                               squat was detected — we still warn.
+ *   3. Pin store GREEN-PINNED — user-explicit trust beats institutional
+ *                               trust. If they pin a non-registered
+ *                               domain, that is their decision.
+ *   4. Registry GREEN-VERIFIED — institutional allowlist match.
+ *   5. Homograph YELLOW       — weaker signals (punycode-only, etc.).
+ *   6. Cert verifier YELLOW   — future (ATT-705 backend service).
+ *   7. NEUTRAL                — default.
  */
 export async function computeStateForUrl(url: string): Promise<TrustState> {
   let host: string
@@ -116,20 +121,23 @@ export async function computeStateForUrl(url: string): Promise<TrustState> {
   }
   if (!host) return 'neutral'
 
-  // 1. Strongest negative signal first — overrides user pins.
+  // 1. User-explicit distrust — strongest signal.
+  if (await isBlocked(host)) return 'red'
+
+  // 2. Brand-squat heuristic — also red, overrides user pins.
   const homograph = await homographState(host)
   if (homograph === 'red') return 'red'
 
-  // 2. User-explicit trust.
+  // 3. User-explicit trust.
   if (await isPinned(host)) return 'green-pinned'
 
-  // 3. Institutional allowlist.
+  // 4. Institutional allowlist.
   if (await lookupHost(host)) return 'green-verified'
 
-  // 4. Weaker heuristic signals.
+  // 5. Weaker heuristic signals.
   if (homograph === 'yellow-heuristic') return 'yellow-heuristic'
 
-  // 5. Cert verifier (future, ATT-705 — needs backend service).
+  // 6. Cert verifier (future, ATT-705 — needs backend service).
   //   if (await certTierConcern(host)) return 'yellow-cert'
 
   return 'neutral'
@@ -286,9 +294,28 @@ export function initToolbarStateTracker(): void {
     void refreshTab(details.tabId, details.url)
   })
 
+  // Navigations that ERROR — TLS cert mismatch, NET::ERR_*, DNS failure, etc.
+  // Critical for the anti-phishing path: brand-squat sites frequently have
+  // broken TLS (squatters skip proper certs), so Chrome blocks them at the
+  // cert layer and onCommitted never fires with the real URL. We still want
+  // to paint the toolbar with our verdict against the URL the user TRIED to
+  // visit — that's the whole point of "this is impersonating BCCR." Without
+  // this listener, the demo case `https://bccr.com/` stays neutral.
+  chrome.webNavigation.onErrorOccurred.addListener((details) => {
+    if (details.frameId !== 0) return
+    void refreshTab(details.tabId, details.url)
+  })
+
   // Pin store changed — re-evaluate every tab whose URL we know about so the
   // icon updates without the user having to navigate.
   onPinStoreChanged(async () => {
+    for (const [tabId, url] of tabUrls.entries()) {
+      await refreshTab(tabId, url)
+    }
+  })
+
+  // Blocklist changed — same idea, repaint affected tabs without nav.
+  onBlocklistChanged(async () => {
     for (const [tabId, url] of tabUrls.entries()) {
       await refreshTab(tabId, url)
     }
