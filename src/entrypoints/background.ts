@@ -20,8 +20,15 @@ import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
+import { initToolbarStateTracker } from '@/utils/tab-state'
 
 export default defineBackground(() => {
+  // ── Toolbar trust state (ATT-727) ──────────────────
+  // Wires per-tab icon tinting + badge + RED-state notifications. Reads from
+  // pin-store today; ATT-630 (Trust Registry) and ATT-705 (cert verifier) add
+  // more signals later without touching this call site.
+  initToolbarStateTracker()
+
   // ── Offscreen Document Management ──────────────────
 
   const OFFSCREEN_PATH = 'offscreen.html'
@@ -206,6 +213,7 @@ export default defineBackground(() => {
     domain: string
     privateKeyJwk: JsonWebKey
     verificationMethod?: string
+    senderTabId: number | null
   }
 
   const pendingChapiRequests = new Map<string, PendingChapiRequest>()
@@ -817,27 +825,20 @@ export default defineBackground(() => {
     }
   }
 
-  function sendChapiError(requestId: string, error: string): void {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'CREDENTIAL_API_RESPONSE',
-          payload: { requestId, error },
-        })
-      }
-    })
-  }
-
-  /** Send CHAPI error to a specific tab (used when popup is open and active tab is the popup) */
+  /**
+   * Send a CHAPI error to the originating tab. tabId MUST be the sender.tab.id
+   * captured at request-receipt time — never the active-tab fallback (that would
+   * route the error to whatever tab the user is currently looking at).
+   */
   function sendChapiErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
-        type: 'CREDENTIAL_API_RESPONSE',
-        payload: { requestId, error },
-      })
-    } else {
-      sendChapiError(requestId, error)
+    if (!tabId) {
+      console.warn('[Attestto ID] Dropping CHAPI error — no originating tabId', { requestId })
+      return
     }
+    chrome.tabs.sendMessage(tabId, {
+      type: 'CREDENTIAL_API_RESPONSE',
+      payload: { requestId, error },
+    })
   }
 
   async function completeChapiRequest(notifId: string): Promise<void> {
@@ -855,16 +856,18 @@ export default defineBackground(() => {
         verificationMethod: pending.verificationMethod,
       })
 
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]?.id) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            type: 'CREDENTIAL_API_RESPONSE',
-            payload: { requestId: pending.apiReq.requestId, presentation: vp },
-          })
-        }
-      })
+      if (pending.senderTabId) {
+        chrome.tabs.sendMessage(pending.senderTabId, {
+          type: 'CREDENTIAL_API_RESPONSE',
+          payload: { requestId: pending.apiReq.requestId, presentation: vp },
+        })
+      } else {
+        console.warn('[Attestto ID] Dropping CHAPI VP — no originating tabId', {
+          requestId: pending.apiReq.requestId,
+        })
+      }
     } catch {
-      sendChapiError(pending.apiReq.requestId, 'Failed to build presentation')
+      sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Failed to build presentation')
     }
   }
 
@@ -872,7 +875,7 @@ export default defineBackground(() => {
     const pending = pendingChapiRequests.get(notifId)
     if (!pending) return
     pendingChapiRequests.delete(notifId)
-    sendChapiError(pending.apiReq.requestId, 'User declined')
+    sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'User declined')
   }
 
   // ── DID Sync Handler ───────────────────────────────────
@@ -888,10 +891,11 @@ export default defineBackground(() => {
    */
   async function handleDidSync(
     syncReq: DidSyncMessage['payload'],
+    senderTabId: number | null,
   ): Promise<void> {
     const vault = await readVault()
     if (!vault) {
-      sendDidSyncResponse(syncReq.requestId, null, null, 'Vault is locked')
+      sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'Vault is locked')
       return
     }
 
@@ -953,7 +957,7 @@ export default defineBackground(() => {
     await writeVault(vault)
     await syncPublicVault(vault)
 
-    sendDidSyncResponse(syncReq.requestId, publicKeyJwk, syncReq.holderDid, null)
+    sendDidSyncResponse(senderTabId, syncReq.requestId, publicKeyJwk, syncReq.holderDid, null)
   }
 
   /** Extract a human-readable label from a DID. */
@@ -968,18 +972,19 @@ export default defineBackground(() => {
   }
 
   function sendDidSyncResponse(
+    tabId: number | null,
     requestId: string,
     publicKeyJwk: JsonWebKey | null,
     holderDid: string | null,
     error: string | null,
   ): void {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'DID_SYNC_RESPONSE',
-          payload: { requestId, publicKeyJwk, holderDid, error },
-        })
-      }
+    if (!tabId) {
+      console.warn('[Attestto ID] Dropping DID_SYNC_RESPONSE — no originating tabId', { requestId })
+      return
+    }
+    chrome.tabs.sendMessage(tabId, {
+      type: 'DID_SYNC_RESPONSE',
+      payload: { requestId, publicKeyJwk, holderDid, error },
     })
   }
 
@@ -987,15 +992,16 @@ export default defineBackground(() => {
 
   async function handleKeyRotate(
     rotateReq: KeyRotateMessage['payload'],
+    senderTabId: number | null,
   ): Promise<void> {
     const vault = await readVault()
     if (!vault) {
-      sendKeyRotateResponse(rotateReq.requestId, null, null, 'Vault is locked')
+      sendKeyRotateResponse(senderTabId, rotateReq.requestId, null, null, 'Vault is locked')
       return
     }
 
     if (!vault.privateKeyJwk) {
-      sendKeyRotateResponse(rotateReq.requestId, null, null, 'No existing key to rotate')
+      sendKeyRotateResponse(senderTabId, rotateReq.requestId, null, null, 'No existing key to rotate')
       return
     }
 
@@ -1029,22 +1035,23 @@ export default defineBackground(() => {
       y: newPublicJwk.y,
     }
 
-    sendKeyRotateResponse(rotateReq.requestId, newPublicKeyJwk, oldPublicKeyJwk, null)
+    sendKeyRotateResponse(senderTabId, rotateReq.requestId, newPublicKeyJwk, oldPublicKeyJwk, null)
   }
 
   function sendKeyRotateResponse(
+    tabId: number | null,
     requestId: string,
     newPublicKeyJwk: JsonWebKey | null,
     oldPublicKeyJwk: JsonWebKey | null,
     error: string | null,
   ): void {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'KEY_ROTATE_RESPONSE',
-          payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
-        })
-      }
+    if (!tabId) {
+      console.warn('[Attestto ID] Dropping KEY_ROTATE_RESPONSE — no originating tabId', { requestId })
+      return
+    }
+    chrome.tabs.sendMessage(tabId, {
+      type: 'KEY_ROTATE_RESPONSE',
+      payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
     })
   }
 
@@ -1052,15 +1059,16 @@ export default defineBackground(() => {
 
   async function handleKeyBackup(
     backupReq: KeyBackupMessage['payload'],
+    senderTabId: number | null,
   ): Promise<void> {
     const vault = await readVault()
     if (!vault) {
-      sendKeyBackupResponse(backupReq.requestId, null, 'Vault is locked')
+      sendKeyBackupResponse(senderTabId, backupReq.requestId, null, 'Vault is locked')
       return
     }
 
     if (!vault.privateKeyJwk) {
-      sendKeyBackupResponse(backupReq.requestId, null, 'No private key to back up')
+      sendKeyBackupResponse(senderTabId, backupReq.requestId, null, 'No private key to back up')
       return
     }
 
@@ -1075,7 +1083,7 @@ export default defineBackground(() => {
     const hashArray = new Uint8Array(hashBuffer)
     const keyHash = toBase64Url(hashArray)
 
-    sendKeyBackupResponse(backupReq.requestId, {
+    sendKeyBackupResponse(senderTabId, backupReq.requestId, {
       deviceShare: { data: toBase64Url(share1), index: 1 },
       cloudShare: { data: toBase64Url(share2), index: 2 },
       guardianShare: { data: toBase64Url(share3), index: 3 },
@@ -1084,6 +1092,7 @@ export default defineBackground(() => {
   }
 
   function sendKeyBackupResponse(
+    tabId: number | null,
     requestId: string,
     shares: {
       deviceShare: { data: string; index: number }
@@ -1093,22 +1102,23 @@ export default defineBackground(() => {
     } | null,
     error: string | null,
   ): void {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'KEY_BACKUP_RESPONSE',
-          payload: { requestId, shares, error },
-        })
-      }
+    if (!tabId) {
+      console.warn('[Attestto ID] Dropping KEY_BACKUP_RESPONSE — no originating tabId', { requestId })
+      return
+    }
+    chrome.tabs.sendMessage(tabId, {
+      type: 'KEY_BACKUP_RESPONSE',
+      payload: { requestId, shares, error },
     })
   }
 
   async function handleKeyRestore(
     restoreReq: KeyRestoreMessage['payload'],
+    senderTabId: number | null,
   ): Promise<void> {
     const vault = await readVault()
     if (!vault) {
-      sendKeyRestoreResponse(restoreReq.requestId, 'Vault is locked')
+      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, 'Vault is locked')
       return
     }
 
@@ -1129,7 +1139,7 @@ export default defineBackground(() => {
 
       // Validate it's a valid P-256 private key
       if (privateKeyJwk.kty !== 'EC' || privateKeyJwk.crv !== 'P-256' || !privateKeyJwk.d) {
-        sendKeyRestoreResponse(restoreReq.requestId, 'Reconstructed key is not a valid P-256 private key')
+        sendKeyRestoreResponse(senderTabId, restoreReq.requestId, 'Reconstructed key is not a valid P-256 private key')
         return
       }
 
@@ -1146,37 +1156,38 @@ export default defineBackground(() => {
       vault.did = publicJwkToDid(publicJwk)
 
       await writeVault(vault)
-      sendKeyRestoreResponse(restoreReq.requestId, null)
+      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, null)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Key restoration failed'
-      sendKeyRestoreResponse(restoreReq.requestId, msg)
+      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, msg)
     }
   }
 
   function sendKeyRestoreResponse(
+    tabId: number | null,
     requestId: string,
     error: string | null,
   ): void {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'KEY_RESTORE_RESPONSE',
-          payload: { requestId, success: error === null, error },
-        })
-      }
+    if (!tabId) {
+      console.warn('[Attestto ID] Dropping KEY_RESTORE_RESPONSE — no originating tabId', { requestId })
+      return
+    }
+    chrome.tabs.sendMessage(tabId, {
+      type: 'KEY_RESTORE_RESPONSE',
+      payload: { requestId, success: error === null, error },
     })
   }
 
   // ── Helpers ──────────────────────────────────────────
 
-  function sendReshareError(requestId: string, error: string): void {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, {
-          type: 'RESHARE_STORED_VP_RESPONSE',
-          payload: { requestId, error },
-        })
-      }
+  function sendReshareError(tabId: number | null, requestId: string, error: string): void {
+    if (!tabId) {
+      console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE error — no originating tabId', { requestId })
+      return
+    }
+    chrome.tabs.sendMessage(tabId, {
+      type: 'RESHARE_STORED_VP_RESPONSE',
+      payload: { requestId, error },
     })
   }
 
@@ -1431,6 +1442,7 @@ export default defineBackground(() => {
 
       case 'LIST_STORED_CREDENTIALS': {
         const listReqId = message.payload?.requestId as string
+        const listSenderTabId = sender.tab?.id ?? null
         readVault().then((vault) => {
           const creds = (vault?.credentials ?? []).map((c: StoredCredential) => ({
             id: c.id,
@@ -1443,15 +1455,14 @@ export default defineBackground(() => {
             source: c.metadata.source,
           }))
 
-          // Send back to content script → page
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]?.id) {
-              chrome.tabs.sendMessage(tabs[0].id, {
-                type: 'LIST_STORED_CREDENTIALS_RESPONSE',
-                payload: { requestId: listReqId, credentials: creds },
-              })
-            }
-          })
+          if (listSenderTabId) {
+            chrome.tabs.sendMessage(listSenderTabId, {
+              type: 'LIST_STORED_CREDENTIALS_RESPONSE',
+              payload: { requestId: listReqId, credentials: creds },
+            })
+          } else {
+            console.warn('[Attestto ID] Dropping LIST_STORED_CREDENTIALS_RESPONSE — no originating tabId', { requestId: listReqId })
+          }
           sendResponse({ ok: true })
         })
         break
@@ -1463,10 +1474,11 @@ export default defineBackground(() => {
           credentialId: string
           selectedFields: string[]
         }
+        const reshareSenderTabId = sender.tab?.id ?? null
 
         readVault().then(async (vault) => {
           if (!vault) {
-            sendReshareError(resharePayload.requestId, 'Vault locked')
+            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'Vault locked')
             sendResponse({ ok: false })
             return
           }
@@ -1475,7 +1487,7 @@ export default defineBackground(() => {
             (c: StoredCredential) => c.id === resharePayload.credentialId,
           )
           if (!cred) {
-            sendReshareError(resharePayload.requestId, 'Credential not found')
+            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'Credential not found')
             sendResponse({ ok: false })
             return
           }
@@ -1488,26 +1500,25 @@ export default defineBackground(() => {
             }
           }
 
-          // Return the raw credential + filtered claims for platform to wrap in a VP
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]?.id) {
-              chrome.tabs.sendMessage(tabs[0].id, {
-                type: 'RESHARE_STORED_VP_RESPONSE',
-                payload: {
-                  requestId: resharePayload.requestId,
-                  presentation: {
-                    credentialId: cred.id,
-                    format: cred.format,
-                    issuer: cred.issuer,
-                    selectedFields: resharePayload.selectedFields,
-                    claims: filteredClaims,
-                    issuedAt: cred.issuedAt,
-                    expiresAt: cred.expiresAt,
-                  },
+          if (reshareSenderTabId) {
+            chrome.tabs.sendMessage(reshareSenderTabId, {
+              type: 'RESHARE_STORED_VP_RESPONSE',
+              payload: {
+                requestId: resharePayload.requestId,
+                presentation: {
+                  credentialId: cred.id,
+                  format: cred.format,
+                  issuer: cred.issuer,
+                  selectedFields: resharePayload.selectedFields,
+                  claims: filteredClaims,
+                  issuedAt: cred.issuedAt,
+                  expiresAt: cred.expiresAt,
                 },
-              })
-            }
-          })
+              },
+            })
+          } else {
+            console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE — no originating tabId', { requestId: resharePayload.requestId })
+          }
           sendResponse({ ok: true })
         })
         break
@@ -1515,7 +1526,7 @@ export default defineBackground(() => {
 
       case 'DID_SYNC': {
         const syncReq = message.payload as DidSyncMessage['payload']
-        handleDidSync(syncReq).then(() => {
+        handleDidSync(syncReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -1523,7 +1534,7 @@ export default defineBackground(() => {
 
       case 'KEY_ROTATE': {
         const rotateReq = message.payload as KeyRotateMessage['payload']
-        handleKeyRotate(rotateReq).then(() => {
+        handleKeyRotate(rotateReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -1531,7 +1542,7 @@ export default defineBackground(() => {
 
       case 'KEY_BACKUP': {
         const backupReq = message.payload as KeyBackupMessage['payload']
-        handleKeyBackup(backupReq).then(() => {
+        handleKeyBackup(backupReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -1539,7 +1550,7 @@ export default defineBackground(() => {
 
       case 'KEY_RESTORE': {
         const restoreReq = message.payload as KeyRestoreMessage['payload']
-        handleKeyRestore(restoreReq).then(() => {
+        handleKeyRestore(restoreReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
         })
         break
@@ -2079,7 +2090,16 @@ export default defineBackground(() => {
     ensureOffscreenDocument()
   })
 
-  chrome.runtime.onInstalled.addListener(() => {
+  chrome.runtime.onInstalled.addListener((details) => {
     ensureOffscreenDocument()
+    // First-install landing — open the Settings tab directly so the user sees
+    // the welcome / what-this-does on a real surface they can self-explore.
+    // No multi-step tour (see ATT-726: bar-removal + popup-as-sole-trust-surface
+    // decision; the multi-step onboarding was superseded by the wireframes).
+    if (details.reason === 'install') {
+      chrome.tabs.create({
+        url: chrome.runtime.getURL('options.html'),
+      })
+    }
   })
 })

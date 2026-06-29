@@ -19,7 +19,7 @@ export default defineConfig({
   manifest: {
     name: 'Attestto ID',
     description:
-      'Self-sovereign identity agent — passkey-secured vault, verifiable credentials, DID-authenticated payments, and privacy-preserving presentations.',
+      'Digital ID agent — passkey-secured vault, verifiable credentials, DID-authenticated payments, and privacy-preserving presentations.',
     version: '0.1.0',
 
     permissions: [
@@ -29,6 +29,7 @@ export default defineConfig({
       'notifications',
       'offscreen',
       'alarms',
+      'webNavigation',
     ],
 
     host_permissions: [],
@@ -45,6 +46,15 @@ export default defineConfig({
       32: 'icon/32.png',
       48: 'icon/48.png',
       128: 'icon/128.png',
+    },
+
+    // Open Settings in a real browser tab — never embedded inside the
+    // extensions manager modal. Matches the LastPass dedicated-page pattern
+    // Eduardo flagged 2026-06-29 (chrome-extension://*/options.html as a
+    // full surface, not a 600px modal).
+    options_ui: {
+      page: 'options.html',
+      open_in_tab: true,
     },
 
     content_security_policy: {
