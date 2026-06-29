@@ -76,7 +76,7 @@ export default defineContentScript({
                 type: 'ATTESTTO_VP_RESPONSE',
                 requestId,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -95,7 +95,7 @@ export default defineContentScript({
                 requestId,
                 error: 'Extension not available',
                 credentials: [],
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -116,7 +116,7 @@ export default defineContentScript({
                 type: 'ATTESTTO_DID_SYNC_RESPONSE',
                 requestId,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -137,7 +137,7 @@ export default defineContentScript({
                 type: 'ATTESTTO_KEY_ROTATE_RESPONSE',
                 requestId,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -151,7 +151,7 @@ export default defineContentScript({
           { type: 'KEY_BACKUP', payload: { requestId, origin: window.location.origin } },
           () => {
             if (chrome.runtime.lastError) {
-              window.postMessage({ type: 'ATTESTTO_KEY_BACKUP_RESPONSE', requestId, error: 'Extension not available' }, '*')
+              window.postMessage({ type: 'ATTESTTO_KEY_BACKUP_RESPONSE', requestId, error: 'Extension not available' }, window.location.origin)
             }
           },
         )
@@ -165,7 +165,7 @@ export default defineContentScript({
           { type: 'KEY_RESTORE', payload: { requestId, shareA, shareB, origin: window.location.origin } },
           () => {
             if (chrome.runtime.lastError) {
-              window.postMessage({ type: 'ATTESTTO_KEY_RESTORE_RESPONSE', requestId, error: 'Extension not available' }, '*')
+              window.postMessage({ type: 'ATTESTTO_KEY_RESTORE_RESPONSE', requestId, error: 'Extension not available' }, window.location.origin)
             }
           },
         )
@@ -194,7 +194,7 @@ export default defineContentScript({
                 type: 'ATTESTTO_PAYMENT_RESPONSE',
                 requestId,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -248,7 +248,7 @@ export default defineContentScript({
                 type: 'ATTESTTO_SIGN_RESPONSE',
                 requestId,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -308,7 +308,7 @@ export default defineContentScript({
                 requestId,
                 success: false,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             } else {
               console.log('[Attestto ID] CREDENTIAL_PUSH → background responded:', response)
               window.postMessage({
@@ -316,7 +316,7 @@ export default defineContentScript({
                 requestId,
                 success: !!response?.ok,
                 error: response?.error,
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -337,7 +337,7 @@ export default defineContentScript({
                 type: 'ATTESTTO_RESHARE_VP_RESPONSE',
                 requestId,
                 error: 'Extension not available',
-              }, '*')
+              }, window.location.origin)
             }
           },
         )
@@ -353,7 +353,7 @@ export default defineContentScript({
           requestId: message.payload.requestId,
           presentation: message.payload.presentation,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'LIST_STORED_CREDENTIALS_RESPONSE') {
@@ -362,7 +362,7 @@ export default defineContentScript({
           requestId: message.payload.requestId,
           credentials: message.payload.credentials,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'RESHARE_STORED_VP_RESPONSE') {
@@ -371,7 +371,7 @@ export default defineContentScript({
           requestId: message.payload.requestId,
           presentation: message.payload.presentation,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'DID_SYNC_RESPONSE') {
@@ -381,7 +381,7 @@ export default defineContentScript({
           publicKeyJwk: message.payload.publicKeyJwk,
           holderDid: message.payload.holderDid,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'KEY_ROTATE_RESPONSE') {
@@ -391,7 +391,7 @@ export default defineContentScript({
           newPublicKeyJwk: message.payload.newPublicKeyJwk,
           oldPublicKeyJwk: message.payload.oldPublicKeyJwk,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'KEY_BACKUP_RESPONSE') {
@@ -400,7 +400,7 @@ export default defineContentScript({
           requestId: message.payload.requestId,
           shares: message.payload.shares,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'KEY_RESTORE_RESPONSE') {
@@ -409,7 +409,7 @@ export default defineContentScript({
           requestId: message.payload.requestId,
           success: message.payload.success,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'AUTH_RESPONSE') {
@@ -434,7 +434,7 @@ export default defineContentScript({
           publicKeyJwk: message.payload.publicKeyJwk,
           timestamp: message.payload.timestamp,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
 
       if (message.type === 'SIGN_ATTESTTO_PDF_RESPONSE') {
@@ -456,7 +456,7 @@ export default defineContentScript({
           signature: message.payload.signature,
           publicKeyJwk: message.payload.publicKeyJwk,
           error: message.payload.error,
-        }, '*')
+        }, window.location.origin)
       }
     })
   },

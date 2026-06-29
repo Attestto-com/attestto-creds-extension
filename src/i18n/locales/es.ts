@@ -120,6 +120,100 @@ export default {
     openFull: 'Abrir P\u00e1gina de Ajustes',
   },
 
+  home: {
+    openSettings: 'Abrir ajustes',
+    firstRun: {
+      title: 'La protecci\u00f3n contra phishing est\u00e1 activa',
+      body: 'Navegue normalmente \u2014 Attestto le avisar\u00e1 si un sitio intenta hacerse pasar por uno de su confianza.',
+      cta: 'Configurar identidad \u2192',
+      alreadyHave: '\u00bfYa tiene una?',
+      signIn: 'Iniciar sesi\u00f3n',
+      footer: 'Inicie sesi\u00f3n en sitios \u00b7 firme documentos \u00b7 guarde credenciales',
+    },
+    trustedSites: {
+      title: 'Sus sitios de confianza',
+      manage: 'Gestionar \u2192',
+    },
+    identity: {
+      active: 'Identidad activa',
+      upgradeBody: 'La identidad le permite iniciar sesi\u00f3n en sitios, firmar documentos y guardar credenciales.',
+      setupLink: 'Configurar identidad \u2192',
+    },
+  },
+
+  settingsNav: {
+    overview: 'Resumen',
+    security: 'Seguridad',
+    privacy: 'Privacidad',
+    subtitle: 'Ajustes',
+  },
+
+  overview: {
+    title: 'Bienvenido a Attestto ID',
+    subtitle: 'La protecci\u00f3n contra phishing est\u00e1 activa. La identidad es opcional.',
+    protection: {
+      title: 'Protecci\u00f3n contra phishing',
+      body: 'Attestto revisa los sitios que usted visita y le avisa cuando uno intenta hacerse pasar por otro. Funciona en todos los sitios \u2014 sin configuraci\u00f3n.',
+      trustedCount: 'a\u00fan no hay sitios en su lista de confianza | 1 sitio en su lista de confianza | {n} sitios en su lista de confianza',
+      manage: 'Gestionar sus sitios de confianza',
+    },
+    identity: {
+      title: 'Identidad',
+      activeBody: 'Su identidad est\u00e1 activa.',
+      upgradeBody: 'Inicie sesi\u00f3n en sitios, firme documentos y guarde credenciales. Opcional \u2014 la protecci\u00f3n contra phishing funciona sin esto.',
+      setup: 'Configurar identidad',
+      alreadyHave: '\u00bfYa tiene una?',
+      signIn: 'Iniciar sesi\u00f3n',
+    },
+    cards: {
+      security: 'Sitios de confianza, comportamiento de confianza, notificaciones.',
+      privacy: 'C\u00f3mo Attestto maneja compartir datos y telemetr\u00eda.',
+    },
+  },
+
+  security: {
+    subtitle: 'Controle c\u00f3mo Attestto maneja los sitios de confianza y las advertencias.',
+    saved: 'Guardado',
+    pinBehavior: {
+      title: 'Al marcar un sitio como de confianza',
+      description: 'Elija qu\u00e9 pasa cuando confirma un sitio como de confianza.',
+      ask:   { label: 'Preguntar primero',  desc: 'Confirma antes de agregar el sitio. Evita confianza accidental.' },
+      auto:  { label: 'Agregar de inmediato', desc: 'Sin confirmaci\u00f3n. Lo m\u00e1s r\u00e1pido y con menos protecci\u00f3n.' },
+      never: { label: 'Desactivar',          desc: 'Oculta la acci\u00f3n en todos lados. M\u00e1xima precauci\u00f3n.' },
+    },
+    notifications: {
+      title: 'Notificaciones',
+      description: 'Las notificaciones del navegador aparecen fuera de la p\u00e1gina y un sitio web no las puede falsificar.',
+      onRed:      'Av\u00edsame cuando un sitio sea marcado como peligroso',
+      onRotation: 'Av\u00edsame cuando cambie el certificado de un sitio de confianza',
+    },
+    trustedSites: {
+      title: 'Sus sitios de confianza',
+      description: 'Sitios que usted ha agregado expl\u00edcitamente a su lista de confianza. Esta informaci\u00f3n vive solo en este dispositivo.',
+      empty: 'A\u00fan no ha agregado sitios de confianza.',
+      remove: 'Quitar',
+      addedOn: 'Agregado el {date}',
+    },
+  },
+
+  privacy: {
+    subtitle: 'Lo que Attestto hace \u2014 y no hace \u2014 con sus datos.',
+    sharing: {
+      title: 'Sin compartir autom\u00e1tico',
+      body: 'Aqu\u00ed no hay interruptores que compartan datos autom\u00e1ticamente. Por dise\u00f1o.',
+      reminder: 'Cada vez que la extensi\u00f3n quiera enviar datos a alg\u00fan lugar \u2014 para un reporte, una verificaci\u00f3n, lo que sea \u2014 le pregunta en ese momento. Ning\u00fan ajuste puede anular eso.',
+    },
+    telemetry: {
+      title: 'Sin seguimiento de uso',
+      body: 'Attestto no recopila ni env\u00eda datos de uso. Si esto cambiara, se le preguntar\u00eda en cada env\u00edo, no mediante un ajuste.',
+    },
+    trustSurface: {
+      title: 'Qu\u00e9 puede confiar en pantalla',
+      body1: 'Una p\u00e1gina web puede mostrar lo que quiera \u2014 incluyendo una barra de seguridad falsa. Por eso las \u00fanicas superficies de Attestto en las que debe confiar completamente son las que controla el navegador: el icono de la barra de herramientas, la ventana que aparece al hacer clic, y las notificaciones del navegador.',
+      body2: 'Si una p\u00e1gina muestra algo que parece de Attestto pero usted no ha hecho clic en el icono, consid\u00e9relo parte de la p\u00e1gina \u2014 no de nosotros.',
+    },
+  },
+
   formats: {
     sdJwt: 'SD-JWT',
     jsonLd: 'JSON-LD',

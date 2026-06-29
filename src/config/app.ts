@@ -20,4 +20,8 @@ export const STORAGE_KEYS = {
   KDF_METHOD: 'attestto_ext_kdf_method',
   /** Base64url-encoded salt used for Argon2id passphrase KDF */
   PASSPHRASE_SALT: 'attestto_ext_passphrase_salt',
+  /** User TOFU pin store ({host: {domain, addedAt, properties}}) — anti-phishing trust pin, per-device */
+  PIN_STORE: 'attestto_pin_store',
+  /** First-seen-per-host timestamp map ({host: ISO}) — local-only baseline for site age signal */
+  FIRST_SEEN: 'attestto_first_seen',
 } as const

@@ -1,6 +1,6 @@
 # attestto-creds-extension — Operating Rules
 
-Self-sovereign identity wallet extension (WXT + Vue 3 + MV3). See `README.md` for the wire protocol, message types, and DID/VC feature surface.
+Digital ID wallet extension (WXT + Vue 3 + MV3). See `README.md` for the wire protocol, message types, and DID/VC feature surface.
 
 ## Critical: dual-vault storage architecture
 

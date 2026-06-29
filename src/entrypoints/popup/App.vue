@@ -58,10 +58,13 @@ function handleSettings(): void {
 
 <template>
   <div class="flex min-h-[200px] flex-col bg-slate-950 text-white">
-    <!-- First-time setup OR recovery flow (passphrase prompt / reset on PRF failure) -->
-    <LockScreenView v-if="!wallet.isSetUp || showLockView" />
+    <!-- Recovery flow only (passphrase prompt / reset on PRF failure).
+         Per ATT-724: the popup no longer gates on wallet.isSetUp — anti-phishing
+         surfaces are always visible; identity setup is presented as an optional
+         upgrade inside HomeView. -->
+    <LockScreenView v-if="showLockView" />
 
-    <!-- Normal state — always show credentials -->
+    <!-- Normal state — always show home view (anti-phishing primary, identity demoted) -->
     <template v-else>
       <ExtensionHeader
         :is-unlocked="wallet.isUnlocked"

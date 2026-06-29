@@ -63,7 +63,7 @@ export function buildCredentialHandlerScript(): string {
             audience: chapiVP.domain || window.location.origin,
             credentialType: 'VerifiablePresentation',
           },
-        }, '*');
+        }, window.location.origin);
 
         setTimeout(() => {
           window.removeEventListener('message', handleResponse);
@@ -114,7 +114,7 @@ export function buildCredentialHandlerScript(): string {
           audience: vpRequest.audience || window.location.origin,
           credentialType: vpRequest.credentialType || 'VerifiableCredential',
         },
-      }, '*');
+      }, window.location.origin);
 
       setTimeout(() => {
         window.removeEventListener('message', handleResponse);

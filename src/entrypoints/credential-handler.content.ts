@@ -102,7 +102,7 @@ export default defineContentScript({
                 audience: chapiVP.domain || window.location.origin,
                 credentialType: 'VerifiablePresentation',
               },
-            }, '*')
+            }, window.location.origin)
 
             setTimeout(() => {
               window.removeEventListener('message', handleResponse)
@@ -149,7 +149,7 @@ export default defineContentScript({
               audience: (vpRequest.audience as string) || window.location.origin,
               credentialType: (vpRequest.credentialType as string) || 'VerifiableCredential',
             },
-          }, '*')
+          }, window.location.origin)
 
           setTimeout(() => {
             window.removeEventListener('message', handleResponse)

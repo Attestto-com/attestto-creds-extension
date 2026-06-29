@@ -120,6 +120,100 @@ export default {
     openFull: 'Open Full Settings Page',
   },
 
+  home: {
+    openSettings: 'Open settings',
+    firstRun: {
+      title: 'Anti-phishing protection is on',
+      body: 'Browse normally — Attestto will warn you if a site tries to impersonate one you trust.',
+      cta: 'Set up identity →',
+      alreadyHave: 'Already have one?',
+      signIn: 'Sign in',
+      footer: 'Sign in to sites · sign documents · store credentials',
+    },
+    trustedSites: {
+      title: 'Your trusted sites',
+      manage: 'Manage →',
+    },
+    identity: {
+      active: 'Identity active',
+      upgradeBody: 'Identity lets you sign in to sites, sign documents, and store credentials.',
+      setupLink: 'Set up identity →',
+    },
+  },
+
+  settingsNav: {
+    overview: 'Overview',
+    security: 'Security',
+    privacy: 'Privacy',
+    subtitle: 'Settings',
+  },
+
+  overview: {
+    title: 'Welcome to Attestto ID',
+    subtitle: 'Anti-phishing protection is on. Identity is optional.',
+    protection: {
+      title: 'Anti-phishing protection',
+      body: 'Attestto checks the sites you visit and warns you when one tries to impersonate another. Works on every site — no setup needed.',
+      trustedCount: 'no sites in your trusted list yet | 1 site in your trusted list | {n} sites in your trusted list',
+      manage: 'Manage your trusted sites',
+    },
+    identity: {
+      title: 'Identity',
+      activeBody: 'Your identity is active.',
+      upgradeBody: 'Sign in to sites, sign documents, and store credentials. Optional — anti-phishing works without it.',
+      setup: 'Set up identity',
+      alreadyHave: 'Already have one?',
+      signIn: 'Sign in',
+    },
+    cards: {
+      security: 'Trusted sites, pin behavior, notifications.',
+      privacy: 'How Attestto handles sharing and usage data.',
+    },
+  },
+
+  security: {
+    subtitle: 'Control how Attestto handles trusted sites and warnings.',
+    saved: 'Saved',
+    pinBehavior: {
+      title: 'When you trust a site',
+      description: 'Choose what happens when you confirm a site as trusted.',
+      ask:   { label: 'Ask first',       desc: 'Confirm before adding the site. Prevents accidental trust.' },
+      auto:  { label: 'Add right away',  desc: 'No confirmation. Fastest; least guard-rail.' },
+      never: { label: 'Disable',         desc: 'Hide the action everywhere. Maximum caution.' },
+    },
+    notifications: {
+      title: 'Notifications',
+      description: 'Browser notifications appear outside the page and cannot be faked by a website.',
+      onRed:      'Notify me when a site is flagged as dangerous',
+      onRotation: 'Notify me when a trusted site\'s certificate changes',
+    },
+    trustedSites: {
+      title: 'Your trusted sites',
+      description: 'Sites you have explicitly added to your trusted list. These checks live only on this device.',
+      empty: 'You have not added any trusted sites yet.',
+      remove: 'Remove',
+      addedOn: 'Added {date}',
+    },
+  },
+
+  privacy: {
+    subtitle: 'What Attestto does — and does not — do with your data.',
+    sharing: {
+      title: 'No always-on sharing',
+      body: 'There are no toggles here that share data automatically. By design.',
+      reminder: 'Whenever the extension wants to send data anywhere — for a report, a verification, anything — it asks you at that moment. No setting can override that.',
+    },
+    telemetry: {
+      title: 'No usage tracking',
+      body: 'Attestto does not collect or send usage data. If this ever changes, you will be asked at each emission, not via a setting.',
+    },
+    trustSurface: {
+      title: 'What you can trust on screen',
+      body1: 'A web page can show anything it wants — including a fake security bar. So the only Attestto surfaces you should fully trust are the ones the browser controls: the toolbar icon, the popup that opens when you click it, and browser notifications.',
+      body2: 'If a page shows something that looks like Attestto but you have not clicked the toolbar icon, treat it as part of the page — not as us.',
+    },
+  },
+
   formats: {
     sdJwt: 'SD-JWT',
     jsonLd: 'JSON-LD',

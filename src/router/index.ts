@@ -10,6 +10,11 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
+      component: () => import('@/views/home/HomeView.vue'),
+    },
+    {
+      path: '/identities',
+      name: 'identity-list',
       component: () => import('@/views/identity/IdentityListView.vue'),
     },
     {

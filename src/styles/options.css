@@ -1,0 +1,13 @@
+@import 'tailwindcss';
+
+/* Options / Onboarding tab — full-width page, not the popup width constraint. */
+html, body {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  background: #f8fafc;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
