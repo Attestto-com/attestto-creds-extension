@@ -14,6 +14,7 @@ import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { parseProofRequest } from '@/services/didcomm'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
+import { hasIdentity } from '@/utils/identity-presence'
 import type { LinkedIdentity } from '@/stores/wallet'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
@@ -339,6 +340,20 @@ export default defineBackground(() => {
     authReq: { requestId: string; nonce: string; timestamp: string; origin: string },
     senderTabId: number | null,
   ): Promise<void> {
+    // Fail fast when there is no identity to sign with. Opening the approval
+    // popup with an empty identity list leaves the requesting page spinning
+    // until its 30s timeout (the "Waiting for approval…" hang). Reply
+    // immediately with an actionable message so the site can prompt the user
+    // to create a Digital ID instead.
+    if (!hasIdentity(await readPublicVault())) {
+      sendAuthErrorToTab(
+        senderTabId,
+        authReq.requestId,
+        'No Digital ID found. Open the Attestto extension and select "Set up identity" to create one, then try again.',
+      )
+      return
+    }
+
     pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
 
     const params = new URLSearchParams({
