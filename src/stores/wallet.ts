@@ -7,6 +7,7 @@ import { setupPasskey, unlockWithPasskey, hasPasskey, getKdfMethod } from '@/uti
 import { STORAGE_KEYS } from '@/config/app'
 import { PublicKey } from '@solana/web3.js'
 import type { StoredCredential, StoredKeyShare, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
+import type { SiteDidEntry } from '@/utils/site-did'
 
 /**
  * A platform-synced identity linked to this vault.
@@ -53,6 +54,12 @@ export interface VaultData {
   verificationMethod?: string
   /** Platform-synced identities — the primary identity model */
   linkedIdentities?: LinkedIdentity[]
+  /**
+   * Pairwise per-site login DIDs, keyed by normalized origin (`protocol//host`).
+   * Each site gets a unique `did:jwk` so it cannot correlate the user across
+   * the web. Never presented as identity — attributes flow only via VC.
+   */
+  siteDids?: Record<string, SiteDidEntry>
 }
 
 /**

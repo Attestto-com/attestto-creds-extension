@@ -16,6 +16,8 @@ Built with [WXT](https://wxt.dev) (Manifest V3), Vue 3, and Tailwind CSS 4.
 - **Encrypted Vault** — AES-256-GCM encrypted local storage, session-scoped decryption key
 - **Solana Integration** — View linked wallet tokens (SPL + Token-2022)
 - **W3C Credential API Bridge** — Content script intercepts `navigator.credentials.get()` for CHAPI-compatible flows
+- **Sign in with Attestto** — Pairwise per-site DID login: a unique `did:jwk` per origin (no cross-site correlation), with an anti-phishing first-visit acknowledgment
+- **Site identity card** — At-a-glance site info (name, domain, HTTPS, verification status, your per-site identity), shared by the popup and the approval window
 - **i18n** — English and Spanish out of the box, easily extensible
 
 ## Architecture

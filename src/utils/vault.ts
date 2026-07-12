@@ -28,6 +28,8 @@ export interface PublicVaultData {
   verificationMethod?: string
   holderDid?: string | null
   linkedIdentities?: LinkedIdentity[]
+  /** Public mirror of pairwise per-site DIDs (no keys): origin → { did, createdAt, lastUsedAt }. */
+  siteDids?: Record<string, { did: string; createdAt: string; lastUsedAt: string }>
 }
 
 // ── Public vault (always readable) ──────────────────────────
@@ -97,6 +99,15 @@ export async function syncPublicVault(vault: VaultData): Promise<void> {
     verificationMethod: vault.verificationMethod,
     holderDid: vault.holderDid,
     linkedIdentities: vault.linkedIdentities,
+    // Public mirror carries only origin → did — the private keys stay encrypted.
+    siteDids: vault.siteDids
+      ? Object.fromEntries(
+          Object.entries(vault.siteDids).map(([origin, entry]) => [
+            origin,
+            { did: entry.did, createdAt: entry.createdAt, lastUsedAt: entry.lastUsedAt },
+          ]),
+        )
+      : undefined,
   }
   await writePublicVault(pub)
 }

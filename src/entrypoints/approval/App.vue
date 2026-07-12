@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useWalletStore } from '@/stores/wallet'
 import { getPreferredIdentity, setPreferredIdentity } from '@/utils/site-identity-prefs'
+import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
+import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 import {
   ShieldCheckIcon,
   XMarkIcon,
@@ -73,11 +75,57 @@ const availableDids = computed<AvailableDid[]>(() => {
 
 const selectedDid = ref<string | null>(null)
 
+/**
+ * Auth (login) only: has the user signed in to this origin before? Derived from
+ * the existing trusted-origins store (recorded on a successful sign-in), which
+ * is set from the popup context so it doesn't depend on a service-worker reload.
+ */
+const siteHasPairwiseDid = ref(false)
+/**
+ * New-site acknowledgment gate. Forces a conscious "this is a site I haven't
+ * used before, and I meant to visit this URL" beat before a first sign-in —
+ * the anti-phishing catch: a look-alike clone lives on a different origin, so
+ * it always reads as a first visit even when the user expects their bank.
+ */
+const acknowledgedNewSite = ref(false)
+
+/** Origin-derived data for the shared SiteIdentityCard (auth mode). */
+const siteHost = computed(() => {
+  try {
+    return new URL(origin.value).host.toLowerCase().replace(/^www\./, '')
+  } catch {
+    return origin.value || 'Unknown'
+  }
+})
+const siteSecure = computed(() => origin.value.startsWith('https:'))
+const siteFavicon = computed(() =>
+  siteHost.value ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(siteHost.value)}&sz=64` : null,
+)
+
+/** Auto-dismiss an *idle* window so it doesn't linger in the background. */
+const AUTO_CLOSE_MS = 30_000
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
+
+/** (Re)start the idle countdown. Reset on interaction so active users aren't cut off. */
+function armAutoClose() {
+  if (autoCloseTimer) clearTimeout(autoCloseTimer)
+  autoCloseTimer = setTimeout(() => {
+    if (!approving.value) window.close()
+  }, AUTO_CLOSE_MS)
+}
+
 const formattedAmount = computed(() => {
   return `${paymentAmount.value.toFixed(2)} ${paymentCurrency.value}`
 })
 
 onMounted(async () => {
+  // Auto-dismiss an *idle* approval so it doesn't linger in the background. The
+  // countdown resets on any interaction, so an active user is never cut off;
+  // closing triggers the background's onClosed cleanup, which notifies the page.
+  armAutoClose()
+  window.addEventListener('pointerdown', armAutoClose)
+  window.addEventListener('keydown', armAutoClose)
+
   const params = new URLSearchParams(window.location.search)
 
   // Detect mode: credential-offer, auth (login), attestto PDF, signing, payment, or CHAPI
@@ -136,13 +184,25 @@ onMounted(async () => {
   // (if it still exists), otherwise the first available platform-synced identity.
   // availableDids is sourced from wallet.linkedIdentities only — local did:jwk
   // is intentionally excluded.
-  if (availableDids.value.length > 0) {
+  if (!isAuth.value && availableDids.value.length > 0) {
     const remembered = await getPreferredIdentity(origin.value)
     const stillAvailable = remembered && availableDids.value.some((d) => d.did === remembered)
     selectedDid.value = stillAvailable ? remembered : availableDids.value[0].did
   }
 
+  // Auth uses a pairwise per-site DID (find-or-create). Read the public mirror
+  // to show "returning" vs "first visit" before any unlock.
+  if (isAuth.value) {
+    siteHasPairwiseDid.value = await isOriginTrusted(origin.value)
+  }
+
   loading.value = false
+})
+
+onUnmounted(() => {
+  if (autoCloseTimer) clearTimeout(autoCloseTimer)
+  window.removeEventListener('pointerdown', armAutoClose)
+  window.removeEventListener('keydown', armAutoClose)
 })
 
 async function approve() {
@@ -201,7 +261,9 @@ async function approve() {
           : isPayment.value ? 'PAYMENT_APPROVE' : 'CHAPI_APPROVE'
     const payload: Record<string, string> = { requestId: requestId.value }
 
-    if ((isAuth.value || isPayment.value || isSigning.value || isAttesttoPdf.value) && selectedDid.value) {
+    // Auth is pairwise per-site (no identity choice); only the deliberate
+    // identity flows (payment, document signing) carry a selectedDid.
+    if ((isPayment.value || isSigning.value || isAttesttoPdf.value) && selectedDid.value) {
       payload.selectedDid = selectedDid.value
     }
 
@@ -211,9 +273,14 @@ async function approve() {
     })
 
     if (response?.ok) {
+      // Sign-in marks this origin as trusted/returning — recorded from the popup
+      // context (hot-reloads), so it takes effect without a service-worker reload.
+      if (isAuth.value && origin.value) {
+        await recordTrustedOrigin(origin.value)
+      }
       // Persist the user's identity choice for this origin so the next prompt
       // defaults to the same selection.
-      if (selectedDid.value && origin.value) {
+      if (!isAuth.value && selectedDid.value && origin.value) {
         await setPreferredIdentity(origin.value, selectedDid.value)
       }
       window.close()
@@ -423,8 +490,8 @@ async function handleResetVault() {
       </div>
     </div>
 
-    <!-- Origin -->
-    <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
+    <!-- Origin (non-auth modes; auth shows the shared SiteIdentityCard below) -->
+    <div v-if="!isAuth" class="rounded-lg border border-slate-700 bg-slate-900 p-3">
       <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Requesting site</p>
       <p class="mt-1 text-xs font-mono text-white break-all">{{ origin || 'Unknown' }}</p>
     </div>
@@ -459,8 +526,32 @@ async function handleResetVault() {
 
     <!-- Ready to approve -->
     <template v-else>
-      <!-- DID Picker -->
+      <!-- Auth (login): the shared site card, then a new-site acknowledgment -->
+      <template v-if="isAuth">
+        <SiteIdentityCard
+          :host="siteHost"
+          :site-name="null"
+          :is-secure="siteSecure"
+          :favicon-src="siteFavicon"
+          :has-identity="siteHasPairwiseDid"
+        />
+        <!-- New-site acknowledgment (the trust signal is new-vs-returning, not the
+             key). Gates the Sign In button. -->
+        <label
+          v-if="!siteHasPairwiseDid"
+          class="flex items-start gap-2 rounded-md border border-amber-700/40 bg-amber-950/20 p-2 cursor-pointer"
+        >
+          <input v-model="acknowledgedNewSite" type="checkbox" class="mt-0.5 accent-amber-500" />
+          <span class="text-[11px] leading-relaxed text-amber-200">
+            I haven't used an identity here before, and I meant to visit
+            <strong class="font-mono break-all">{{ origin }}</strong>.
+          </span>
+        </label>
+      </template>
+
+      <!-- DID Picker (deliberate identity flows: sign / pay / share) -->
       <div
+        v-else
         class="rounded-lg border p-3 space-y-2"
         :class="isPayment ? 'border-emerald-700/50 bg-emerald-950/20' : 'border-emerald-700/50 bg-emerald-950/20'"
       >
@@ -487,8 +578,8 @@ async function handleResetVault() {
 
       <!-- Context text -->
       <p v-if="isAuth" class="text-[10px] text-slate-500 text-center leading-relaxed">
-        You're signing in to <strong class="text-slate-300">{{ origin }}</strong> with your Attestto ID.
-        We'll prove it's you without sharing any personal data.
+        You're signing in to <strong class="text-slate-300">{{ origin }}</strong> with a site-specific identity —
+        it proves it's you here without sharing personal data or letting other sites link this.
       </p>
       <p v-else-if="isAttesttoPdf" class="text-[10px] text-slate-500 text-center leading-relaxed">
         Your Attestto self-attested signature (Ed25519) will be embedded into <strong class="text-slate-300">{{ attesttoPdfFileName }}</strong>.
@@ -556,7 +647,7 @@ async function handleResetVault() {
         <button
           class="flex items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-medium text-white disabled:opacity-50"
           :class="isAuth ? 'bg-purple-600 hover:bg-purple-500' : (isSigning || isAttesttoPdf) ? 'bg-blue-600 hover:bg-blue-500' : isPayment ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'"
-          :disabled="approving || !selectedDid"
+          :disabled="approving || (!isAuth && !selectedDid) || (isAuth && !siteHasPairwiseDid && !acknowledgedNewSite)"
           @click="approve"
         >
           <component :is="isAuth ? LockClosedIcon : (isSigning || isAttesttoPdf) ? DocumentCheckIcon : isPayment ? BanknotesIcon : ShieldCheckIcon" class="h-4 w-4" />

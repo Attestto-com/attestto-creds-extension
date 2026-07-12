@@ -159,6 +159,17 @@ export default {
       identityFooter: 'Opcional: inicie sesi\u00f3n en sitios con su ID Digital',
       setUpLink: 'Configurar identidad \u2192',
     },
+    siteCert: {
+      sslSecure: 'Conexi\u00f3n segura (HTTPS)',
+      sslInsecure: 'No segura (HTTP)',
+      siteIdentity: 'Identidad del sitio',
+      notVerified: 'Sitio no verificado por Attestto',
+      yourIdentity: 'Su identidad aqu\u00ed',
+      levelBasic: 'B\u00e1sica \u2014 no vinculada a ninguna persona ni dato',
+      created: 'ID creada',
+      lastUsed: '\u00daltimo uso aqu\u00ed',
+      firstVisit: 'Primera visita \u2014 a\u00fan no hay identidad aqu\u00ed',
+    },
   },
   report: {
     title: 'Reportar este sitio',

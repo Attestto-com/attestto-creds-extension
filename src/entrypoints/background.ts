@@ -21,6 +21,8 @@ import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
+import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
+import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
 
 export default defineBackground(() => {
@@ -1717,21 +1719,30 @@ export default defineBackground(() => {
         pendingAuthRequests.delete(authApproveId)
 
         readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
+          if (!vault) {
             sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'Vault not ready')
             sendResponse({ ok: false, error: 'Vault not ready' })
             return
           }
 
-          const holderDid = selectedAuthDid || vault.holderDid || vault.did
-
-          if (!holderDid) {
-            sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'No identity configured')
-            sendResponse({ ok: false, error: 'No identity configured' })
-            return
-          }
+          // Login uses a PAIRWISE DID per origin — find-or-create so this site
+          // can never correlate the user across the web. `selectedDid` from the
+          // popup is intentionally ignored here: identity choice is not a login
+          // concept, a site must request a VC to learn anything about the user.
+          void selectedAuthDid
 
           try {
+            const { siteDids, entry } = await findOrCreateSiteDid(
+              vault.siteDids,
+              pendingAuthReq.origin,
+            )
+            // Stamp the visit and persist every time (create or reuse) so the
+            // popup can show created + last-used for this site.
+            entry.lastUsedAt = new Date().toISOString()
+            vault.siteDids = siteDids
+            await writeVault(vault)
+            await syncPublicVault(vault)
+
             // Canonical auth payload — MUST match backend DidAuthController
             // exactly. The page may pass an explicit `audience`; if it doesn't,
             // we fall back to origin (matching CORTEX's `audience ?? origin`).
@@ -1741,7 +1752,7 @@ export default defineBackground(() => {
 
             const privateKey = await crypto.subtle.importKey(
               'jwk',
-              vault.privateKeyJwk,
+              entry.privateKeyJwk,
               { name: 'ECDSA', namedCurve: 'P-256' },
               false,
               ['sign'],
@@ -1756,21 +1767,25 @@ export default defineBackground(() => {
 
             const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
 
-            // Surface the public-key half of the vault JWK so the backend can
-            // verify the signature even when no user_extension_keys row exists
-            // yet (TOFU flow / fresh integrations).
-            const jwk = vault.privateKeyJwk as Record<string, string>
+            // Deciding to sign in IS the trust decision — pin the site so its
+            // popup grade reflects it (no separate "Trust this site" step). The
+            // per-origin phishing acknowledgment already gated this choice.
+            try {
+              const trustedHost = new URL(pendingAuthReq.origin).host.toLowerCase().replace(/^www\./, '')
+              if (trustedHost) await pinSite(trustedHost)
+            } catch {
+              // Best-effort: never block sign-in on a pin failure.
+            }
+
+            // Surface the public-key half so the backend can verify by
+            // stateless proof-of-possession (TOFU) — pairwise did:jwk keys are
+            // never pre-registered.
             const responseData = {
-              did: holderDid,
+              did: entry.did,
               signature,
               nonce: pendingAuthReq.nonce,
               timestamp: pendingAuthReq.timestamp,
-              publicKeyJwk: {
-                kty: jwk.kty || 'EC',
-                crv: jwk.crv || 'P-256',
-                x: jwk.x,
-                y: jwk.y,
-              },
+              publicKeyJwk: publicJwkOf(entry),
             }
             sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
             sendResponse({ ok: true, ...responseData })

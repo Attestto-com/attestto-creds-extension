@@ -159,6 +159,17 @@ export default {
       identityFooter: 'Optional: sign in to sites with Digital ID',
       setUpLink: 'Set up identity →',
     },
+    siteCert: {
+      sslSecure: 'Secure connection (HTTPS)',
+      sslInsecure: 'Not secure (HTTP)',
+      siteIdentity: 'Site identity',
+      notVerified: 'Not an Attestto-verified site',
+      yourIdentity: 'Your identity here',
+      levelBasic: 'Basic — not tied to any physical person or data',
+      created: 'ID created',
+      lastUsed: 'Last used here',
+      firstVisit: 'First visit — no identity here yet',
+    },
   },
   report: {
     title: 'Report this site',
