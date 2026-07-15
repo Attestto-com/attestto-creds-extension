@@ -36,7 +36,7 @@ export default defineConfig({
 
     web_accessible_resources: [
       {
-        resources: ['assets/*', 'offscreen/index.html', 'wallet-discovery.js', 'icon/*'],
+        resources: ['assets/*', 'offscreen/index.html', 'wallet-discovery.js', 'icon/*', 'data/*'],
         matches: ['<all_urls>'],
       },
     ],
