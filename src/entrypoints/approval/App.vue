@@ -47,6 +47,8 @@ const attesttoPdfHash = ref('')
 
 /** Auth (login) mode — detected from URL params (ATT-123) */
 const isAuth = ref(false)
+/** Requesting page's title, for the shared site card (parity with the toolbar popup). */
+const siteName = ref<string | null>(null)
 
 /** Credential offer mode — identity sync or VC issuance push */
 const isCredentialOffer = ref(false)
@@ -147,6 +149,7 @@ onMounted(async () => {
     isAuth.value = true
     requestId.value = authReqId
     origin.value = params.get('origin') || ''
+    siteName.value = params.get('siteName')?.trim() || null
   } else if (attesttoPdfReqId) {
     isAttesttoPdf.value = true
     requestId.value = attesttoPdfReqId
@@ -530,7 +533,7 @@ async function handleResetVault() {
       <template v-if="isAuth">
         <SiteIdentityCard
           :host="siteHost"
-          :site-name="null"
+          :site-name="siteName"
           :is-secure="siteSecure"
           :favicon-src="siteFavicon"
           :has-identity="siteHasPairwiseDid"

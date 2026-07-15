@@ -358,10 +358,24 @@ export default defineBackground(() => {
 
     pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
 
+    // Resolve the requesting page's title so the approval popup shows the same
+    // "site certificate" heading the toolbar popup does (parity with
+    // CurrentSiteCard, which reads tab.title). Best-effort — the tab may be gone.
+    let siteName = ''
+    if (senderTabId != null) {
+      try {
+        const tab = await chrome.tabs.get(senderTabId)
+        siteName = tab?.title?.trim() || ''
+      } catch {
+        // Tab closed or navigated away — fall back to the origin-only card.
+      }
+    }
+
     const params = new URLSearchParams({
       authRequest: authReq.requestId,
       origin: authReq.origin || '',
     })
+    if (siteName) params.set('siteName', siteName)
 
     const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
 
