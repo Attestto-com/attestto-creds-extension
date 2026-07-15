@@ -23,12 +23,19 @@ export interface SettingsConfig {
   notifyOnRed: boolean
   /** OS-level notification when a pinned site's cert rotates suspiciously. */
   notifyOnRotation: boolean
+  /**
+   * Inject the in-page trust bar on Costa Rican government sites (`.go.cr`,
+   * `.fi.cr`, etc.) when the host is in our TLS snapshot. Opt-out only; the
+   * bar never appears on non-gov sites regardless of this flag.
+   */
+  trustBarEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS: SettingsConfig = {
   pinBehavior: 'ask',
   notifyOnRed: true,
   notifyOnRotation: true,
+  trustBarEnabled: true,
 }
 
 const STORAGE_KEY = 'attestto_settings'

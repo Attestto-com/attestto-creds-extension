@@ -34,6 +34,8 @@ import { isBlocked, onBlocklistChanged } from '@/utils/blocklist-store'
 import { readSettings } from '@/utils/settings-config'
 import { lookupHost } from '@/utils/trust-registry'
 import { homographState } from '@/utils/homograph'
+import { isGovHost } from '@/utils/gov-host'
+import { lookupTls } from '@/utils/tls-snapshot'
 
 export type TrustState =
   | 'neutral'
@@ -206,6 +208,63 @@ async function applyToTab(tabId: number, state: TrustState): Promise<void> {
 }
 
 /**
+ * Gov-site TLS validation badge (passive, positive cue).
+ *
+ * When the active tab is a Costa Rican public-sector host AND that host is in
+ * our bundled TLS snapshot, stamp a per-tab EV/OV/DV badge on the toolbar icon:
+ *   - EV → green (#16a34a)
+ *   - OV → blue  (#2563eb)
+ *   - DV → amber (#d97706)
+ *   - expired cert → red (#dc2626), overriding the tier color
+ *
+ * Returns `true` if it painted a gov badge (so the caller skips clearing it),
+ * `false` for non-gov / non-snapshot tabs. Fails soft — any error → no badge.
+ *
+ * This is layered ON TOP of the anti-phishing state machine: the '!' warning
+ * badge (yellow/red states) always wins, so we only paint the gov tier badge
+ * when the trust state itself carries no badge (neutral / green).
+ */
+async function applyGovTlsBadge(tabId: number, host: string): Promise<boolean> {
+  try {
+    if (!isGovHost(host)) return false
+    const row = await lookupTls(host)
+    if (!row || !row.ok) return false
+
+    let text: string
+    let color: string
+    if (row.expired) {
+      text = row.validationTier === 'unknown' ? 'DV' : row.validationTier
+      color = '#dc2626' // red — expired trumps tier
+    } else {
+      switch (row.validationTier) {
+        case 'EV':
+          text = 'EV'
+          color = '#16a34a'
+          break
+        case 'OV':
+          text = 'OV'
+          color = '#2563eb'
+          break
+        case 'DV':
+          text = 'DV'
+          color = '#d97706'
+          break
+        default:
+          // 'unknown' tier — no meaningful tier cue, leave badge alone.
+          return false
+      }
+    }
+
+    await chrome.action.setBadgeText({ tabId, text }).catch(() => {})
+    await chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => {})
+    return true
+  } catch (err) {
+    console.debug('[Attestto ID] gov TLS badge skipped:', err)
+    return false
+  }
+}
+
+/**
  * Re-evaluate a tab and apply icon. Fires notifications on transitions
  * into RED (when that state ever triggers in the future).
  */
@@ -222,6 +281,18 @@ async function refreshTab(tabId: number, url: string | undefined): Promise<void>
   const prev = tabStates.get(tabId)
   tabStates.set(tabId, state)
   await applyToTab(tabId, state)
+
+  // Gov-site TLS tier badge — passive positive cue, only when the anti-phishing
+  // state carries no warning badge of its own (neutral / green states).
+  if (!STATE_VISUALS[state].badge) {
+    let host = ''
+    try {
+      host = new URL(url).host.toLowerCase()
+    } catch {
+      host = ''
+    }
+    if (host) await applyGovTlsBadge(tabId, host)
+  }
 
   if (state === 'red' && prev !== 'red') {
     await maybeNotifyRed(url)

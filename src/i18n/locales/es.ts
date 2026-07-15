@@ -240,6 +240,11 @@ export default {
       onRed:      'Av\u00edsame cuando un sitio sea marcado como peligroso',
       onRotation: 'Av\u00edsame cuando cambie el certificado de un sitio de confianza',
     },
+    trustBar: {
+      title: 'Barra de confianza en sitios del gobierno',
+      description: 'En sitios del gobierno de Costa Rica (.go.cr, .fi.cr y similares) cuyo certificado tenemos registrado, muestra una barra delgada en la parte superior de la p\u00e1gina con un resumen del certificado. Nunca aparece en otros sitios.',
+      enabled: 'Mostrar la barra de confianza en sitios del gobierno',
+    },
     trustedSites: {
       title: 'Sus sitios de confianza',
       description: 'Sitios que usted ha agregado expl\u00edcitamente a su lista de confianza. Esta informaci\u00f3n vive solo en este dispositivo.',

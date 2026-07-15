@@ -240,6 +240,11 @@ export default {
       onRed:      'Notify me when a site is flagged as dangerous',
       onRotation: 'Notify me when a trusted site\'s certificate changes',
     },
+    trustBar: {
+      title: 'Government site trust bar',
+      description: 'On Costa Rican government sites (.go.cr, .fi.cr and similar) whose certificate we have on record, show a thin bar at the top of the page summarizing the certificate. It never appears on other sites.',
+      enabled: 'Show trust bar on government sites',
+    },
     trustedSites: {
       title: 'Your trusted sites',
       description: 'Sites you have explicitly added to your trusted list. These checks live only on this device.',

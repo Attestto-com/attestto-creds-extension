@@ -107,6 +107,16 @@ const sortedPins = computed(() =>
       </label>
     </section>
 
+    <!-- Government trust bar -->
+    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-slate-900">{{ t('security.trustBar.title') }}</h2>
+      <p class="mb-4 text-sm text-slate-600">{{ t('security.trustBar.description') }}</p>
+      <label class="flex cursor-pointer items-center justify-between gap-4 py-2">
+        <span class="text-sm text-slate-900">{{ t('security.trustBar.enabled') }}</span>
+        <input v-model="cfg.trustBarEnabled" type="checkbox" class="size-5 accent-cyan-600" />
+      </label>
+    </section>
+
     <!-- Trusted sites -->
     <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 class="mb-1 text-lg font-semibold text-slate-900">{{ t('security.trustedSites.title') }}</h2>

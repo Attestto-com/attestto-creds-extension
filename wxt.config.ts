@@ -32,7 +32,16 @@ export default defineConfig({
       'webNavigation',
     ],
 
-    host_permissions: [],
+    host_permissions: [
+      // CR public-sector zones — scope for the in-page gov TLS trust bar
+      // (trust-bar.content.ts). Deliberately NOT <all_urls>.
+      '*://*.go.cr/*',
+      '*://*.fi.cr/*',
+      '*://*.sa.cr/*',
+      '*://*.ac.cr/*',
+      '*://*.ed.cr/*',
+      '*://*.or.cr/*',
+    ],
 
     web_accessible_resources: [
       {
