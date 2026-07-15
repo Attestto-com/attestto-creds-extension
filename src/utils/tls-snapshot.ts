@@ -28,8 +28,18 @@ export type TlsSnapshotRow = TlsClassification & {
   tlsVersion?: string | null
 }
 
+/**
+ * On-disk shape of the packaged snapshot: a `generatedAt` scan date plus the
+ * per-host classification rows. `generatedAt` may be absent on older snapshots.
+ */
+export type TlsSnapshotFile = {
+  generatedAt?: string | null
+  hosts: TlsSnapshotRow[]
+}
+
 /** In-memory cache — the snapshot is immutable for the extension's lifetime. */
 let snapshotCache: TlsSnapshotRow[] | null = null
+let generatedAtCache: string | null = null
 let loadPromise: Promise<TlsSnapshotRow[]> | null = null
 
 /** Resolve the packaged snapshot URL (web-accessible resource). */
@@ -50,15 +60,36 @@ export async function loadTlsSnapshot(): Promise<TlsSnapshotRow[]> {
       const res = await fetch(snapshotUrl())
       if (!res.ok) throw new Error(`snapshot fetch ${res.status}`)
       const data = (await res.json()) as unknown
-      snapshotCache = Array.isArray(data) ? (data as TlsSnapshotRow[]) : []
+      if (Array.isArray(data)) {
+        // Legacy shape: a bare array of rows, no scan date.
+        snapshotCache = data as TlsSnapshotRow[]
+        generatedAtCache = null
+      } else if (data && typeof data === 'object' && Array.isArray((data as TlsSnapshotFile).hosts)) {
+        const file = data as TlsSnapshotFile
+        snapshotCache = file.hosts
+        generatedAtCache = typeof file.generatedAt === 'string' ? file.generatedAt : null
+      } else {
+        snapshotCache = []
+        generatedAtCache = null
+      }
     } catch (err) {
       console.debug('[Attestto ID] TLS snapshot load failed:', err)
       snapshotCache = []
+      generatedAtCache = null
     }
     return snapshotCache
   })()
 
   return loadPromise
+}
+
+/**
+ * The snapshot's `generatedAt` scan date, or `null` if the snapshot has not
+ * been loaded yet or predates the dated format. Call after `loadTlsSnapshot`
+ * (or any `lookupTls`) has resolved to get a meaningful value.
+ */
+export function snapshotDate(): string | null {
+  return generatedAtCache
 }
 
 /** Lowercase, trimmed host — tolerant of null/undefined. */

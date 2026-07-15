@@ -1,4 +1,6 @@
-[
+{
+  "generatedAt": "2026-07-15",
+  "hosts": [
   {
     "host": "www.hacienda.go.cr",
     "tlsVersion": "TLSv1.3",
@@ -349,4 +351,5 @@
     "ok": true,
     "error": null
   }
-]
+  ]
+}

@@ -15,7 +15,7 @@ import {
   LockOpenIcon,
   DocumentCheckIcon,
 } from '@heroicons/vue/24/outline'
-import { lookupTls, type TlsSnapshotRow } from '@/utils/tls-snapshot'
+import { lookupTls, snapshotDate, type TlsSnapshotRow } from '@/utils/tls-snapshot'
 
 const props = defineProps<{
   host: string
@@ -40,8 +40,14 @@ const faviconOk = ref(true)
  */
 const tls = ref<TlsSnapshotRow | null>(null)
 
+/** Scan date of the bundled snapshot ('generatedAt'), populated after load. */
+const tlsSnapshotDate = ref<string | null>(null)
+
 async function loadTls(host: string | null | undefined): Promise<void> {
   tls.value = host ? await lookupTls(host) : null
+  // `snapshotDate()` is only meaningful once the snapshot has been fetched,
+  // which `lookupTls` guarantees.
+  tlsSnapshotDate.value = snapshotDate()
 }
 
 onMounted(() => void loadTls(props.host))
@@ -64,11 +70,51 @@ const tierChipClass = computed(() => {
   }
 })
 
-/** Expiry is urgent when expired or fewer than 30 days remain. */
-const expiryUrgent = computed(() => {
+/**
+ * Expiry severity: `expired` (red) when the cert is past its validity or the
+ * remaining days went negative, `soon` (amber) when fewer than 30 days remain,
+ * otherwise `ok` (normal).
+ */
+const expirySeverity = computed<'expired' | 'soon' | 'ok'>(() => {
   const c = tls.value
-  if (!c) return false
-  return c.expired || (typeof c.daysToExpiry === 'number' && c.daysToExpiry < 30)
+  if (!c) return 'ok'
+  if (c.expired || (typeof c.daysToExpiry === 'number' && c.daysToExpiry < 0)) return 'expired'
+  if (typeof c.daysToExpiry === 'number' && c.daysToExpiry < 30) return 'soon'
+  return 'ok'
+})
+
+/** Text color for the expiry line — follows the card's chip color language. */
+const expiryTextClass = computed(() => {
+  switch (expirySeverity.value) {
+    case 'expired':
+      return 'text-red-400'
+    case 'soon':
+      return 'text-amber-300'
+    default:
+      return 'text-white/85'
+  }
+})
+
+/** Muted label color paired with `expiryTextClass`. */
+const expiryLabelClass = computed(() => {
+  switch (expirySeverity.value) {
+    case 'expired':
+      return 'text-red-400/80'
+    case 'soon':
+      return 'text-amber-300/80'
+    default:
+      return 'text-white/70'
+  }
+})
+
+/** Absolute expiry date derived from the row's `validTo`, or null when absent. */
+const expiryAbsolute = computed<string | null>(() => {
+  const iso = tls.value?.validTo
+  if (!iso) return null
+  const dt = new Date(iso)
+  return Number.isNaN(dt.getTime())
+    ? null
+    : dt.toISOString().slice(0, 10)
 })
 
 function fmtDate(iso?: string | null): string {
@@ -172,21 +218,28 @@ function fmtDate(iso?: string | null): string {
             {{ tls.isFreeCA ? t('home.siteCert.tlsFree') : t('home.siteCert.tlsPaid') }}
           </p>
 
-          <!-- Expiry — red when expired or <30 days. -->
-          <p :class="expiryUrgent ? 'text-red-400' : 'text-white/85'">
-            <span :class="expiryUrgent ? 'text-red-400/80' : 'text-white/70'">
+          <!-- Expiry — amber under 30 days, red when expired/past. -->
+          <p :class="expiryTextClass">
+            <span :class="expiryLabelClass">
               {{ t('home.siteCert.tlsExpiry') }}:
             </span>
             <template v-if="tls.expired">{{ t('home.siteCert.tlsExpired') }}</template>
             <template v-else-if="typeof tls.daysToExpiry === 'number'">
-              {{ t('home.siteCert.tlsExpiryDays', { days: tls.daysToExpiry }) }}
+              {{ t('home.siteCert.tlsExpiryDays', { days: tls.daysToExpiry })
+              }}<template v-if="expiryAbsolute"> ({{ expiryAbsolute }})</template>
             </template>
             <template v-else>—</template>
           </p>
         </div>
       </template>
 
-      <p class="mt-1.5 text-xs text-white/50">{{ t('home.siteCert.tlsSnapshotNote') }}</p>
+      <p class="mt-1.5 text-xs text-white/50">
+        {{
+          tlsSnapshotDate
+            ? t('home.siteCert.tlsSnapshotNoteDated', { date: tlsSnapshotDate })
+            : t('home.siteCert.tlsSnapshotNote')
+        }}
+      </p>
     </div>
   </div>
 </template>

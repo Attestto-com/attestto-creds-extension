@@ -178,6 +178,7 @@ export default {
       tlsExpiryDays: '{days} days',
       tlsExpired: 'Expired',
       tlsSnapshotNote: 'From Attestto public-sector snapshot',
+      tlsSnapshotNoteDated: 'From Attestto public-sector snapshot · as of {date}',
       tlsScanError: 'Scan failed — certificate could not be read',
     },
   },

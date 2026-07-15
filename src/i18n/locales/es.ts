@@ -178,6 +178,7 @@ export default {
       tlsExpiryDays: '{days} d\u00edas',
       tlsExpired: 'Vencido',
       tlsSnapshotNote: 'Del muestreo del sector p\u00fablico de Attestto',
+      tlsSnapshotNoteDated: 'Del muestreo del sector p\u00fablico de Attestto \u00b7 al {date}',
       tlsScanError: 'Escaneo fallido \u2014 no se pudo leer el certificado',
     },
   },
