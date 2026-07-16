@@ -4,6 +4,8 @@ import { useRouter } from 'vue-router'
 import { FingerPrintIcon, PlusCircleIcon, ArrowDownTrayIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
 import type { LinkedIdentity } from '@/stores/wallet'
+import PopupPanel from '@/components/layout/PopupPanel.vue'
+import PanelButton from '@/components/layout/PanelButton.vue'
 
 const router = useRouter()
 const wallet = useWalletStore()
@@ -69,41 +71,42 @@ function selectIdentity(did: string): void {
     </button>
 
     <!-- Onboarding — no platform-synced identity yet (light "welcome" panel) -->
-    <div
-      v-if="identities.length === 0"
-      class="overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-100 via-purple-50 to-sky-100 p-6 text-center shadow-lg ring-1 ring-black/5"
-    >
-      <div
-        class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-white/70 shadow-sm"
-      >
-        <FingerPrintIcon class="h-7 w-7 text-indigo-600" />
-      </div>
-      <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
-        Welcome to
-      </p>
-      <p class="mt-0.5 text-lg font-bold text-slate-900">Attestto ID</p>
-      <p class="mx-auto mt-1.5 max-w-[16rem] text-[11px] leading-relaxed text-slate-600">
-        Your digital identity and credentials, held in this wallet — never on the sites you use.
-      </p>
+    <PopupPanel v-if="identities.length === 0" tone="light">
+      <div class="text-center">
+        <div
+          class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-white/70 shadow-sm"
+        >
+          <FingerPrintIcon class="h-7 w-7 text-indigo-600" />
+        </div>
+        <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+          Welcome to
+        </p>
+        <p class="mt-0.5 text-lg font-bold text-slate-900">Attestto ID</p>
+        <p class="mx-auto mt-1.5 max-w-[16rem] text-[11px] leading-relaxed text-slate-600">
+          Your digital identity and credentials, held in this wallet — never on the sites you use.
+        </p>
 
-      <div class="mt-5 space-y-2.5">
-        <a
-          :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
-          target="_blank"
-          class="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
-        >
-          <PlusCircleIcon class="h-4 w-4" />
-          Get Started
-        </a>
-        <a
-          :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
-          target="_blank"
-          class="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white/70 px-4 py-2.5 text-xs font-semibold text-slate-800 transition-colors hover:bg-white"
-        >
-          <ArrowDownTrayIcon class="h-4 w-4" />
-          Log in to sync
-        </a>
+        <div class="mt-5 space-y-2.5">
+          <PanelButton
+            variant="primary"
+            tone="light"
+            :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
+            target="_blank"
+          >
+            <PlusCircleIcon class="h-4 w-4" />
+            Get Started
+          </PanelButton>
+          <PanelButton
+            variant="secondary"
+            tone="light"
+            :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
+            target="_blank"
+          >
+            <ArrowDownTrayIcon class="h-4 w-4" />
+            Log in to sync
+          </PanelButton>
+        </div>
       </div>
-    </div>
+    </PopupPanel>
   </div>
 </template>
