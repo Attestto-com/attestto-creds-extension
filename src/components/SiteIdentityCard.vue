@@ -18,6 +18,7 @@ import {
 } from '@heroicons/vue/24/outline'
 import { lookupTls, snapshotDate, type TlsSnapshotRow } from '@/utils/tls-snapshot'
 import type { TrustState } from '@/utils/tab-state'
+import PopupPanel from '@/components/layout/PopupPanel.vue'
 
 const props = defineProps<{
   host: string
@@ -163,7 +164,8 @@ function fmtDate(iso?: string | null): string {
 </script>
 
 <template>
-  <div class="space-y-3 rounded-lg border border-slate-700 bg-slate-900 p-3">
+  <PopupPanel tone="dark" dense>
+    <div class="space-y-3">
     <!-- 0. Trust-state banner — red danger (impersonation/blocklist), amber
          caution, or green verified/pinned. Mirrors the unspoofable toolbar icon. -->
     <div v-if="stateBanner && bannerStyle" class="rounded-md border p-2.5" :class="bannerStyle.box">
@@ -306,5 +308,6 @@ function fmtDate(iso?: string | null): string {
         {{ t('home.siteCert.antiPhishing') }}
       </p>
     </div>
-  </div>
+    </div>
+  </PopupPanel>
 </template>

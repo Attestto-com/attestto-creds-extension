@@ -8,17 +8,24 @@
  *   - 'dark'  → focused trust/security surfaces (site identity, approval)
  *
  * This is how the popup stays consistent by construction instead of per-view.
+ *
+ * `dense` swaps the airy welcome padding for the tighter padding the
+ * information-dense trust surfaces (site identity, approval) need.
  */
-withDefaults(defineProps<{ tone?: 'light' | 'dark' }>(), { tone: 'dark' })
+withDefaults(defineProps<{ tone?: 'light' | 'dark'; dense?: boolean }>(), {
+  tone: 'dark',
+  dense: false,
+})
 </script>
 
 <template>
   <section
     :class="[
-      'overflow-hidden rounded-2xl p-6 shadow-lg ring-1',
+      'overflow-hidden shadow-lg ring-1',
+      dense ? 'rounded-xl p-3' : 'rounded-2xl p-6',
       tone === 'light'
         ? 'bg-gradient-to-br from-indigo-100 via-purple-50 to-sky-100 text-slate-900 ring-black/5'
-        : 'bg-slate-900 text-white ring-white/5',
+        : 'bg-slate-900 text-white ring-slate-700/60',
     ]"
   >
     <slot />
