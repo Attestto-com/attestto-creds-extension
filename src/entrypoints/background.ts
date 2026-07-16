@@ -69,10 +69,11 @@ export default defineBackground(() => {
       const winLeft = current.left ?? 0
       const winTop = current.top ?? 0
       const winWidth = current.width ?? 1280
-      void height
+      const winHeight = current.height ?? 800
+      // Center the approval window over the active browser window.
       return {
-        left: Math.max(0, Math.round(winLeft + winWidth - width - 16)),
-        top: Math.max(0, Math.round(winTop + 80)),
+        left: Math.max(0, Math.round(winLeft + (winWidth - width) / 2)),
+        top: Math.max(0, Math.round(winTop + (winHeight - height) / 2)),
       }
     } catch {
       return { left: 100, top: 100 }

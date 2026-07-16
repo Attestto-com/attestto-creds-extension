@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { FingerPrintIcon } from '@heroicons/vue/24/outline'
+import { FingerPrintIcon, PlusCircleIcon, ArrowDownTrayIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
 import type { LinkedIdentity } from '@/stores/wallet'
 
@@ -36,7 +36,10 @@ function selectIdentity(did: string): void {
 
 <template>
   <div class="space-y-3">
-    <p class="px-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+    <p
+      v-if="identities.length > 0"
+      class="px-1 text-[10px] font-medium uppercase tracking-wider text-slate-500"
+    >
       My Identities
     </p>
 
@@ -65,37 +68,42 @@ function selectIdentity(did: string): void {
       </svg>
     </button>
 
-    <!-- Onboarding — no platform-synced identity yet -->
+    <!-- Onboarding — no platform-synced identity yet (light "welcome" panel) -->
     <div
       v-if="identities.length === 0"
-      class="rounded-lg border border-slate-700 bg-slate-900 p-6 text-center space-y-4"
+      class="overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-100 via-purple-50 to-sky-100 p-6 text-center shadow-lg ring-1 ring-black/5"
     >
-      <FingerPrintIcon class="mx-auto h-10 w-10 text-indigo-400" />
-      <div>
-        <p class="text-sm font-medium text-white">Set up your identity</p>
-        <p class="mt-1 text-[11px] text-slate-400 leading-relaxed">
-          Connect to the Attestto platform to receive your digital identity.
-        </p>
-      </div>
-
-      <a
-        :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
-        target="_blank"
-        class="block w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
+      <div
+        class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-white/70 shadow-sm"
       >
-        Get Started
-      </a>
+        <FingerPrintIcon class="h-7 w-7 text-indigo-600" />
+      </div>
+      <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+        Welcome to
+      </p>
+      <p class="mt-0.5 text-lg font-bold text-slate-900">Attestto ID</p>
+      <p class="mx-auto mt-1.5 max-w-[16rem] text-[11px] leading-relaxed text-slate-600">
+        Your digital identity and credentials, held in this wallet — never on the sites you use.
+      </p>
 
-      <p class="text-[10px] text-slate-500">
-        Already have an account?
+      <div class="mt-5 space-y-2.5">
+        <a
+          :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
+          target="_blank"
+          class="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-slate-800"
+        >
+          <PlusCircleIcon class="h-4 w-4" />
+          Get Started
+        </a>
         <a
           :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
           target="_blank"
-          class="text-indigo-400 hover:text-indigo-300"
+          class="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white/70 px-4 py-2.5 text-xs font-semibold text-slate-800 transition-colors hover:bg-white"
         >
+          <ArrowDownTrayIcon class="h-4 w-4" />
           Log in to sync
         </a>
-      </p>
+      </div>
     </div>
   </div>
 </template>
