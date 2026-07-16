@@ -180,6 +180,7 @@ export default {
       tlsSnapshotNote: 'Del muestreo del sector p\u00fablico de Attestto',
       tlsSnapshotNoteDated: 'Del muestreo del sector p\u00fablico de Attestto \u00b7 al {date}',
       tlsScanError: 'Escaneo fallido \u2014 no se pudo leer el certificado',
+      antiPhishing: 'A prueba de phishing: una identidad funciona solo en el sitio donde la cre\u00f3; sus llaves nunca salen de esta extensi\u00f3n.',
     },
   },
   report: {

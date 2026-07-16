@@ -9,6 +9,7 @@ import { useI18n } from 'vue-i18n'
 import { readPublicVault } from '@/utils/vault'
 import { normalizeOrigin } from '@/utils/site-did'
 import { isOriginTrusted } from '@/utils/trusted-origins'
+import { computeStateForUrl, type TrustState } from '@/utils/tab-state'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 
 const { t } = useI18n()
@@ -21,6 +22,19 @@ const faviconSrc = ref<string | null>(null)
 const hasIdentity = ref(false)
 const createdAt = ref<string | null>(null)
 const lastUsedAt = ref<string | null>(null)
+const trustState = ref<TrustState>()
+
+/** Navigate the active tab back, away from a red/impersonation page. */
+async function backToSafety(): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (tab?.id == null) return
+  try {
+    await chrome.tabs.goBack(tab.id)
+  } catch {
+    // No history to go back to → land on a neutral page instead.
+    await chrome.tabs.update(tab.id, { url: 'about:blank' })
+  }
+}
 
 onMounted(async () => {
   try {
@@ -37,6 +51,7 @@ onMounted(async () => {
     isSecure.value = u.protocol === 'https:'
     faviconSrc.value = tab?.favIconUrl && /^(https?|data):/.test(tab.favIconUrl) ? tab.favIconUrl : null
     hasIdentity.value = await isOriginTrusted(u.origin)
+    trustState.value = await computeStateForUrl(url)
 
     // Best-effort created/last-used from the public mirror (may be absent).
     const pub = await readPublicVault()
@@ -68,5 +83,7 @@ onMounted(async () => {
     :has-identity="hasIdentity"
     :created-at="createdAt"
     :last-used-at="lastUsedAt"
+    :trust-state="trustState"
+    @back-to-safety="backToSafety"
   />
 </template>

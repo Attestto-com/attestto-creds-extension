@@ -222,6 +222,8 @@ window.postMessage({
 | `did:jwk` | Local (self-resolving) | Default for extension-generated keys |
 | `did:sns` | Platform resolver | Solana Name Service anchored |
 | `did:web` | HTTP | Platform-assigned |
+| `did:webvh` | HTTP + verifiable history | Self-certifying web DID with a tamper-evident log (issuer DIDs) |
+| `did:pki` | Resolver bridge (`resolver.attestto.com`) | X.509 / national-PKI bridge — verify Firma Digital & eIDAS signatures |
 | `did:pkh` | Derived from address | Wallet-linked |
 
 ## Security Model

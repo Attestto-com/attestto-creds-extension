@@ -14,8 +14,10 @@ import {
   LockClosedIcon,
   LockOpenIcon,
   DocumentCheckIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/vue/24/outline'
 import { lookupTls, snapshotDate, type TlsSnapshotRow } from '@/utils/tls-snapshot'
+import type { TrustState } from '@/utils/tab-state'
 
 const props = defineProps<{
   host: string
@@ -26,9 +28,43 @@ const props = defineProps<{
   hasIdentity: boolean
   createdAt?: string | null
   lastUsedAt?: string | null
+  /** Toolbar trust verdict for this host. Omitted on surfaces that don't compute it. */
+  trustState?: TrustState
 }>()
 
+const emit = defineEmits<{ (e: 'backToSafety'): void }>()
+
 const { t } = useI18n()
+
+/**
+ * Trust-state banner shown at the top of the card. Mirrors the unspoofable
+ * toolbar icon verdict (computeStateForUrl) so the passive cue and the popup
+ * agree: red = impersonation/blocklist, amber = caution, green = verified/pinned.
+ */
+type BannerKind = 'danger' | 'caution' | 'ok'
+const BANNER_STYLES: Record<BannerKind, { box: string; text: string; reason: string; icon: typeof ShieldCheckIcon }> = {
+  danger: { box: 'border-red-500/40 bg-red-500/10', text: 'text-red-300', reason: 'text-red-300/80', icon: ExclamationTriangleIcon },
+  caution: { box: 'border-amber-500/40 bg-amber-500/10', text: 'text-amber-300', reason: 'text-amber-300/80', icon: ExclamationTriangleIcon },
+  ok: { box: 'border-emerald-500/30 bg-emerald-500/10', text: 'text-emerald-300', reason: '', icon: ShieldCheckIcon },
+}
+
+const stateBanner = computed<{ kind: BannerKind; label: string; reason: string | null } | null>(() => {
+  switch (props.trustState) {
+    case 'red':
+      return { kind: 'danger', label: t('home.currentSite.redLabel'), reason: t('home.currentSite.redReason') }
+    case 'yellow-heuristic':
+    case 'yellow-cert':
+      return { kind: 'caution', label: t('home.currentSite.yellowLabel'), reason: t('home.currentSite.yellowReason') }
+    case 'green-verified':
+      return { kind: 'ok', label: t('home.currentSite.verifiedLabel'), reason: null }
+    case 'green-pinned':
+      return { kind: 'ok', label: t('home.currentSite.pinnedLabel'), reason: null }
+    default:
+      return null
+  }
+})
+
+const bannerStyle = computed(() => (stateBanner.value ? BANNER_STYLES[stateBanner.value.kind] : null))
 const faviconOk = ref(true)
 
 /**
@@ -128,6 +164,26 @@ function fmtDate(iso?: string | null): string {
 
 <template>
   <div class="space-y-3 rounded-lg border border-slate-700 bg-slate-900 p-3">
+    <!-- 0. Trust-state banner — red danger (impersonation/blocklist), amber
+         caution, or green verified/pinned. Mirrors the unspoofable toolbar icon. -->
+    <div v-if="stateBanner && bannerStyle" class="rounded-md border p-2.5" :class="bannerStyle.box">
+      <p class="flex items-center gap-1.5 text-sm font-semibold" :class="bannerStyle.text">
+        <component :is="bannerStyle.icon" class="size-4 shrink-0" />
+        {{ stateBanner.label }}
+      </p>
+      <p v-if="stateBanner.reason" class="mt-1 text-xs" :class="bannerStyle.reason">
+        {{ stateBanner.reason }}
+      </p>
+      <button
+        v-if="stateBanner.kind === 'danger'"
+        type="button"
+        class="mt-2 w-full rounded-md bg-red-500 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-red-600"
+        @click="emit('backToSafety')"
+      >
+        {{ t('home.currentSite.backToSafetyAction') }}
+      </button>
+    </div>
+
     <!-- 1. Logo · name · domain · security -->
     <div class="flex items-center gap-3">
       <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-slate-800 ring-1 ring-slate-700">
@@ -239,6 +295,15 @@ function fmtDate(iso?: string | null): string {
             ? t('home.siteCert.tlsSnapshotNoteDated', { date: tlsSnapshotDate })
             : t('home.siteCert.tlsSnapshotNote')
         }}
+      </p>
+    </div>
+
+    <!-- 5. Anti-phishing guarantee — always shown. Explains WHY a lookalike site
+         can't harvest the user's identity: per-origin binding + keys stay local. -->
+    <div class="flex items-start gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+      <ShieldCheckIcon class="mt-0.5 size-4 shrink-0 text-emerald-400" />
+      <p class="text-xs leading-relaxed text-white/80">
+        {{ t('home.siteCert.antiPhishing') }}
       </p>
     </div>
   </div>

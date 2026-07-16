@@ -180,6 +180,7 @@ export default {
       tlsSnapshotNote: 'From Attestto public-sector snapshot',
       tlsSnapshotNoteDated: 'From Attestto public-sector snapshot · as of {date}',
       tlsScanError: 'Scan failed — certificate could not be read',
+      antiPhishing: 'Phishing-proof: an identity works only on the site where you created it — keys never leave this extension.',
     },
   },
   report: {
