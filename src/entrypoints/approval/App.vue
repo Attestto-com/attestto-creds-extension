@@ -75,6 +75,25 @@ const availableDids = computed<AvailableDid[]>(() => {
   }))
 })
 
+/**
+ * Identities to offer in the signer picker. For self-attested PDF signing, when
+ * there is no platform-synced identity the signer IS the vault's own Ed25519
+ * key — surface it so the box is never empty (the previous behaviour left
+ * "Sign with this identity" blank even though signing still worked).
+ */
+const signerDids = computed<AvailableDid[]>(() => {
+  if (availableDids.value.length) return availableDids.value
+  if (!isAttesttoPdf.value) return []
+  const d = wallet.did
+  return [
+    {
+      did: d || 'did:key (browser vault)',
+      label: 'Attestto vault key',
+      method: d ? d.split(':').slice(0, 2).join(':') : 'did:key',
+    },
+  ]
+})
+
 const selectedDid = ref<string | null>(null)
 
 /**
@@ -459,9 +478,11 @@ async function handleResetVault() {
 
     <!-- Attestto self-attested PDF Sign Details (ATT-364) -->
     <div v-if="isAttesttoPdf" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
-      <div class="flex items-center justify-between">
-        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Document</p>
-        <p class="text-xs font-medium text-white">{{ attesttoPdfFileName }}</p>
+      <div class="flex items-center justify-between gap-3">
+        <p class="shrink-0 text-[10px] font-medium uppercase tracking-wider text-slate-500">Document</p>
+        <p class="min-w-0 truncate text-right text-xs font-medium text-white" :title="attesttoPdfFileName">
+          {{ attesttoPdfFileName }}
+        </p>
       </div>
       <div v-if="attesttoPdfHash" class="flex items-center justify-between">
         <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">SHA-256</p>
@@ -471,9 +492,11 @@ async function handleResetVault() {
 
     <!-- Signing Details -->
     <div v-if="isSigning" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
-      <div class="flex items-center justify-between">
-        <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Document</p>
-        <p class="text-xs font-medium text-white">{{ documentTitle || 'Untitled' }}</p>
+      <div class="flex items-center justify-between gap-3">
+        <p class="shrink-0 text-[10px] font-medium uppercase tracking-wider text-slate-500">Document</p>
+        <p class="min-w-0 truncate text-right text-xs font-medium text-white" :title="documentTitle || 'Untitled'">
+          {{ documentTitle || 'Untitled' }}
+        </p>
       </div>
       <div v-if="signerName" class="flex items-center justify-between">
         <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">Signing as</p>
@@ -563,7 +586,7 @@ async function handleResetVault() {
           {{ isAuth ? 'Sign in with this identity' : (isSigning || isAttesttoPdf) ? 'Sign with this identity' : isPayment ? 'Pay from this identity' : 'Share this identity' }}
         </p>
         <div
-          v-for="d in availableDids"
+          v-for="d in signerDids"
           :key="d.did"
           class="flex items-center gap-2 rounded-md p-2"
           :class="selectedDid === d.did
