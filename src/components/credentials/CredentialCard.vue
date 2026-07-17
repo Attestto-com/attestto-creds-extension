@@ -34,12 +34,18 @@ const mintAddress = (props.credential.decodedClaims as Record<string, unknown>).
 
 /**
  * Carnet background. Each credential gets a deterministic gradient (recognizable
- * at a glance) derived from its type + issuer. An issuer may override it via a
- * `background` claim — validated against a safe allowlist (hex colour or a
- * linear-gradient) so a site can theme its own card without injecting CSS.
- * Skins/artwork come later; this is the simple hook.
+ * at a glance) derived from its type + issuer.
+ *
+ * An issuer may tint its own card via a `background` claim, but the ONLY value
+ * ever honoured is a strict hex colour, applied as a solid colour. Issuer text
+ * is never interpolated into a gradient or the `background` shorthand: a
+ * permissive validator would let a value like
+ * `linear-gradient(#000,#000), url(https://evil/beacon.png)` pass (no ;{}) while
+ * the CSS shorthand parses the trailing `url()` as a second layer and loads it —
+ * an issuer-controlled tracking beacon. A hex colour can carry no such payload.
+ * Richer skins come later via a safe (non-CSS) channel.
  */
-const SAFE_BG = /^(#[0-9a-fA-F]{3,8}|linear-gradient\([^;{}]+\))$/
+const HEX_COLOUR = /^#[0-9a-fA-F]{3,8}$/
 
 function hashHue(s: string): number {
   let h = 0
@@ -48,8 +54,8 @@ function hashHue(s: string): number {
 }
 
 const cardBackground = computed<string>(() => {
-  const issuerBg = (props.credential.decodedClaims as Record<string, unknown>).background
-  if (typeof issuerBg === 'string' && SAFE_BG.test(issuerBg.trim())) return issuerBg.trim()
+  const raw = (props.credential.decodedClaims as Record<string, unknown>).background
+  if (typeof raw === 'string' && HEX_COLOUR.test(raw.trim())) return raw.trim()
   const h = hashHue(`${props.credential.types.join()}|${props.credential.issuer}`)
   return `linear-gradient(135deg, hsl(${h} 68% 44%), hsl(${(h + 42) % 360} 68% 34%))`
 })
