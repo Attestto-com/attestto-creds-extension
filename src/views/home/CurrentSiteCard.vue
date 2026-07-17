@@ -55,9 +55,9 @@ onMounted(async () => {
     trustState.value = await computeStateForUrl(url)
 
     // Registry match → official institution name/category (pre-configured only).
-    const entry = await lookupHost(host.value)
-    institutionName.value = entry?.name ?? null
-    institutionCategory.value = entry?.category ?? null
+    const registryEntry = await lookupHost(host.value)
+    institutionName.value = registryEntry?.name ?? null
+    institutionCategory.value = registryEntry?.category ?? null
 
     // Best-effort created/last-used from the public mirror (may be absent).
     const pub = await readPublicVault()
