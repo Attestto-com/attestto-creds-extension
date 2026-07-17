@@ -8,7 +8,10 @@
 
 body {
   width: var(--ext-popup-width);
-  min-height: 200px;
+  /* Fixed app-like height so the bottom tab bar always sits at the bottom
+     (ATT-1006 mobile-app shell). Capped at Chrome's 600px popup limit. */
+  height: var(--ext-popup-max-height);
+  min-height: var(--ext-popup-max-height);
   max-height: var(--ext-popup-max-height);
   margin: 0;
   overflow-x: hidden;

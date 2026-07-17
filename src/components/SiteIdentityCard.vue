@@ -14,12 +14,14 @@ import {
   LockClosedIcon,
   LockOpenIcon,
   DocumentCheckIcon,
+  ChevronRightIcon,
   ExclamationTriangleIcon,
   BuildingLibraryIcon,
 } from '@heroicons/vue/24/outline'
 import { lookupTls, snapshotDate, type TlsSnapshotRow } from '@/utils/tls-snapshot'
 import type { TrustState } from '@/utils/tab-state'
 import PopupPanel from '@/components/layout/PopupPanel.vue'
+import TlsCertificateCard from '@/components/TlsCertificateCard.vue'
 
 const props = defineProps<{
   host: string
@@ -38,6 +40,13 @@ const props = defineProps<{
   institutionCategory?: string | null
   /** Show the phishing-proof explainer — only while creating a new identity. */
   showPhishingProof?: boolean
+  /**
+   * How to present the TLS certificate:
+   *   'inline' (default) — render the full card here (approval window).
+   *   'link'             — render a "View certificate →" row, emit `viewTls`.
+   *   'hidden'           — don't render TLS at all.
+   */
+  tlsMode?: 'inline' | 'link' | 'hidden'
 }>()
 
 /** Registry title, capped at 3 words (one per line). Pre-configured sites only. */
@@ -45,9 +54,12 @@ const titleLines = computed<string[]>(() =>
   props.institutionName ? props.institutionName.split(/\s+/).filter(Boolean).slice(0, 3) : [],
 )
 
-const emit = defineEmits<{ (e: 'backToSafety'): void }>()
+const emit = defineEmits<{ (e: 'backToSafety'): void; (e: 'viewTls'): void }>()
 
 const { t } = useI18n()
+
+/** Effective TLS presentation mode (defaults to inline for the approval window). */
+const effectiveTlsMode = computed(() => props.tlsMode ?? 'inline')
 
 /**
  * Trust-state banner shown at the top of the card. Mirrors the unspoofable
@@ -104,67 +116,6 @@ watch(
   () => props.host,
   (h) => void loadTls(h),
 )
-
-/** Tailwind classes for the DV/OV/EV validation-tier chip. */
-const tierChipClass = computed(() => {
-  switch (tls.value?.validationTier) {
-    case 'EV':
-      return 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30'
-    case 'OV':
-      return 'bg-sky-500/15 text-sky-300 ring-sky-500/30'
-    case 'DV':
-      return 'bg-amber-500/15 text-amber-300 ring-amber-500/30'
-    default:
-      return 'bg-slate-700/40 text-white/70 ring-slate-600/40'
-  }
-})
-
-/**
- * Expiry severity: `expired` (red) when the cert is past its validity or the
- * remaining days went negative, `soon` (amber) when fewer than 30 days remain,
- * otherwise `ok` (normal).
- */
-const expirySeverity = computed<'expired' | 'soon' | 'ok'>(() => {
-  const c = tls.value
-  if (!c) return 'ok'
-  if (c.expired || (typeof c.daysToExpiry === 'number' && c.daysToExpiry < 0)) return 'expired'
-  if (typeof c.daysToExpiry === 'number' && c.daysToExpiry < 30) return 'soon'
-  return 'ok'
-})
-
-/** Text color for the expiry line — follows the card's chip color language. */
-const expiryTextClass = computed(() => {
-  switch (expirySeverity.value) {
-    case 'expired':
-      return 'text-red-400'
-    case 'soon':
-      return 'text-amber-300'
-    default:
-      return 'text-white/85'
-  }
-})
-
-/** Muted label color paired with `expiryTextClass`. */
-const expiryLabelClass = computed(() => {
-  switch (expirySeverity.value) {
-    case 'expired':
-      return 'text-red-400/80'
-    case 'soon':
-      return 'text-amber-300/80'
-    default:
-      return 'text-white/70'
-  }
-})
-
-/** Absolute expiry date derived from the row's `validTo`, or null when absent. */
-const expiryAbsolute = computed<string | null>(() => {
-  const iso = tls.value?.validTo
-  if (!iso) return null
-  const dt = new Date(iso)
-  return Number.isNaN(dt.getTime())
-    ? null
-    : dt.toISOString().slice(0, 10)
-})
 
 function fmtDate(iso?: string | null): string {
   if (!iso) return '—'
@@ -267,62 +218,28 @@ function fmtDate(iso?: string | null): string {
     </div>
 
     <!-- 4. TLS certificate — bundled CR public-sector snapshot (MV3 can't read
-         the live cert, so we display what our scanner recorded, keyed by host). -->
-    <div v-if="tls" class="rounded-md border border-slate-800 bg-slate-950/40 p-2.5">
-      <p class="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-white/70">
-        <DocumentCheckIcon class="size-4 text-white/70" />
-        {{ t('home.siteCert.tlsTitle') }}
-      </p>
-
-      <!-- Failed scan — show the honest error, skip classification fields. -->
-      <p v-if="!tls.ok" class="mt-1 flex items-start gap-1.5 text-sm text-amber-300">
-        <LockOpenIcon class="mt-0.5 size-4 shrink-0" />
-        {{ t('home.siteCert.tlsScanError') }}
-      </p>
-
-      <template v-else>
-        <div class="mt-1.5 space-y-1 text-sm text-white/85">
-          <!-- CA + tier -->
-          <p class="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span class="text-white/70">{{ t('home.siteCert.tlsCa') }}:</span>
-            <span class="font-medium text-white">{{ tls.ca }}</span>
-            <span
-              class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ring-1"
-              :class="tierChipClass"
-            >
-              {{ tls.validationTier }}
-            </span>
-          </p>
-
-          <!-- Free vs paid -->
-          <p>
-            <span class="text-white/70">{{ t('home.siteCert.tlsTier') }}:</span>
-            {{ tls.isFreeCA ? t('home.siteCert.tlsFree') : t('home.siteCert.tlsPaid') }}
-          </p>
-
-          <!-- Expiry — amber under 30 days, red when expired/past. -->
-          <p :class="expiryTextClass">
-            <span :class="expiryLabelClass">
-              {{ t('home.siteCert.tlsExpiry') }}:
-            </span>
-            <template v-if="tls.expired">{{ t('home.siteCert.tlsExpired') }}</template>
-            <template v-else-if="typeof tls.daysToExpiry === 'number'">
-              {{ t('home.siteCert.tlsExpiryDays', { days: tls.daysToExpiry })
-              }}<template v-if="expiryAbsolute"> ({{ expiryAbsolute }})</template>
-            </template>
-            <template v-else>—</template>
-          </p>
-        </div>
-      </template>
-
-      <p class="mt-1.5 text-xs text-white/50">
-        {{
-          tlsSnapshotDate
-            ? t('home.siteCert.tlsSnapshotNoteDated', { date: tlsSnapshotDate })
-            : t('home.siteCert.tlsSnapshotNote')
-        }}
-      </p>
-    </div>
+         the live cert, so we display what our scanner recorded, keyed by host).
+         Inline on the approval window; a link to its own screen in the popup. -->
+    <TlsCertificateCard
+      v-if="tls && effectiveTlsMode === 'inline'"
+      :tls="tls"
+      :snapshot-date="tlsSnapshotDate"
+    />
+    <button
+      v-else-if="tls && effectiveTlsMode === 'link'"
+      type="button"
+      class="flex w-full items-center gap-2 rounded-md border border-slate-800 bg-slate-950/40 p-2.5 text-left transition-colors hover:bg-slate-900/60"
+      @click="emit('viewTls')"
+    >
+      <DocumentCheckIcon class="size-4 shrink-0 text-white/70" />
+      <span class="flex-1 text-sm text-white">{{ t('home.siteCert.tlsTitle') }}</span>
+      <span
+        class="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ring-1 ring-slate-600/40 text-white/70"
+      >
+        {{ tls.validationTier }}
+      </span>
+      <ChevronRightIcon class="size-4 shrink-0 text-slate-500" />
+    </button>
 
     <!-- 5. Anti-phishing guarantee — only while creating a new identity here.
          Explains WHY a lookalike site can't harvest it: per-origin binding + local keys. -->

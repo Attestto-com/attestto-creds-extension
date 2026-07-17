@@ -5,6 +5,7 @@
  * approval window uses, so both surfaces agree.
  */
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { readPublicVault } from '@/utils/vault'
 import { normalizeOrigin } from '@/utils/site-did'
@@ -14,6 +15,7 @@ import { lookupHost } from '@/utils/trust-registry'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const loading = ref(true)
 const host = ref<string | null>(null)
@@ -91,6 +93,8 @@ onMounted(async () => {
     :trust-state="trustState"
     :institution-name="institutionName"
     :institution-category="institutionCategory"
+    tls-mode="link"
     @back-to-safety="backToSafety"
+    @view-tls="router.push('/tls')"
   />
 </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { FingerPrintIcon, PlusCircleIcon, ArrowDownTrayIcon } from '@heroicons/vue/24/outline'
+import { FingerPrintIcon, PlusCircleIcon, ArrowDownTrayIcon, IdentificationIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
 import type { LinkedIdentity } from '@/stores/wallet'
 import PopupPanel from '@/components/layout/PopupPanel.vue'
@@ -33,6 +33,11 @@ const UNLOCK_PATH = '/lock'
 
 function selectIdentity(did: string): void {
   router.push({ name: 'identity-detail', params: { did: encodeURIComponent(did) } })
+}
+
+/** Onboarding step 1 — open the full-page extension flow in a new tab. */
+function verifyIdOffline(): void {
+  chrome.runtime.openOptionsPage()
 }
 </script>
 
@@ -87,8 +92,12 @@ function selectIdentity(did: string): void {
         </p>
 
         <div class="mt-5 space-y-2.5">
+          <PanelButton variant="primary" tone="light" @click="verifyIdOffline">
+            <IdentificationIcon class="h-4 w-4" />
+            1. Verify your ID offline
+          </PanelButton>
           <PanelButton
-            variant="primary"
+            variant="secondary"
             tone="light"
             :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
             target="_blank"

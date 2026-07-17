@@ -1,91 +1,64 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useWalletStore } from '@/stores/wallet'
 import ExtensionHeader from '@/components/layout/ExtensionHeader.vue'
-import LockScreenView from '@/views/lock/LockScreenView.vue'
+import BottomTabBar from '@/components/layout/BottomTabBar.vue'
 
-const router = useRouter()
 const wallet = useWalletStore()
-const unlockError = ref<string | null>(null)
-// Forces LockScreenView even when the vault is set up — used when the
-// inline-unlock path hits a recoverable error (passphrase needed, reset needed)
-// so the user gets the full recovery UI instead of just a red banner.
-const showLockView = ref(false)
+const { t } = useI18n()
 
 onMounted(async () => {
-  // Load public data immediately — no passkey needed
+  // Load public data immediately — no passkey needed.
   await wallet.loadPublicData()
   await wallet.checkSetup()
 })
-
-// When unlock succeeds (via LockScreenView or otherwise), drop back to the
-// normal identity view.
-watch(
-  () => wallet.isUnlocked,
-  (unlocked) => {
-    if (unlocked) {
-      showLockView.value = false
-      unlockError.value = null
-    }
-  },
-)
 
 function handleLock(): void {
   wallet.lock()
 }
 
-async function handleUnlock(): Promise<void> {
-  unlockError.value = null
-  try {
-    await wallet.unlock()
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unlock failed'
-    // Recovery paths (passphrase prompt, vault reset) live in LockScreenView.
-    // Route there instead of leaving the user staring at a dead red banner.
-    if (msg.startsWith('PASSPHRASE_REQUIRED') || msg.startsWith('PRF_UNAVAILABLE')) {
-      showLockView.value = true
-    } else {
-      unlockError.value = msg
-    }
-  }
-}
-
-function handleSettings(): void {
-  router.push({ name: 'settings' })
+/** Full settings live on their own page (options.html), reached from the footer. */
+function openSettings(): void {
+  chrome.runtime.openOptionsPage()
 }
 </script>
 
 <template>
-  <div class="flex min-h-[200px] flex-col bg-slate-950 text-white">
-    <!-- Recovery flow only (passphrase prompt / reset on PRF failure).
-         Per ATT-724: the popup no longer gates on wallet.isSetUp — anti-phishing
-         surfaces are always visible; identity setup is presented as an optional
-         upgrade inside HomeView. -->
-    <LockScreenView v-if="showLockView" />
+  <!--
+    Mobile-app shell (ATT-1006): site-status header, scrolling content,
+    persistent bottom tab bar, and a small "Powered by Attestto ID" footer
+    that is the entry to the full settings page.
 
-    <!-- Normal state — always show home view (anti-phishing primary, identity demoted) -->
-    <template v-else>
-      <ExtensionHeader
-        :is-unlocked="wallet.isUnlocked"
-        @lock="handleLock"
-        @unlock="handleUnlock"
-        @settings="handleSettings"
-      />
-      <p
-        v-if="unlockError"
-        class="px-3 py-1.5 text-[11px] text-red-400 bg-red-950/40 border-b border-red-900/40"
-      >
-        {{ unlockError }}
-      </p>
-      <main class="flex-1 overflow-y-auto p-3">
-        <router-view v-slot="{ Component }">
-          <transition name="fade" mode="out-in">
-            <component :is="Component" />
-          </transition>
-        </router-view>
-      </main>
-    </template>
+    Per ATT-724 the popup no longer gates on wallet setup — anti-phishing is
+    always visible and identity setup is an optional upgrade inside the tabs.
+    Vault unlock happens per-operation (sign / present), not from an idle
+    button, and auto-locks after 1 minute.
+  -->
+  <div class="flex h-full flex-col bg-slate-950 text-white">
+    <ExtensionHeader :is-unlocked="wallet.isUnlocked" @lock="handleLock" />
+
+    <main class="min-h-0 flex-1 overflow-y-auto p-3">
+      <router-view v-slot="{ Component }">
+        <transition name="fade" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
+    </main>
+
+    <BottomTabBar />
+
+    <footer
+      class="flex items-center justify-center gap-1.5 border-t border-slate-800/60 bg-slate-950 py-1.5 text-[10px] text-slate-500"
+    >
+      <button type="button" class="hover:text-slate-300" @click="openSettings">
+        {{ t('footer.poweredBy') }}
+      </button>
+      <span aria-hidden="true">·</span>
+      <button type="button" class="hover:text-slate-300" @click="openSettings">
+        {{ t('footer.settings') }}
+      </button>
+    </footer>
   </div>
 </template>
 

@@ -31,6 +31,27 @@ export default {
     },
   },
 
+  bottomNav: {
+    site: 'Sitio',
+    accounts: 'Cuentas',
+    credentials: 'Credenciales',
+    inbox: 'Bandeja',
+  },
+
+  inbox: {
+    title: 'Bandeja',
+    empty: 'Nada pendiente. Las solicitudes de prueba y presentaciones preparadas aparecen aquí.',
+    pendingTitle: 'Requiere tu respuesta',
+    preparedTitle: 'Listas para presentar',
+    preparedCount: '{count} presentación preparada | {count} presentaciones preparadas',
+    preparedHint: 'Enviadas desde tu panel, listas para compartir.',
+  },
+
+  footer: {
+    poweredBy: 'Con tecnología de Attestto ID',
+    settings: 'Configuración',
+  },
+
   wallet: {
     unlocked: 'Billetera Desbloqueada',
     locked: 'Billetera Bloqueada',
@@ -224,6 +245,11 @@ export default {
     cards: {
       security: 'Sitios de confianza, comportamiento de confianza, notificaciones.',
       privacy: 'C\u00f3mo Attestto maneja compartir datos y telemetr\u00eda.',
+    },
+    resources: {
+      help: 'Ayuda y documentaci\u00f3n',
+      dashboard: 'Abrir panel',
+      version: 'Versi\u00f3n {version}',
     },
   },
 

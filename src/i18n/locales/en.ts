@@ -31,6 +31,27 @@ export default {
     },
   },
 
+  bottomNav: {
+    site: 'Site',
+    accounts: 'Accounts',
+    credentials: 'Credentials',
+    inbox: 'Inbox',
+  },
+
+  inbox: {
+    title: 'Inbox',
+    empty: 'Nothing waiting. Proof requests and prepared presentations show up here.',
+    pendingTitle: 'Needs your response',
+    preparedTitle: 'Ready to present',
+    preparedCount: '{count} prepared presentation | {count} prepared presentations',
+    preparedHint: 'Pushed from your dashboard, ready to share.',
+  },
+
+  footer: {
+    poweredBy: 'Powered by Attestto ID',
+    settings: 'Settings',
+  },
+
   wallet: {
     unlocked: 'Wallet Unlocked',
     locked: 'Wallet Locked',
@@ -224,6 +245,11 @@ export default {
     cards: {
       security: 'Trusted sites, pin behavior, notifications.',
       privacy: 'How Attestto handles sharing and usage data.',
+    },
+    resources: {
+      help: 'Help & documentation',
+      dashboard: 'Open dashboard',
+      version: 'Version {version}',
     },
   },
 

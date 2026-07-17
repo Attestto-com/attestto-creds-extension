@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ShieldCheckIcon, FingerPrintIcon, LockClosedIcon, EyeSlashIcon, ArrowRightIcon } from '@heroicons/vue/24/outline'
+import { ShieldCheckIcon, FingerPrintIcon, LockClosedIcon, EyeSlashIcon, ArrowRightIcon, QuestionMarkCircleIcon, ArrowTopRightOnSquareIcon } from '@heroicons/vue/24/outline'
 import { listPins, type PinRecord } from '@/utils/pin-store'
 import { useWalletStore } from '@/stores/wallet'
+import { APP_VERSION } from '@/config/app'
 
 defineEmits<{ goto: [tab: 'overview' | 'security' | 'privacy'] }>()
 
@@ -12,6 +13,7 @@ const wallet = useWalletStore()
 const pins = ref<PinRecord[]>([])
 
 const PLATFORM_URL = 'https://app.attestto.com'
+const HELP_URL = 'https://docs.attestto.com'
 
 const hasIdentity = computed(() => wallet.linkedIdentities.length > 0)
 const trustedCount = computed(() => pins.value.length)
@@ -119,5 +121,33 @@ onMounted(async () => {
         </div>
       </button>
     </section>
+
+    <!-- Resources & about -->
+    <section class="grid gap-3 sm:grid-cols-2">
+      <a
+        :href="HELP_URL"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-cyan-400 hover:bg-cyan-50/40"
+      >
+        <QuestionMarkCircleIcon class="size-5 text-slate-500" />
+        <span class="text-sm font-medium text-slate-900">{{ t('overview.resources.help') }}</span>
+        <ArrowTopRightOnSquareIcon class="ml-auto size-4 text-slate-400" />
+      </a>
+      <a
+        :href="PLATFORM_URL"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-cyan-400 hover:bg-cyan-50/40"
+      >
+        <ArrowTopRightOnSquareIcon class="size-5 text-slate-500" />
+        <span class="text-sm font-medium text-slate-900">{{ t('overview.resources.dashboard') }}</span>
+        <ArrowTopRightOnSquareIcon class="ml-auto size-4 text-slate-400" />
+      </a>
+    </section>
+
+    <p class="text-center text-xs text-slate-400">
+      {{ t('overview.resources.version', { version: APP_VERSION }) }}
+    </p>
   </div>
 </template>

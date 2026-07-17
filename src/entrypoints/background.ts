@@ -189,11 +189,12 @@ export default defineBackground(() => {
     }
   })
 
-  // Set up auto-lock alarm from stored preference
+  // Auto-lock is fixed at 1 minute — no longer user-configurable (the timer
+  // selector was removed from settings). Kept as a function so the
+  // AUTO_LOCK_CHANGED message and initial setup share one code path.
+  const AUTO_LOCK_MINUTES = 1
   async function resetAutoLockAlarm(): Promise<void> {
-    const stored = await chrome.storage.local.get('attestto_ext_auto_lock_minutes')
-    const minutes = Number(stored.attestto_ext_auto_lock_minutes) || 5
-    chrome.alarms.create('autoLock', { delayInMinutes: minutes })
+    chrome.alarms.create('autoLock', { delayInMinutes: AUTO_LOCK_MINUTES })
   }
 
   resetAutoLockAlarm()
