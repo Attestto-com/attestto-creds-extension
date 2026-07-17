@@ -15,6 +15,7 @@ import {
   LockOpenIcon,
   DocumentCheckIcon,
   ExclamationTriangleIcon,
+  BuildingLibraryIcon,
 } from '@heroicons/vue/24/outline'
 import { lookupTls, snapshotDate, type TlsSnapshotRow } from '@/utils/tls-snapshot'
 import type { TrustState } from '@/utils/tab-state'
@@ -31,7 +32,18 @@ const props = defineProps<{
   lastUsedAt?: string | null
   /** Toolbar trust verdict for this host. Omitted on surfaces that don't compute it. */
   trustState?: TrustState
+  /** Official institution name from the trust registry — pre-configured sites only. */
+  institutionName?: string | null
+  /** Institution category from the registry (e.g. "Instituciones Autónomas"). */
+  institutionCategory?: string | null
+  /** Show the phishing-proof explainer — only while creating a new identity. */
+  showPhishingProof?: boolean
 }>()
+
+/** Registry title, capped at 3 words (one per line). Pre-configured sites only. */
+const titleLines = computed<string[]>(() =>
+  props.institutionName ? props.institutionName.split(/\s+/).filter(Boolean).slice(0, 3) : [],
+)
 
 const emit = defineEmits<{ (e: 'backToSafety'): void }>()
 
@@ -186,60 +198,72 @@ function fmtDate(iso?: string | null): string {
       </button>
     </div>
 
-    <!-- 1. Logo · name · domain · security -->
+    <!-- 1. Logo · registry title · domain (with inline lock) -->
     <div class="flex items-center gap-3">
-      <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-slate-800 ring-1 ring-slate-700">
+      <div class="flex size-14 shrink-0 items-center justify-center rounded-full bg-slate-800 ring-1 ring-slate-700">
         <img
           v-if="faviconSrc && faviconOk"
           :src="faviconSrc"
           :alt="host"
-          class="size-6 rounded"
+          class="size-9 rounded"
           referrerpolicy="no-referrer"
           @error="faviconOk = false"
         />
-        <GlobeAltIcon v-else class="size-6 text-white" />
+        <GlobeAltIcon v-else class="size-9 text-white" />
       </div>
       <div class="min-w-0 flex-1">
-        <p class="truncate text-base font-semibold text-white">{{ siteName ?? host }}</p>
-        <p v-if="siteName" class="truncate text-sm text-white/80">{{ host }}</p>
-        <p class="mt-0.5 flex items-center gap-1.5 text-sm text-white">
+        <!-- Only pre-configured (registry) sites get a title; max 3 words, one per line. -->
+        <p v-if="titleLines.length" class="text-base font-semibold leading-tight text-white">
+          <span v-for="(word, i) in titleLines" :key="i" class="block truncate">{{ word }}</span>
+        </p>
+        <!-- Domain + lock on one line. -->
+        <p
+          class="flex items-center gap-1.5"
+          :class="titleLines.length ? 'mt-0.5 text-sm text-white/70' : 'text-base font-semibold text-white'"
+        >
           <component
             :is="isSecure ? LockClosedIcon : LockOpenIcon"
-            class="size-4"
+            class="size-4 shrink-0"
             :class="isSecure ? 'text-emerald-400' : 'text-amber-400'"
           />
-          {{ isSecure ? t('home.siteCert.sslSecure') : t('home.siteCert.sslInsecure') }}
+          <span class="truncate">{{ host }}</span>
         </p>
       </div>
     </div>
 
-    <!-- 2. Site identity — site's web DID + KYB (pending resolution) -->
-    <div class="rounded-md border border-slate-800 bg-slate-950/40 p-2.5">
+    <!-- 2. Who is — the institution behind the site, from the trust registry.
+         Hidden entirely when we have no registry match (no filler). -->
+    <div
+      v-if="institutionName"
+      class="rounded-md border border-slate-800 bg-slate-950/40 p-2.5"
+    >
       <p class="text-xs font-medium uppercase tracking-wider text-white/70">
-        {{ t('home.siteCert.siteIdentity') }}
+        {{ t('home.siteCert.whois') }}
       </p>
       <p class="mt-1 flex items-center gap-1.5 text-sm text-white">
-        <GlobeAltIcon class="size-4 text-white/70" />
-        {{ t('home.siteCert.notVerified') }}
+        <BuildingLibraryIcon class="size-4 shrink-0 text-white/70" />
+        <span class="truncate">
+          {{ institutionName }}<template v-if="institutionCategory"> · {{ institutionCategory }}</template>
+        </span>
       </p>
     </div>
 
-    <!-- 3. Your identity here -->
-    <div class="rounded-md border border-slate-800 bg-slate-950/40 p-2.5">
+    <!-- 3. Accounts — the identities the user has here. Hidden when none. -->
+    <div
+      v-if="hasIdentity"
+      class="rounded-md border border-slate-800 bg-slate-950/40 p-2.5"
+    >
       <p class="text-xs font-medium uppercase tracking-wider text-white/70">
-        {{ t('home.siteCert.yourIdentity') }}
+        {{ t('home.siteCert.accounts') }}
       </p>
-      <template v-if="hasIdentity">
-        <p class="mt-1 flex items-start gap-1.5 text-sm text-white">
-          <ShieldCheckIcon class="mt-0.5 size-4 shrink-0 text-emerald-400" />
-          {{ t('home.siteCert.levelBasic') }}
-        </p>
-        <div v-if="createdAt || lastUsedAt" class="mt-1.5 space-y-0.5 text-sm text-white/85">
-          <p>{{ t('home.siteCert.created') }}: {{ fmtDate(createdAt) }}</p>
-          <p>{{ t('home.siteCert.lastUsed') }}: {{ fmtDate(lastUsedAt) }}</p>
-        </div>
-      </template>
-      <p v-else class="mt-1 text-sm text-white">{{ t('home.siteCert.firstVisit') }}</p>
+      <p class="mt-1 flex items-start gap-1.5 text-sm text-white">
+        <ShieldCheckIcon class="mt-0.5 size-4 shrink-0 text-emerald-400" />
+        {{ t('home.siteCert.levelBasic') }}
+      </p>
+      <div v-if="createdAt || lastUsedAt" class="mt-1.5 space-y-0.5 text-sm text-white/85">
+        <p>{{ t('home.siteCert.created') }}: {{ fmtDate(createdAt) }}</p>
+        <p>{{ t('home.siteCert.lastUsed') }}: {{ fmtDate(lastUsedAt) }}</p>
+      </div>
     </div>
 
     <!-- 4. TLS certificate — bundled CR public-sector snapshot (MV3 can't read
@@ -300,9 +324,12 @@ function fmtDate(iso?: string | null): string {
       </p>
     </div>
 
-    <!-- 5. Anti-phishing guarantee — always shown. Explains WHY a lookalike site
-         can't harvest the user's identity: per-origin binding + keys stay local. -->
-    <div class="flex items-start gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5">
+    <!-- 5. Anti-phishing guarantee — only while creating a new identity here.
+         Explains WHY a lookalike site can't harvest it: per-origin binding + local keys. -->
+    <div
+      v-if="showPhishingProof"
+      class="flex items-start gap-1.5 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2.5"
+    >
       <ShieldCheckIcon class="mt-0.5 size-4 shrink-0 text-emerald-400" />
       <p class="text-xs leading-relaxed text-white/80">
         {{ t('home.siteCert.antiPhishing') }}

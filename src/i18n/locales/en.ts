@@ -142,7 +142,7 @@ export default {
     currentSite: {
       loading: 'Checking site…',
       noSite: 'Visit a website to check it.',
-      verifiedLabel: 'Verified institution',
+      verifiedLabel: 'Known institution (CR registry)',
       pinnedLabel: 'You trust this site',
       neutralLabel: 'Not yet evaluated',
       yellowLabel: 'Use caution',
@@ -165,6 +165,8 @@ export default {
       siteIdentity: 'Site identity',
       notVerified: 'Not an Attestto-verified site',
       yourIdentity: 'Your identity here',
+      whois: 'Who is',
+      accounts: 'Accounts',
       levelBasic: 'Basic — not tied to any physical person or data',
       created: 'ID created',
       lastUsed: 'Last used here',

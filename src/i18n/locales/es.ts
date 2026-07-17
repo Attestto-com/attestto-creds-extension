@@ -142,7 +142,7 @@ export default {
     currentSite: {
       loading: 'Verificando sitio\u2026',
       noSite: 'Visite un sitio web para verificarlo.',
-      verifiedLabel: 'Instituci\u00f3n verificada',
+      verifiedLabel: 'Instituci\u00f3n conocida (registro CR)',
       pinnedLabel: 'Conf\u00eda en este sitio',
       neutralLabel: 'A\u00fan no evaluado',
       yellowLabel: 'Tenga precauci\u00f3n',
@@ -165,6 +165,8 @@ export default {
       siteIdentity: 'Identidad del sitio',
       notVerified: 'Sitio no verificado por Attestto',
       yourIdentity: 'Su identidad aqu\u00ed',
+      whois: 'Qui\u00e9n es',
+      accounts: 'Cuentas',
       levelBasic: 'B\u00e1sica \u2014 no vinculada a ninguna persona ni dato',
       created: 'ID creada',
       lastUsed: '\u00daltimo uso aqu\u00ed',

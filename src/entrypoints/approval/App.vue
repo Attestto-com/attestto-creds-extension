@@ -537,6 +537,7 @@ async function handleResetVault() {
           :is-secure="siteSecure"
           :favicon-src="siteFavicon"
           :has-identity="siteHasPairwiseDid"
+          :show-phishing-proof="!siteHasPairwiseDid"
         />
         <!-- New-site acknowledgment (the trust signal is new-vs-returning, not the
              key). Gates the Sign In button. -->
