@@ -111,18 +111,21 @@ function buildBar(row: TlsSnapshotRow, host: string): HTMLElement {
       box-shadow: 0 1px 6px rgba(0,0,0,0.25);
     }
     .mark {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
+      display: inline-block;
       width: 18px;
-      height: 18px;
-      border-radius: 4px;
-      background: #0f766e;
-      color: #fff;
-      font-weight: 700;
-      font-size: 11px;
+      height: 12px;
+      border-radius: 2px;
       flex: 0 0 auto;
+      background: linear-gradient(
+        #002b7f 0 16.6%,
+        #fff 16.6% 33.3%,
+        #ce1126 33.3% 66.6%,
+        #fff 66.6% 83.3%,
+        #002b7f 83.3% 100%
+      );
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
     }
+    .org { font-weight: 700; color: #fff; white-space: nowrap; }
     .host { font-weight: 600; color: #fff; white-space: nowrap; }
     .sep { color: #64748b; }
     .ca { color: #cbd5e1; white-space: nowrap; }
@@ -164,8 +167,15 @@ function buildBar(row: TlsSnapshotRow, host: string): HTMLElement {
 
   const asOf = snapDate ? `<span class="asof">as of ${escapeText(snapDate)}</span>` : ''
 
+  // Subject Organization (O) — the legal entity behind the site (e.g. "Tribunal
+  // Supremo de Elecciones"), when the scanner recorded it. Cast: the field is
+  // optional on the snapshot and older rows omit it.
+  const org = ((row as Record<string, unknown>).subjectOrganization as string | undefined)?.trim() || ''
+  const orgHtml = org ? `<span class="org">${escapeText(org)}</span><span class="sep">·</span>` : ''
+
   bar.innerHTML = `
-    <span class="mark" aria-hidden="true">A</span>
+    <span class="mark" role="img" aria-label="Costa Rica"></span>
+    ${orgHtml}
     <span class="host">${escapeText(host)}</span>
     <span class="sep">·</span>
     <span class="ca">${escapeText(row.ca || 'unknown CA')}</span>
@@ -182,6 +192,7 @@ function buildBar(row: TlsSnapshotRow, host: string): HTMLElement {
   close.textContent = '×'
   close.addEventListener('click', () => {
     hostEl.remove()
+    clearPagePush()
     void dismissTrustBarForHost(host)
   })
   bar.appendChild(close)
@@ -277,6 +288,7 @@ function buildInsecureBar(host: string): HTMLElement {
   close.textContent = '×'
   close.addEventListener('click', () => {
     hostEl.remove()
+    clearPagePush()
     void dismissTrustBarForHost(host)
   })
   bar.appendChild(close)
@@ -286,11 +298,28 @@ function buildInsecureBar(host: string): HTMLElement {
   return hostEl
 }
 
+/**
+ * Push the whole page down by the bar height so the fixed bar never overlaps
+ * site content. Applied to <html> with !important so a site's own margin can't
+ * defeat it; cleared on dismiss.
+ */
+function applyPagePush(px: number): void {
+  if (px > 0) document.documentElement.style.setProperty('margin-top', `${px}px`, 'important')
+}
+
+/** Restore the page when the bar is dismissed. */
+export function clearPagePush(): void {
+  document.documentElement.style.removeProperty('margin-top')
+}
+
 /** Mount a bar element once the DOM body exists (idempotent). */
 function mountBar(bar: HTMLElement): void {
   const doMount = () => {
     if (document.getElementById(HOST_ELEMENT_ID)) return
     ;(document.body || document.documentElement).appendChild(bar)
+    // Reading height forces layout, so the fixed bar is measured before we
+    // offset the page by exactly its height.
+    applyPagePush(Math.round(bar.getBoundingClientRect().height))
   }
   if (document.body) doMount()
   else document.addEventListener('DOMContentLoaded', doMount, { once: true })
