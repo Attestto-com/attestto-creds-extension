@@ -35,7 +35,7 @@ function openSettings(): void {
     Vault unlock happens per-operation (sign / present), not from an idle
     button, and auto-locks after 1 minute.
   -->
-  <div class="flex h-full flex-col bg-slate-950 text-white">
+  <div class="flex h-full flex-col bg-gradient-to-br from-[#0a0f18] via-[#0f1a2b] to-[#151832] text-white">
     <ExtensionHeader :is-unlocked="wallet.isUnlocked" @lock="handleLock" />
 
     <main class="min-h-0 flex-1 overflow-y-auto p-3">
@@ -49,7 +49,7 @@ function openSettings(): void {
     <BottomTabBar />
 
     <footer
-      class="flex items-center justify-center gap-1.5 border-t border-slate-800/60 bg-slate-950 py-1.5 text-[10px] text-slate-500"
+      class="flex items-center justify-center gap-1.5 border-t border-slate-800/40 bg-transparent py-1.5 text-[10px] text-slate-500"
     >
       <button type="button" class="hover:text-slate-300" @click="openSettings">
         {{ t('footer.poweredBy') }}

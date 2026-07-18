@@ -55,12 +55,12 @@ const sortedPins = computed(() =>
   <div class="mx-auto w-full max-w-3xl space-y-6 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-7xl">
     <header class="flex items-end justify-between gap-4">
       <div>
-        <h1 class="text-3xl font-semibold tracking-tight text-slate-900">{{ t('settingsNav.security') }}</h1>
-        <p class="mt-2 text-sm text-slate-600">{{ t('security.subtitle') }}</p>
+        <h1 class="text-3xl font-semibold tracking-tight text-[#f1f4f8]">{{ t('settingsNav.security') }}</h1>
+        <p class="mt-2 text-sm text-[#a8b4c4]">{{ t('security.subtitle') }}</p>
       </div>
       <span
         v-if="justSaved"
-        class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800"
+        class="rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-medium text-emerald-300"
         role="status"
         aria-live="polite"
       >
@@ -69,67 +69,67 @@ const sortedPins = computed(() =>
     </header>
 
     <!-- Pin behavior -->
-    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 class="text-lg font-semibold text-slate-900">{{ t('security.pinBehavior.title') }}</h2>
-      <p class="mt-1 mb-4 text-sm text-slate-600">{{ t('security.pinBehavior.description') }}</p>
+    <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
+      <h2 class="text-lg font-semibold text-[#f1f4f8]">{{ t('security.pinBehavior.title') }}</h2>
+      <p class="mt-1 mb-4 text-sm text-[#a8b4c4]">{{ t('security.pinBehavior.description') }}</p>
       <div class="space-y-2">
         <label
           v-for="mode in pinModes"
           :key="mode"
-          class="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 hover:border-cyan-400"
-          :class="cfg.pinBehavior === mode ? 'border-cyan-500 bg-cyan-50' : ''"
+          class="flex cursor-pointer items-start gap-3 rounded-lg border border-[#243044] p-3 hover:border-[#3b82a0]/60"
+          :class="cfg.pinBehavior === mode ? 'border-[#3b82a0] bg-[#141e2e]' : ''"
         >
           <input
             v-model="cfg.pinBehavior"
             type="radio"
             :value="mode"
-            class="mt-1 size-4 accent-cyan-600"
+            class="mt-1 size-4 accent-[#3b82a0]"
           />
           <div>
-            <div class="text-sm font-medium text-slate-900">{{ t(`security.pinBehavior.${mode}.label`) }}</div>
-            <div class="text-xs text-slate-600">{{ t(`security.pinBehavior.${mode}.desc`) }}</div>
+            <div class="text-sm font-medium text-[#f1f4f8]">{{ t(`security.pinBehavior.${mode}.label`) }}</div>
+            <div class="text-xs text-[#a8b4c4]">{{ t(`security.pinBehavior.${mode}.desc`) }}</div>
           </div>
         </label>
       </div>
     </section>
 
     <!-- Notifications -->
-    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 class="mb-1 text-lg font-semibold text-slate-900">{{ t('security.notifications.title') }}</h2>
-      <p class="mb-4 text-sm text-slate-600">{{ t('security.notifications.description') }}</p>
+    <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-[#f1f4f8]">{{ t('security.notifications.title') }}</h2>
+      <p class="mb-4 text-sm text-[#a8b4c4]">{{ t('security.notifications.description') }}</p>
       <label class="flex cursor-pointer items-center justify-between gap-4 py-2">
-        <span class="text-sm text-slate-900">{{ t('security.notifications.onRed') }}</span>
-        <input v-model="cfg.notifyOnRed" type="checkbox" class="size-5 accent-cyan-600" />
+        <span class="text-sm text-[#f1f4f8]">{{ t('security.notifications.onRed') }}</span>
+        <input v-model="cfg.notifyOnRed" type="checkbox" class="size-5 accent-[#3b82a0]" />
       </label>
       <label class="flex cursor-pointer items-center justify-between gap-4 py-2">
-        <span class="text-sm text-slate-900">{{ t('security.notifications.onRotation') }}</span>
-        <input v-model="cfg.notifyOnRotation" type="checkbox" class="size-5 accent-cyan-600" />
+        <span class="text-sm text-[#f1f4f8]">{{ t('security.notifications.onRotation') }}</span>
+        <input v-model="cfg.notifyOnRotation" type="checkbox" class="size-5 accent-[#3b82a0]" />
       </label>
     </section>
 
     <!-- Government trust bar -->
-    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 class="mb-1 text-lg font-semibold text-slate-900">{{ t('security.trustBar.title') }}</h2>
-      <p class="mb-4 text-sm text-slate-600">{{ t('security.trustBar.description') }}</p>
+    <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-[#f1f4f8]">{{ t('security.trustBar.title') }}</h2>
+      <p class="mb-4 text-sm text-[#a8b4c4]">{{ t('security.trustBar.description') }}</p>
       <label class="flex cursor-pointer items-center justify-between gap-4 py-2">
-        <span class="text-sm text-slate-900">{{ t('security.trustBar.enabled') }}</span>
-        <input v-model="cfg.trustBarEnabled" type="checkbox" class="size-5 accent-cyan-600" />
+        <span class="text-sm text-[#f1f4f8]">{{ t('security.trustBar.enabled') }}</span>
+        <input v-model="cfg.trustBarEnabled" type="checkbox" class="size-5 accent-[#3b82a0]" />
       </label>
     </section>
 
     <!-- Trusted sites -->
-    <section class="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <h2 class="mb-1 text-lg font-semibold text-slate-900">{{ t('security.trustedSites.title') }}</h2>
-      <p class="mb-4 text-sm text-slate-600">{{ t('security.trustedSites.description') }}</p>
-      <ul v-if="sortedPins.length" class="divide-y divide-slate-200 rounded-lg border border-slate-200">
+    <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-[#f1f4f8]">{{ t('security.trustedSites.title') }}</h2>
+      <p class="mb-4 text-sm text-[#a8b4c4]">{{ t('security.trustedSites.description') }}</p>
+      <ul v-if="sortedPins.length" class="divide-y divide-[#243044] rounded-lg border border-[#243044]">
         <li v-for="pin in sortedPins" :key="pin.domain" class="flex items-center justify-between gap-3 px-4 py-3">
           <div class="min-w-0">
-            <p class="truncate font-mono text-sm text-slate-900">{{ pin.domain }}</p>
-            <p class="text-xs text-slate-500">{{ t('security.trustedSites.addedOn', { date: new Date(pin.addedAt).toLocaleDateString() }) }}</p>
+            <p class="truncate font-mono text-sm text-[#f1f4f8]">{{ pin.domain }}</p>
+            <p class="text-xs text-[#8a97a8]">{{ t('security.trustedSites.addedOn', { date: new Date(pin.addedAt).toLocaleDateString() }) }}</p>
           </div>
           <button
             type="button"
-            class="flex items-center gap-1 rounded-md border border-slate-200 px-3 py-1.5 text-xs text-red-700 hover:bg-red-50"
+            class="flex items-center gap-1 rounded-md border border-[#243044] px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
             @click="removePin(pin.domain)"
           >
             <TrashIcon class="size-4" />
@@ -137,7 +137,7 @@ const sortedPins = computed(() =>
           </button>
         </li>
       </ul>
-      <p v-else class="text-sm italic text-slate-500">{{ t('security.trustedSites.empty') }}</p>
+      <p v-else class="text-sm italic text-[#8a97a8]">{{ t('security.trustedSites.empty') }}</p>
     </section>
   </div>
 </template>

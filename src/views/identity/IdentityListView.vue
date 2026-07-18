@@ -6,6 +6,7 @@ import { useWalletStore } from '@/stores/wallet'
 import type { LinkedIdentity } from '@/stores/wallet'
 import PopupPanel from '@/components/layout/PopupPanel.vue'
 import PanelButton from '@/components/layout/PanelButton.vue'
+import { PLATFORM_URL } from '@/config/app'
 
 const router = useRouter()
 const wallet = useWalletStore()
@@ -27,7 +28,6 @@ const identities = computed<IdentityItem[]>(() => {
   }))
 })
 
-const PLATFORM_URL = 'https://app.attestto.com'
 const ONBOARDING_PATH = '/onboarding'
 const UNLOCK_PATH = '/lock'
 

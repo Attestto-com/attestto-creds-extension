@@ -17,3 +17,10 @@ body {
   overflow-x: hidden;
   font-family: Inter, system-ui, -apple-system, sans-serif;
 }
+
+/* The Vue mount point must fill the body so the popup's `h-full` flex column
+   resolves — otherwise content is top-aligned and the tab bar/footer float in
+   the middle instead of pinning to the bottom. */
+#app {
+  height: 100%;
+}

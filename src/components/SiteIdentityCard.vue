@@ -127,28 +127,8 @@ function fmtDate(iso?: string | null): string {
 </script>
 
 <template>
-  <PopupPanel tone="dark" dense>
+  <PopupPanel tone="dark" dense :danger="!isSecure">
     <div class="space-y-3">
-    <!-- 0. Trust-state banner — red danger (impersonation/blocklist), amber
-         caution, or green verified/pinned. Mirrors the unspoofable toolbar icon. -->
-    <div v-if="stateBanner && bannerStyle" class="rounded-md border p-2.5" :class="bannerStyle.box">
-      <p class="flex items-center gap-1.5 text-sm font-semibold" :class="bannerStyle.text">
-        <component :is="bannerStyle.icon" class="size-4 shrink-0" />
-        {{ stateBanner.label }}
-      </p>
-      <p v-if="stateBanner.reason" class="mt-1 text-xs" :class="bannerStyle.reason">
-        {{ stateBanner.reason }}
-      </p>
-      <button
-        v-if="stateBanner.kind === 'danger'"
-        type="button"
-        class="mt-2 w-full rounded-md bg-red-500 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-red-600"
-        @click="emit('backToSafety')"
-      >
-        {{ t('home.currentSite.backToSafetyAction') }}
-      </button>
-    </div>
-
     <!-- 1. Logo · registry title · domain (with inline lock) -->
     <div class="flex items-center gap-3">
       <div class="flex size-14 shrink-0 items-center justify-center rounded-full bg-slate-800 ring-1 ring-slate-700">
@@ -175,11 +155,33 @@ function fmtDate(iso?: string | null): string {
           <component
             :is="isSecure ? LockClosedIcon : LockOpenIcon"
             class="size-4 shrink-0"
-            :class="isSecure ? 'text-emerald-400' : 'text-amber-400'"
+            :class="isSecure ? 'text-emerald-400' : 'text-red-400'"
           />
           <span class="truncate">{{ host }}</span>
         </p>
       </div>
+    </div>
+
+    <!-- 1b. Trust-state banner — shown BELOW the domain so the site identity
+         (URL) reads first, then the verdict: red danger (impersonation/
+         blocklist), amber caution, or green verified/pinned. Mirrors the
+         unspoofable toolbar icon. -->
+    <div v-if="stateBanner && bannerStyle" class="rounded-md border p-2.5" :class="bannerStyle.box">
+      <p class="flex items-center gap-1.5 text-sm font-semibold" :class="bannerStyle.text">
+        <component :is="bannerStyle.icon" class="size-4 shrink-0" />
+        {{ stateBanner.label }}
+      </p>
+      <p v-if="stateBanner.reason" class="mt-1 text-xs" :class="bannerStyle.reason">
+        {{ stateBanner.reason }}
+      </p>
+      <button
+        v-if="stateBanner.kind === 'danger'"
+        type="button"
+        class="mt-2 w-full rounded-md bg-red-500 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-red-600"
+        @click="emit('backToSafety')"
+      >
+        {{ t('home.currentSite.backToSafetyAction') }}
+      </button>
     </div>
 
     <!-- 2. Who is — the institution behind the site, from the trust registry.

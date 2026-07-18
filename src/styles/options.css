@@ -6,8 +6,9 @@ html, body {
   min-height: 100vh;
   margin: 0;
   font-family: Inter, system-ui, -apple-system, sans-serif;
-  background: #f8fafc;
-  color: #0f172a;
+  /* CORTEX dark institutional palette — matches the popup + desktop station. */
+  background: #0d1520;
+  color: #f1f4f8;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

@@ -59,13 +59,13 @@ onMounted(async () => {
 </script>
 
 <template>
-  <header class="border-b border-slate-800 bg-slate-950 px-3 py-2.5">
+  <header class="border-b border-slate-800/40 bg-transparent px-3 py-2.5">
     <div class="flex items-center justify-between gap-2">
-      <!-- Active-site status chip, or brand fallback -->
-      <div v-if="!minimal && host" class="flex min-w-0 items-center gap-2">
-        <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="DOT_CLASS[trustState]" />
-        <span class="truncate text-sm font-semibold text-white">{{ host }}</span>
+      <!-- Active-site status chip: CR flag, then domain, then the trust seal. -->
+      <div v-if="!minimal && host" class="flex min-w-0 flex-1 items-center gap-2">
         <CrFlag v-if="isCostaRican" class="shrink-0" />
+        <span class="min-w-0 flex-1 truncate text-sm font-semibold text-white">{{ host }}</span>
+        <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="DOT_CLASS[trustState]" />
       </div>
       <span v-else class="text-sm font-bold tracking-wide text-white">{{ APP_NAME }}</span>
 

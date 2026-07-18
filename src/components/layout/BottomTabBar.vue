@@ -74,7 +74,7 @@ function go(tab: Tab): void {
 
 <template>
   <nav
-    class="grid grid-cols-4 border-t border-slate-800 bg-slate-950"
+    class="grid grid-cols-4 border-t border-slate-800/40 bg-black/20 backdrop-blur-sm"
     aria-label="Primary"
   >
     <button

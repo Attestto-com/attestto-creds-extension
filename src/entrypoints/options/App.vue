@@ -69,10 +69,10 @@ watch(active, () => {
   <!-- Mobile-app shell on the full settings page too (ATT-1006 #22): a centered
        column with a bottom tab bar instead of a desktop sidebar, so the popup
        and the full page feel like one product. -->
-  <div class="flex min-h-screen flex-col bg-slate-50">
-    <header class="border-b border-slate-200 bg-white px-5 py-4 text-center">
-      <p class="text-base font-semibold text-slate-900">Attestto ID</p>
-      <p class="mt-0.5 text-[11px] text-slate-500">{{ t('settingsNav.subtitle') }}</p>
+  <div class="flex min-h-screen flex-col bg-[#0d1520]">
+    <header class="border-b border-[#243044] bg-[#111a28] px-5 py-4 text-center">
+      <p class="text-base font-semibold text-[#f1f4f8]">Attestto ID</p>
+      <p class="mt-0.5 text-[11px] text-[#a8b4c4]">{{ t('settingsNav.subtitle') }}</p>
     </header>
 
     <!-- Content — extra bottom padding clears the fixed tab bar. -->
@@ -84,7 +84,7 @@ watch(active, () => {
 
     <!-- Bottom tab bar -->
     <nav
-      class="fixed inset-x-0 bottom-0 z-10 border-t border-slate-200 bg-white/95 backdrop-blur"
+      class="fixed inset-x-0 bottom-0 z-10 border-t border-[#243044] bg-[#111a28]/95 backdrop-blur"
       aria-label="Settings sections"
     >
       <div class="mx-auto grid max-w-md grid-cols-3">
@@ -93,7 +93,7 @@ watch(active, () => {
           :key="tab.key"
           type="button"
           class="flex flex-col items-center gap-0.5 py-2.5 text-[11px] font-medium transition-colors"
-          :class="active === tab.key ? 'text-cyan-700' : 'text-slate-500 hover:text-slate-800'"
+          :class="active === tab.key ? 'text-[#4a8ec8]' : 'text-[#8a97a8] hover:text-[#f1f4f8]'"
           :aria-current="active === tab.key ? 'page' : undefined"
           @click="selectTab(tab.key)"
         >
