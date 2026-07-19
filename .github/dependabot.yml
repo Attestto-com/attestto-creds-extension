@@ -1,0 +1,31 @@
+# Dependabot configuration — grouped, low-noise version updates.
+# Security updates (patches for known advisories) run independently of this file
+# once enabled in Settings → Code security. This config governs routine version
+# bumps and batches them so PRs stay reviewable.
+version: 2
+updates:
+  # npm dependencies. Most vulnerable packages here are transitive under WXT and
+  # @solana/web3.js, so production bumps are limited to patch level to avoid
+  # breaking those toolchains; dev deps take minor+patch.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      production-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "patch"
+
+  # Keep GitHub Actions (checkout, setup-node) current — this is what surfaced
+  # the Node 20 deprecation.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
