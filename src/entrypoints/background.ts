@@ -21,6 +21,8 @@ import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
+import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
+import { isPlatformOrigin } from '@/utils/platform-origins'
 import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
 import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
@@ -1557,15 +1559,47 @@ export default defineBackground(() => {
         break
       }
 
+      // DID_SYNC writes holderDid / verificationMethod into the vault. It is a
+      // legitimate platform→extension flow, so it is not hard-rejected — but the
+      // sender origin MUST be authorized, resolved from the unspoofable `sender`
+      // (never the page-supplied payload.origin). Platform origins pass silently;
+      // previously user-trusted origins pass; everything else is rejected
+      // (SOC-9). Trust-on-first-use approval UX for unknown origins is a
+      // follow-up (no current origin needs it — the platform is allowlisted).
       case 'DID_SYNC': {
         const syncReq = message.payload as DidSyncMessage['payload']
-        handleDidSync(syncReq, sender.tab?.id ?? null).then(() => {
-          sendResponse({ ok: true })
-        })
+        const senderTabId = sender.tab?.id ?? null
+        const senderOrigin = getSenderOrigin(sender)
+        const runSync = () =>
+          handleDidSync(syncReq, senderTabId).then(() => sendResponse({ ok: true }))
+
+        if (isPlatformOrigin(senderOrigin)) {
+          runSync()
+        } else {
+          isOriginTrusted(senderOrigin).then((trusted) => {
+            if (trusted) {
+              runSync()
+            } else {
+              console.warn('[Attestto ID] Rejected DID_SYNC from unauthorized origin', senderOrigin)
+              sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'origin_not_authorized')
+              sendResponse({ ok: false, error: 'origin_not_authorized' })
+            }
+          })
+        }
         break
       }
 
+      // Key-management ops (rotate / backup / restore) touch the signing key
+      // itself. They are Options-UI-only: only the extension's own pages may
+      // invoke them. A web page always carries sender.tab and is rejected here
+      // (SOC-2 / SOC-3 / SOC-8). The page bridge no longer forwards these types,
+      // so this guard is defense-in-depth for any future/internal caller.
       case 'KEY_ROTATE': {
+        if (!isExtensionSender(sender)) {
+          console.warn('[Attestto ID] Rejected KEY_ROTATE from non-extension sender', getSenderOrigin(sender))
+          sendResponse({ ok: false, error: 'forbidden_sender' })
+          break
+        }
         const rotateReq = message.payload as KeyRotateMessage['payload']
         handleKeyRotate(rotateReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
@@ -1574,6 +1608,11 @@ export default defineBackground(() => {
       }
 
       case 'KEY_BACKUP': {
+        if (!isExtensionSender(sender)) {
+          console.warn('[Attestto ID] Rejected KEY_BACKUP from non-extension sender', getSenderOrigin(sender))
+          sendResponse({ ok: false, error: 'forbidden_sender' })
+          break
+        }
         const backupReq = message.payload as KeyBackupMessage['payload']
         handleKeyBackup(backupReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
@@ -1582,6 +1621,11 @@ export default defineBackground(() => {
       }
 
       case 'KEY_RESTORE': {
+        if (!isExtensionSender(sender)) {
+          console.warn('[Attestto ID] Rejected KEY_RESTORE from non-extension sender', getSenderOrigin(sender))
+          sendResponse({ ok: false, error: 'forbidden_sender' })
+          break
+        }
         const restoreReq = message.payload as KeyRestoreMessage['payload']
         handleKeyRestore(restoreReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
