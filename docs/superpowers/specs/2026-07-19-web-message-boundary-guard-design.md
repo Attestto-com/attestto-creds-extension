@@ -45,23 +45,29 @@ extension-origin). No allowlist required — the ops leave the web surface entir
 
 ### Class 2 — DID_SYNC → allowlist + trust-on-first-use approval
 
-Legitimate platform→extension flow; cannot hard-reject. Mirror the existing
-`CREDENTIAL_OFFER` (`attestto-id`) pattern:
+Legitimate platform→extension flow; cannot hard-reject. Gate on the trusted
+sender origin:
 
 1. Compute the trusted sender origin via `getSenderOrigin(sender)`.
 2. If origin ∈ platform allowlist (`platformOrigins()` — `PLATFORM_URL` origin +
-   `http://localhost:*` / `127.0.0.1` in dev + future tenant subdomains) →
-   proceed.
+   `localhost` / `127.0.0.1` in dev + future tenant subdomains) → proceed.
 3. Else if `isOriginTrusted(origin)` → proceed (previously user-approved).
-4. Else → open the trust-on-first-use approval window (`approval.html`), and on
-   approve `recordTrustedOrigin(origin)` then proceed; on deny, respond with an
-   error and do not mutate the vault.
-5. **Follow-up (same ticket, separate task): stop treating `holderDid` as
-   authoritative for signing.** SIGN/PAYMENT/AUTH responses
-   (`background.ts:1638/1973/2071`) must assert the vault's key-derived DID or the
-   DID the user selected in the approval window — never an arbitrary synced
-   `holderDid`. This is the actual damage vector; gating the sync reduces but does
-   not eliminate it.
+4. Else → **fail closed**: reject with `origin_not_authorized`, do not mutate the
+   vault. (Implemented.)
+
+**Deferred to follow-up (no current origin needs it):** trust-on-first-use
+approval window for *unknown* origins. The platform is allowlisted, so the real
+sync flow works without any approval UI; building a DID-sync-specific
+approval.html branch is its own reviewed task. Until then unknown origins simply
+fail closed — strictly safer than an approval fallback.
+
+**Remaining SOC-9 task (NOT in this change): stop treating `holderDid` as
+authoritative for signing.** SIGN/PAYMENT/AUTH responses
+(`background.ts:1638/1973/2071`) still assert the synced `holderDid`. Gating the
+sync means only an authorized origin can set it, which substantially closes the
+injection vector, but the durable fix is to assert the vault's key-derived DID
+(or a user-selected DID) rather than an arbitrary synced value. Tracked as a
+follow-up task on SOC-9.
 
 ### Shared chokepoint — `src/utils/message-guard.ts`
 

@@ -123,54 +123,11 @@ export default defineContentScript({
         return
       }
 
-      // Key Rotation — platform requests extension to generate a fresh keypair
-      if (msgType === 'ATTESTTO_KEY_ROTATE') {
-        const { requestId } = event.data
-        chrome.runtime.sendMessage(
-          {
-            type: 'KEY_ROTATE',
-            payload: { requestId, origin: window.location.origin },
-          },
-          () => {
-            if (chrome.runtime.lastError) {
-              window.postMessage({
-                type: 'ATTESTTO_KEY_ROTATE_RESPONSE',
-                requestId,
-                error: 'Extension not available',
-              }, window.location.origin)
-            }
-          },
-        )
-        return
-      }
-
-      // Key Backup — extension splits private key into 2-of-3 shares
-      if (msgType === 'ATTESTTO_KEY_BACKUP') {
-        const { requestId } = event.data
-        chrome.runtime.sendMessage(
-          { type: 'KEY_BACKUP', payload: { requestId, origin: window.location.origin } },
-          () => {
-            if (chrome.runtime.lastError) {
-              window.postMessage({ type: 'ATTESTTO_KEY_BACKUP_RESPONSE', requestId, error: 'Extension not available' }, window.location.origin)
-            }
-          },
-        )
-        return
-      }
-
-      // Key Restore — extension reconstructs private key from 2 sub-shares
-      if (msgType === 'ATTESTTO_KEY_RESTORE') {
-        const { requestId, shareA, shareB } = event.data
-        chrome.runtime.sendMessage(
-          { type: 'KEY_RESTORE', payload: { requestId, shareA, shareB, origin: window.location.origin } },
-          () => {
-            if (chrome.runtime.lastError) {
-              window.postMessage({ type: 'ATTESTTO_KEY_RESTORE_RESPONSE', requestId, error: 'Extension not available' }, window.location.origin)
-            }
-          },
-        )
-        return
-      }
+      // Key rotation / backup / restore are intentionally NOT bridged from web
+      // pages. These operations mutate or export the vault signing key and are
+      // Options-UI-only (SOC-2 / SOC-3 / SOC-8). A page posting
+      // ATTESTTO_KEY_ROTATE / _BACKUP / _RESTORE is ignored here and never
+      // reaches the background service worker.
 
       // Payment Request — page asks extension to approve + sign a payment
       if (msgType === 'ATTESTTO_PAYMENT_REQUEST') {
@@ -384,33 +341,8 @@ export default defineContentScript({
         }, window.location.origin)
       }
 
-      if (message.type === 'KEY_ROTATE_RESPONSE') {
-        window.postMessage({
-          type: 'ATTESTTO_KEY_ROTATE_RESPONSE',
-          requestId: message.payload.requestId,
-          newPublicKeyJwk: message.payload.newPublicKeyJwk,
-          oldPublicKeyJwk: message.payload.oldPublicKeyJwk,
-          error: message.payload.error,
-        }, window.location.origin)
-      }
-
-      if (message.type === 'KEY_BACKUP_RESPONSE') {
-        window.postMessage({
-          type: 'ATTESTTO_KEY_BACKUP_RESPONSE',
-          requestId: message.payload.requestId,
-          shares: message.payload.shares,
-          error: message.payload.error,
-        }, window.location.origin)
-      }
-
-      if (message.type === 'KEY_RESTORE_RESPONSE') {
-        window.postMessage({
-          type: 'ATTESTTO_KEY_RESTORE_RESPONSE',
-          requestId: message.payload.requestId,
-          success: message.payload.success,
-          error: message.payload.error,
-        }, window.location.origin)
-      }
+      // No KEY_ROTATE / KEY_BACKUP / KEY_RESTORE response bridges: those ops are
+      // Options-UI-only and never round-trip through a web page (SOC-2/3/8).
 
       if (message.type === 'AUTH_RESPONSE') {
         window.postMessage({
