@@ -5,17 +5,46 @@ import {
   ShieldCheckIcon,
   BellAlertIcon,
   PaperAirplaneIcon,
+  LockClosedIcon,
+  FingerPrintIcon,
+  KeyIcon,
 } from '@heroicons/vue/24/outline'
+import { useWalletStore } from '@/stores/wallet'
 import { useCredentialsStore } from '@/stores/credentials'
 import { useProofRequestsStore } from '@/stores/proof-requests'
 import CredentialCard from '@/components/credentials/CredentialCard.vue'
 import EmptyCredentials from '@/components/credentials/EmptyCredentials.vue'
 
 const router = useRouter()
+const wallet = useWalletStore()
 const credentialsStore = useCredentialsStore()
 const proofRequestsStore = useProofRequestsStore()
 
 const confirmDeleteId = ref<string | null>(null)
+
+// Credentials are sensitive PII, so this tab stays locked until the user
+// unlocks with their passkey (unlike Site/Inbox which read public data).
+const unlocking = ref(false)
+const unlockError = ref<string | null>(null)
+const needsPass = ref(false)
+const passphrase = ref('')
+
+async function unlock(): Promise<void> {
+  unlocking.value = true
+  unlockError.value = null
+  try {
+    await wallet.unlock(needsPass.value ? passphrase.value : undefined)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unlock failed'
+    if (msg.startsWith('PASSPHRASE_REQUIRED')) {
+      needsPass.value = true
+      return
+    }
+    unlockError.value = 'Could not unlock. Please try again.'
+  } finally {
+    unlocking.value = false
+  }
+}
 
 function handleShare(id: string): void {
   router.push(`/credentials/${id}/present`)
@@ -33,7 +62,45 @@ async function confirmDelete(): Promise<void> {
 </script>
 
 <template>
-  <div class="space-y-3">
+  <!-- Locked gate — credentials are private; reveal only after passkey unlock. -->
+  <div
+    v-if="!wallet.isUnlocked"
+    class="flex min-h-[360px] flex-col items-center justify-center px-6 text-center"
+  >
+    <div class="flex size-16 items-center justify-center rounded-full bg-slate-800/60 ring-1 ring-slate-700">
+      <LockClosedIcon class="size-8 text-indigo-400" />
+    </div>
+    <h2 class="mt-4 text-base font-semibold text-white">Credentials are locked</h2>
+    <p class="mt-1 max-w-[240px] text-xs leading-relaxed text-slate-400">
+      Your verifiable credentials are private. Unlock with your passkey to view them.
+    </p>
+
+    <input
+      v-if="needsPass"
+      v-model="passphrase"
+      type="password"
+      autocomplete="current-password"
+      placeholder="Passphrase"
+      class="mt-4 w-full max-w-[240px] rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
+      @keyup.enter="unlock"
+    />
+
+    <button
+      type="button"
+      :disabled="unlocking"
+      class="mt-4 flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+      @click="unlock"
+    >
+      <component :is="needsPass ? KeyIcon : FingerPrintIcon" class="h-4 w-4" />
+      {{ unlocking ? 'Unlocking…' : needsPass ? 'Unlock with passphrase' : 'Unlock to view' }}
+    </button>
+
+    <p v-if="unlockError" class="mt-3 max-w-[260px] text-[11px] leading-relaxed text-red-400">
+      {{ unlockError }}
+    </p>
+  </div>
+
+  <div v-else class="space-y-3">
     <!-- Header -->
     <div class="flex items-center gap-2 px-1">
       <ShieldCheckIcon class="h-5 w-5 text-indigo-400" />

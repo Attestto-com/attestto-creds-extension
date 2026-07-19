@@ -54,6 +54,12 @@ const titleLines = computed<string[]>(() =>
   props.institutionName ? props.institutionName.split(/\s+/).filter(Boolean).slice(0, 3) : [],
 )
 
+/** Site title is bright green once the user has an account here, white otherwise. */
+const titleColor = computed(() => (props.hasIdentity ? 'text-emerald-400' : 'text-white'))
+
+/** Full origin with scheme, shown below the site title (e.g. https://claude.ai). */
+const displayUrl = computed(() => `${props.isSecure ? 'https://' : 'http://'}${props.host}`)
+
 const emit = defineEmits<{ (e: 'backToSafety'): void; (e: 'viewTls'): void }>()
 
 const { t } = useI18n()
@@ -129,7 +135,7 @@ function fmtDate(iso?: string | null): string {
 <template>
   <PopupPanel tone="dark" dense :danger="!isSecure">
     <div class="space-y-3">
-    <!-- 1. Logo · registry title · domain (with inline lock) -->
+    <!-- 1. Favicon · site title · full http/s domain (below, with brighter lock) -->
     <div class="flex items-center gap-3">
       <div class="flex size-14 shrink-0 items-center justify-center rounded-full bg-slate-800 ring-1 ring-slate-700">
         <img
@@ -143,21 +149,24 @@ function fmtDate(iso?: string | null): string {
         <GlobeAltIcon v-else class="size-9 text-white" />
       </div>
       <div class="min-w-0 flex-1">
-        <!-- Only pre-configured (registry) sites get a title; max 3 words, one per line. -->
-        <p v-if="titleLines.length" class="text-base font-semibold leading-tight text-white">
+        <!-- Site title. Registry sites use the institution name (max 3 words,
+             one per line); everything else uses the site/host name. White by
+             default, bright green once the user has an account here. -->
+        <p v-if="titleLines.length" class="text-base font-semibold leading-tight" :class="titleColor">
           <span v-for="(word, i) in titleLines" :key="i" class="block truncate">{{ word }}</span>
         </p>
-        <!-- Domain + lock on one line. -->
-        <p
-          class="flex items-center gap-1.5"
-          :class="titleLines.length ? 'mt-0.5 text-sm text-white/70' : 'text-base font-semibold text-white'"
-        >
+        <p v-else class="truncate text-base font-semibold leading-tight" :class="titleColor">
+          {{ siteName || host }}
+        </p>
+
+        <!-- Full http/s domain, below the title, with a bigger, brighter lock. -->
+        <p class="mt-0.5 flex items-center gap-1.5 text-sm text-white/70">
           <component
             :is="isSecure ? LockClosedIcon : LockOpenIcon"
-            class="size-4 shrink-0"
+            class="size-5 shrink-0"
             :class="isSecure ? 'text-emerald-400' : 'text-red-400'"
           />
-          <span class="truncate">{{ host }}</span>
+          <span class="truncate">{{ displayUrl }}</span>
         </p>
       </div>
     </div>

@@ -286,6 +286,28 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
+   * Restore vault contents from a decrypted backup (see `vault-backup.ts`).
+   *
+   * Re-encrypts the restored data under THIS device's key and hydrates the
+   * in-memory store. Requires an active session key — the caller must have just
+   * run `setup()` (fresh device) or `unlock()` first, otherwise `writeVault`
+   * throws "vault is locked".
+   */
+  async function restoreFromBackup(vault: VaultData): Promise<void> {
+    const migrated = migrateVaultToMultiIdentity(vault)
+    await writeVault(migrated)
+    await syncPublicVault(migrated)
+
+    did.value = migrated.did
+    _privateKeyJwk = migrated.privateKeyJwk
+    linkedSolanaAddress.value = migrated.linkedSolanaAddress ?? null
+    linkedIdentities.value = migrated.linkedIdentities ?? []
+    isUnlocked.value = true
+    isSetUp.value = true
+    isLoaded.value = true
+  }
+
+  /**
    * Create a new DID key pair, encrypt, and persist.
    *
    * Generates a proper `did:jwk` — self-resolving DID where the public key
@@ -476,6 +498,7 @@ export const useWalletStore = defineStore('wallet', () => {
     unlock,
     lock,
     resetWallet,
+    restoreFromBackup,
     createDid,
     getPrivateKey,
     getPublicKeyJwk,

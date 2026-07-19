@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { useI18n } from 'vue-i18n'
 import { useWalletStore } from '@/stores/wallet'
 import ExtensionHeader from '@/components/layout/ExtensionHeader.vue'
 import BottomTabBar from '@/components/layout/BottomTabBar.vue'
 
 const wallet = useWalletStore()
-const { t } = useI18n()
 
 onMounted(async () => {
   // Load public data immediately — no passkey needed.
@@ -17,18 +15,12 @@ onMounted(async () => {
 function handleLock(): void {
   wallet.lock()
 }
-
-/** Full settings live on their own page (options.html), reached from the footer. */
-function openSettings(): void {
-  chrome.runtime.openOptionsPage()
-}
 </script>
 
 <template>
   <!--
-    Mobile-app shell (ATT-1006): site-status header, scrolling content,
-    persistent bottom tab bar, and a small "Powered by Attestto ID" footer
-    that is the entry to the full settings page.
+    Mobile-app shell (ATT-1006): brand header (with settings gear), scrolling
+    content, and a persistent bottom tab bar.
 
     Per ATT-724 the popup no longer gates on wallet setup — anti-phishing is
     always visible and identity setup is an optional upgrade inside the tabs.
@@ -47,18 +39,6 @@ function openSettings(): void {
     </main>
 
     <BottomTabBar />
-
-    <footer
-      class="flex items-center justify-center gap-1.5 border-t border-slate-800/40 bg-transparent py-1.5 text-[10px] text-slate-500"
-    >
-      <button type="button" class="hover:text-slate-300" @click="openSettings">
-        {{ t('footer.poweredBy') }}
-      </button>
-      <span aria-hidden="true">·</span>
-      <button type="button" class="hover:text-slate-300" @click="openSettings">
-        {{ t('footer.settings') }}
-      </button>
-    </footer>
   </div>
 </template>
 

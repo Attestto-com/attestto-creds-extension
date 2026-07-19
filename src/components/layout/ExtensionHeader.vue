@@ -1,25 +1,21 @@
 <script setup lang="ts">
 /**
- * Popup title bar (ATT-1006).
+ * Popup title bar.
  *
- * Full mode shows the ACTIVE SITE'S status (domain + a trust dot) — the brand
- * moves to the footer. Minimal mode (setup / recovery in LockScreenView) has
- * no active site, so it falls back to the app name.
+ * Shows the Attestto brand lockup (logo badge first, then the wordmark),
+ * left-aligned, in BOTH full mode and minimal (setup / recovery) mode. The
+ * active site's identity + trust now live entirely in SiteIdentityCard, not
+ * here.
  *
- * There is no gear here anymore: settings live on a full page reached from the
- * footer. And there is no manual "unlock" button — the vault unlocks on demand
- * when an action needs the key and auto-locks after 1 minute.
+ * Right side: an X that closes the popup window. The vault auto-locks after
+ * 1 minute and unlocks on demand, so there is no manual lock/unlock button.
  */
-import { computed, onMounted, ref } from 'vue'
-import { LockClosedIcon } from '@heroicons/vue/24/outline'
-import { APP_NAME } from '@/config/app'
-import { computeStateForUrl, type TrustState } from '@/utils/tab-state'
-import CrFlag from '@/components/layout/CrFlag.vue'
+import { Cog6ToothIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 
 withDefaults(defineProps<{
   isUnlocked: boolean
-  // Hide the site status + action buttons. Used by LockScreenView during
-  // first-time setup and recovery flows where there is no active site.
+  // Kept for API compatibility with the LockScreenView call site; the header
+  // now renders the same brand lockup regardless.
   minimal?: boolean
 }>(), {
   minimal: false,
@@ -29,56 +25,45 @@ defineEmits<{
   lock: []
 }>()
 
-const host = ref<string | null>(null)
-const trustState = ref<TrustState>('neutral')
-
-/** Costa Rican host → show the CR flag chip in the title bar. */
-const isCostaRican = computed(() => /\.cr$/.test(host.value ?? ''))
-
-/** Trust state → status-dot color. Mirrors STATE_VISUALS families. */
-const DOT_CLASS: Record<TrustState, string> = {
-  neutral: 'bg-slate-500',
-  'green-pinned': 'bg-emerald-400',
-  'green-verified': 'bg-emerald-400',
-  'yellow-heuristic': 'bg-amber-400',
-  'yellow-cert': 'bg-amber-400',
-  red: 'bg-red-500',
+function openSettings(): void {
+  chrome.runtime.openOptionsPage()
 }
 
-onMounted(async () => {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    const url = tab?.url ?? null
-    if (!url || !/^https?:/.test(url)) return
-    host.value = new URL(url).host.toLowerCase().replace(/^www\./, '')
-    trustState.value = await computeStateForUrl(url)
-  } catch {
-    // No tab access (e.g. detached window) — leave the app-name fallback.
-  }
-})
+function closeWindow(): void {
+  window.close()
+}
 </script>
 
 <template>
   <header class="border-b border-slate-800/40 bg-transparent px-3 py-2.5">
     <div class="flex items-center justify-between gap-2">
-      <!-- Active-site status chip: CR flag, then domain, then the trust seal. -->
-      <div v-if="!minimal && host" class="flex min-w-0 flex-1 items-center gap-2">
-        <CrFlag v-if="isCostaRican" class="shrink-0" />
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold text-white">{{ host }}</span>
-        <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="DOT_CLASS[trustState]" />
-      </div>
-      <span v-else class="text-sm font-bold tracking-wide text-white">{{ APP_NAME }}</span>
-
-      <div v-if="!minimal" class="flex items-center gap-1.5">
+      <!-- Brand lockup: logo badge first (always), then the wordmark, then a
+           settings gear. Left-aligned. -->
+      <div class="flex min-w-0 items-center gap-2">
+        <span
+          class="flex size-6 shrink-0 items-center justify-center rounded-md bg-slate-700 text-[11px] font-bold lowercase leading-none text-white"
+          aria-hidden="true"
+        >tt</span>
+        <span class="truncate text-sm font-bold lowercase tracking-tight text-white">attestto</span>
         <button
-          v-if="isUnlocked"
-          class="rounded-md p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
-          title="Lock"
-          @click="$emit('lock')"
+          v-if="!minimal"
+          type="button"
+          class="shrink-0 rounded-md p-0.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+          title="Settings"
+          @click="openSettings"
         >
-          <LockClosedIcon class="h-5 w-5" />
+          <Cog6ToothIcon class="h-5 w-5" />
         </button>
       </div>
+
+      <button
+        type="button"
+        class="shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-800 hover:text-slate-300"
+        title="Close"
+        @click="closeWindow"
+      >
+        <XMarkIcon class="h-5 w-5" />
+      </button>
     </div>
   </header>
 </template>
