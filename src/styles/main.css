@@ -8,9 +8,19 @@
 
 body {
   width: var(--ext-popup-width);
-  min-height: 200px;
+  /* Fixed app-like height so the bottom tab bar always sits at the bottom
+     (ATT-1006 mobile-app shell). Capped at Chrome's 600px popup limit. */
+  height: var(--ext-popup-max-height);
+  min-height: var(--ext-popup-max-height);
   max-height: var(--ext-popup-max-height);
   margin: 0;
   overflow-x: hidden;
   font-family: Inter, system-ui, -apple-system, sans-serif;
+}
+
+/* The Vue mount point must fill the body so the popup's `h-full` flex column
+   resolves — otherwise content is top-aligned and the tab bar/footer float in
+   the middle instead of pinning to the bottom. */
+#app {
+  height: 100%;
 }

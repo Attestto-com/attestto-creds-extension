@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { FingerPrintIcon, KeyIcon, TrashIcon, ChevronDownIcon, ChevronUpIcon } from '@heroicons/vue/24/outline'
-import { useWalletStore } from '@/stores/wallet'
+import { FingerPrintIcon, KeyIcon, TrashIcon, ChevronDownIcon, ChevronUpIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
+import { useWalletStore, type VaultData } from '@/stores/wallet'
 import ExtensionHeader from '@/components/layout/ExtensionHeader.vue'
+import RestoreBackupPanel from '@/components/backup/RestoreBackupPanel.vue'
 
 const wallet = useWalletStore()
 const loading = ref(true)
@@ -23,6 +24,12 @@ const showPassphraseSetup = ref(false)
 const showPassphrase = ref(false)
 const showReset = ref(false)
 const resetConfirm = ref(false)
+
+// Restore-from-backup: the panel decrypts a backup into `pendingRestore`, we
+// reset local protection, and the normal setup flow re-protects the device;
+// once setup succeeds we write the restored vault (see handleAction).
+const showRestore = ref(false)
+const pendingRestore = ref<VaultData | null>(null)
 
 const setupValidation = computed<string | null>(() => {
   if (wallet.isSetUp) return null
@@ -50,7 +57,18 @@ async function handleAction(): Promise<void> {
         error.value = setupValidation.value
         return
       }
+      // Restoring requires a deterministic passphrase so the re-protected vault
+      // can be opened without a device-bound passkey.
+      if (pendingRestore.value && !passphrase.value) {
+        showPassphraseSetup.value = true
+        error.value = 'Set a password to finish restoring on this device'
+        return
+      }
       await wallet.setup(passphrase.value || undefined)
+      if (pendingRestore.value) {
+        await wallet.restoreFromBackup(pendingRestore.value)
+        pendingRestore.value = null
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Authentication failed'
@@ -80,6 +98,29 @@ async function handleAction(): Promise<void> {
     }
 
     error.value = msg
+  } finally {
+    acting.value = false
+  }
+}
+
+/**
+ * A backup was decrypted. Wipe the (unreachable) local vault and drop into
+ * setup mode so the user sets a new device password; handleAction then writes
+ * the restored vault once setup succeeds.
+ */
+async function onDecrypted(vault: VaultData): Promise<void> {
+  acting.value = true
+  error.value = null
+  try {
+    pendingRestore.value = vault
+    showRestore.value = false
+    await wallet.resetWallet()
+    await wallet.checkSetup()
+    showPassphraseSetup.value = true
+    info.value = 'Backup loaded. Set a password to finish restoring on this device.'
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Restore failed'
+    pendingRestore.value = null
   } finally {
     acting.value = false
   }
@@ -208,6 +249,21 @@ async function handleReset(): Promise<void> {
       <p v-if="error" class="mt-3 text-[11px] text-red-400 text-center max-w-[280px] leading-relaxed">
         {{ error }}
       </p>
+
+      <!-- Restore from a backup — decrypt panel, then the setup flow re-protects
+           the device and writes the restored vault. -->
+      <div v-if="showRestore" class="mt-4">
+        <RestoreBackupPanel @decrypted="onDecrypted" @cancel="showRestore = false" />
+      </div>
+      <button
+        v-else-if="!showReset && !pendingRestore"
+        type="button"
+        class="mt-4 flex items-center gap-1 text-[11px] text-slate-400 transition-colors hover:text-indigo-400"
+        @click="showRestore = true"
+      >
+        <ArrowPathIcon class="h-3 w-3" />
+        Restore from a backup
+      </button>
 
       <!-- Reset vault — only shown when unlock has failed unrecoverably -->
       <div v-if="showReset" class="mt-4 w-full max-w-[260px] rounded-lg border border-red-700/50 bg-red-950/30 p-3 space-y-2">

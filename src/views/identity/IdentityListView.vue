@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { FingerPrintIcon } from '@heroicons/vue/24/outline'
+import { FingerPrintIcon, PlusCircleIcon, ArrowDownTrayIcon, IdentificationIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
 import type { LinkedIdentity } from '@/stores/wallet'
+import PopupPanel from '@/components/layout/PopupPanel.vue'
+import PanelButton from '@/components/layout/PanelButton.vue'
+import { PLATFORM_URL } from '@/config/app'
 
 const router = useRouter()
 const wallet = useWalletStore()
@@ -25,18 +28,25 @@ const identities = computed<IdentityItem[]>(() => {
   }))
 })
 
-const PLATFORM_URL = 'https://app.attestto.com'
 const ONBOARDING_PATH = '/onboarding'
 const UNLOCK_PATH = '/lock'
 
 function selectIdentity(did: string): void {
   router.push({ name: 'identity-detail', params: { did: encodeURIComponent(did) } })
 }
+
+/** Onboarding step 1 — open the full-page extension flow in a new tab. */
+function verifyIdOffline(): void {
+  chrome.runtime.openOptionsPage()
+}
 </script>
 
 <template>
   <div class="space-y-3">
-    <p class="px-1 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+    <p
+      v-if="identities.length > 0"
+      class="px-1 text-[10px] font-medium uppercase tracking-wider text-slate-500"
+    >
       My Identities
     </p>
 
@@ -65,37 +75,47 @@ function selectIdentity(did: string): void {
       </svg>
     </button>
 
-    <!-- Onboarding — no platform-synced identity yet -->
-    <div
-      v-if="identities.length === 0"
-      class="rounded-lg border border-slate-700 bg-slate-900 p-6 text-center space-y-4"
-    >
-      <FingerPrintIcon class="mx-auto h-10 w-10 text-indigo-400" />
-      <div>
-        <p class="text-sm font-medium text-white">Set up your identity</p>
-        <p class="mt-1 text-[11px] text-slate-400 leading-relaxed">
-          Connect to the Attestto platform to receive your digital identity.
-        </p>
-      </div>
-
-      <a
-        :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
-        target="_blank"
-        class="block w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-xs font-medium text-white hover:bg-indigo-500 transition-colors"
-      >
-        Get Started
-      </a>
-
-      <p class="text-[10px] text-slate-500">
-        Already have an account?
-        <a
-          :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
-          target="_blank"
-          class="text-indigo-400 hover:text-indigo-300"
+    <!-- Onboarding — no platform-synced identity yet (light "welcome" panel) -->
+    <PopupPanel v-if="identities.length === 0" tone="light">
+      <div class="text-center">
+        <div
+          class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-white/70 shadow-sm"
         >
-          Log in to sync
-        </a>
-      </p>
-    </div>
+          <FingerPrintIcon class="h-7 w-7 text-indigo-600" />
+        </div>
+        <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+          Welcome to
+        </p>
+        <p class="mt-0.5 text-lg font-bold text-slate-900">Attestto</p>
+        <p class="mx-auto mt-1.5 max-w-[16rem] text-[11px] leading-relaxed text-slate-600">
+          Your digital identity and credentials, held in this wallet — never on the sites you use.
+        </p>
+
+        <div class="mt-5 space-y-2.5">
+          <PanelButton variant="primary" tone="light" @click="verifyIdOffline">
+            <IdentificationIcon class="h-4 w-4" />
+            1. Verify your ID offline
+          </PanelButton>
+          <PanelButton
+            variant="secondary"
+            tone="light"
+            :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
+            target="_blank"
+          >
+            <PlusCircleIcon class="h-4 w-4" />
+            Get Started
+          </PanelButton>
+          <PanelButton
+            variant="secondary"
+            tone="light"
+            :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
+            target="_blank"
+          >
+            <ArrowDownTrayIcon class="h-4 w-4" />
+            Log in to sync
+          </PanelButton>
+        </div>
+      </div>
+    </PopupPanel>
   </div>
 </template>

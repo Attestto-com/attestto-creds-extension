@@ -69,10 +69,11 @@ export default defineBackground(() => {
       const winLeft = current.left ?? 0
       const winTop = current.top ?? 0
       const winWidth = current.width ?? 1280
-      void height
+      const winHeight = current.height ?? 800
+      // Center the approval window over the active browser window.
       return {
-        left: Math.max(0, Math.round(winLeft + winWidth - width - 16)),
-        top: Math.max(0, Math.round(winTop + 80)),
+        left: Math.max(0, Math.round(winLeft + (winWidth - width) / 2)),
+        top: Math.max(0, Math.round(winTop + (winHeight - height) / 2)),
       }
     } catch {
       return { left: 100, top: 100 }
@@ -188,11 +189,12 @@ export default defineBackground(() => {
     }
   })
 
-  // Set up auto-lock alarm from stored preference
+  // Auto-lock is fixed at 1 minute — no longer user-configurable (the timer
+  // selector was removed from settings). Kept as a function so the
+  // AUTO_LOCK_CHANGED message and initial setup share one code path.
+  const AUTO_LOCK_MINUTES = 1
   async function resetAutoLockAlarm(): Promise<void> {
-    const stored = await chrome.storage.local.get('attestto_ext_auto_lock_minutes')
-    const minutes = Number(stored.attestto_ext_auto_lock_minutes) || 5
-    chrome.alarms.create('autoLock', { delayInMinutes: minutes })
+    chrome.alarms.create('autoLock', { delayInMinutes: AUTO_LOCK_MINUTES })
   }
 
   resetAutoLockAlarm()

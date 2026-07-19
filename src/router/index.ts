@@ -23,6 +23,21 @@ const router = createRouter({
       component: () => import('@/views/identity/IdentityDetailView.vue'),
     },
     {
+      path: '/credentials',
+      name: 'credentials',
+      component: () => import('@/views/credentials/CredentialsView.vue'),
+    },
+    {
+      path: '/inbox',
+      name: 'inbox',
+      component: () => import('@/views/inbox/InboxView.vue'),
+    },
+    {
+      path: '/tls',
+      name: 'tls-detail',
+      component: () => import('@/views/site/TlsDetailView.vue'),
+    },
+    {
       path: '/credentials/:id/present',
       name: 'present-credential',
       component: () => import('@/views/credentials/PresentCredentialView.vue'),
@@ -36,11 +51,6 @@ const router = createRouter({
       path: '/consent/:id',
       name: 'proof-consent',
       component: () => import('@/views/consent/ProofConsentView.vue'),
-    },
-    {
-      path: '/settings',
-      name: 'settings',
-      component: () => import('@/views/settings/SettingsView.vue'),
     },
     {
       path: '/chapi-consent',

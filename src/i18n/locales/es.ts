@@ -31,6 +31,27 @@ export default {
     },
   },
 
+  bottomNav: {
+    site: 'Sitio',
+    accounts: 'Cuentas',
+    credentials: 'Credenciales',
+    inbox: 'Bandeja',
+  },
+
+  inbox: {
+    title: 'Bandeja',
+    empty: 'Nada pendiente. Las solicitudes de prueba y presentaciones preparadas aparecen aquí.',
+    pendingTitle: 'Requiere tu respuesta',
+    preparedTitle: 'Listas para presentar',
+    preparedCount: '{count} presentación preparada | {count} presentaciones preparadas',
+    preparedHint: 'Enviadas desde tu panel, listas para compartir.',
+  },
+
+  footer: {
+    poweredBy: 'Con tecnología de Attestto',
+    settings: 'Configuración',
+  },
+
   wallet: {
     unlocked: 'Billetera Desbloqueada',
     locked: 'Billetera Bloqueada',
@@ -142,7 +163,7 @@ export default {
     currentSite: {
       loading: 'Verificando sitio\u2026',
       noSite: 'Visite un sitio web para verificarlo.',
-      verifiedLabel: 'Instituci\u00f3n verificada',
+      verifiedLabel: 'Instituci\u00f3n conocida (registro CR)',
       pinnedLabel: 'Conf\u00eda en este sitio',
       neutralLabel: 'A\u00fan no evaluado',
       yellowLabel: 'Tenga precauci\u00f3n',
@@ -165,6 +186,8 @@ export default {
       siteIdentity: 'Identidad del sitio',
       notVerified: 'Sitio no verificado por Attestto',
       yourIdentity: 'Su identidad aqu\u00ed',
+      whois: 'Qui\u00e9n es',
+      accounts: 'Cuentas',
       levelBasic: 'B\u00e1sica \u2014 no vinculada a ninguna persona ni dato',
       created: 'ID creada',
       lastUsed: '\u00daltimo uso aqu\u00ed',
@@ -180,6 +203,7 @@ export default {
       tlsSnapshotNote: 'Del muestreo del sector p\u00fablico de Attestto',
       tlsSnapshotNoteDated: 'Del muestreo del sector p\u00fablico de Attestto \u00b7 al {date}',
       tlsScanError: 'Escaneo fallido \u2014 no se pudo leer el certificado',
+      antiPhishing: 'A prueba de phishing: una identidad funciona solo en el sitio donde la cre\u00f3; sus llaves nunca salen de esta extensi\u00f3n.',
     },
   },
   report: {
@@ -198,11 +222,44 @@ export default {
     overview: 'Resumen',
     security: 'Seguridad',
     privacy: 'Privacidad',
+    backup: 'Respaldo',
     subtitle: 'Ajustes',
   },
 
+  backup: {
+    title: 'Respaldo y recuperación',
+    subtitle: 'Guarde una copia de su bóveda para no perder nunca su identidad, credenciales y claves.',
+    lockedTitle: 'Desbloquee para crear un respaldo',
+    lockedBody: 'Su bóveda está bloqueada. Desbloquéela para exportar un respaldo.',
+    unlock: 'Desbloquear',
+    unlockPassphrase: 'Frase del dispositivo',
+    passphrase: {
+      title: 'Archivo protegido con contraseña',
+      body: 'Descargue un archivo cifrado. Restáurelo en cualquier dispositivo con la contraseña que defina aquí. Elija una contraseña segura que no olvidará: no se puede restablecer.',
+      newLabel: 'Contraseña del respaldo',
+      confirmLabel: 'Confirmar contraseña',
+      mismatch: 'Las contraseñas no coinciden.',
+      tooShort: 'Use al menos 8 caracteres.',
+      action: 'Descargar archivo de respaldo',
+      done: 'Archivo de respaldo descargado.',
+    },
+    shamir: {
+      title: 'Recuperación dividida (2 de 3)',
+      body: 'Obtenga un archivo más tres claves de recuperación. Guarde cada clave en un lugar distinto. Dos claves cualesquiera restauran su bóveda. Sin contraseña que recordar, y el archivo por sí solo es inútil.',
+      action: 'Generar claves de recuperación',
+      fileNote: 'Se descargó un archivo de datos de recuperación. Consérvelo junto con dos de las claves de abajo.',
+      sharesTitle: 'Sus tres claves de recuperación',
+      shareLabel: 'Clave {n}',
+      copy: 'Copiar',
+      copied: 'Copiado',
+      warn: 'Guarde cada clave en un lugar SEPARADO (gestor de contraseñas, papel, otro dispositivo). Cualquiera con dos claves y el archivo puede abrir su bóveda. No podemos recuperarlas por usted.',
+      downloadShares: 'Descargar claves como archivo',
+    },
+    error: 'Algo salió mal. Inténtelo de nuevo.',
+  },
+
   overview: {
-    title: 'Bienvenido a Attestto ID',
+    title: 'Bienvenido a Attestto',
     subtitle: 'La protecci\u00f3n contra phishing est\u00e1 activa. La identidad es opcional.',
     protection: {
       title: 'Protecci\u00f3n contra phishing',
@@ -211,16 +268,21 @@ export default {
       manage: 'Gestionar sus sitios de confianza',
     },
     identity: {
-      title: 'Identidad',
-      activeBody: 'Su identidad est\u00e1 activa.',
-      upgradeBody: 'Inicie sesi\u00f3n en sitios, firme documentos y guarde credenciales. Opcional \u2014 la protecci\u00f3n contra phishing funciona sin esto.',
-      setup: 'Configurar identidad',
+      title: 'Su Attestto ID',
+      activeBody: 'Su Attestto ID est\u00e1 activo.',
+      upgradeBody: 'Configure su Attestto ID para iniciar sesi\u00f3n en sitios, firmar documentos y guardar credenciales. Se crea en la app de Attestto o en CORTEX. Opcional \u2014 la protecci\u00f3n contra phishing funciona sin esto.',
+      setup: 'Configurar su Attestto ID',
       alreadyHave: '\u00bfYa tiene una?',
       signIn: 'Iniciar sesi\u00f3n',
     },
     cards: {
       security: 'Sitios de confianza, comportamiento de confianza, notificaciones.',
       privacy: 'C\u00f3mo Attestto maneja compartir datos y telemetr\u00eda.',
+    },
+    resources: {
+      help: 'Ayuda y documentaci\u00f3n',
+      dashboard: 'Abrir panel',
+      version: 'Versi\u00f3n {version}',
     },
   },
 
@@ -233,6 +295,7 @@ export default {
       ask:   { label: 'Preguntar primero',  desc: 'Confirma antes de agregar el sitio. Evita confianza accidental.' },
       auto:  { label: 'Agregar de inmediato', desc: 'Sin confirmaci\u00f3n. Lo m\u00e1s r\u00e1pido y con menos protecci\u00f3n.' },
       never: { label: 'Desactivar',          desc: 'Oculta la acci\u00f3n en todos lados. M\u00e1xima precauci\u00f3n.' },
+      always: 'Attestto siempre pregunta antes de agregar un sitio a su lista de confianza.',
     },
     notifications: {
       title: 'Notificaciones',
@@ -245,12 +308,17 @@ export default {
       description: 'En sitios del gobierno de Costa Rica (.go.cr, .fi.cr y similares) cuyo certificado tenemos registrado, muestra una barra delgada en la parte superior de la p\u00e1gina con un resumen del certificado. Nunca aparece en otros sitios.',
       enabled: 'Mostrar la barra de confianza en sitios del gobierno',
     },
-    trustedSites: {
-      title: 'Sus sitios de confianza',
-      description: 'Sitios que usted ha agregado expl\u00edcitamente a su lista de confianza. Esta informaci\u00f3n vive solo en este dispositivo.',
-      empty: 'A\u00fan no ha agregado sitios de confianza.',
+    siteIdentities: {
+      title: 'Sitios donde tiene una identidad',
+      description: 'Cada sitio recibe su propia identidad privada de inicio de sesi\u00f3n (un DID por sitio) para que los sitios no puedan rastrearlo por la web. Viven solo en este dispositivo.',
+      empty: 'A\u00fan no ha iniciado sesi\u00f3n en ning\u00fan sitio con Attestto.',
+      created: 'Desde {date}',
       remove: 'Quitar',
-      addedOn: 'Agregado el {date}',
+      warnTitle: '\u00bfQuitar esta identidad?',
+      warnBody: 'Esto archiva la identidad privada que usa para iniciar sesi\u00f3n en {site}. Para volver a usar {site} pasar\u00e1 por su flujo de inicio de sesi\u00f3n, que crea una identidad nueva: el sitio lo tratar\u00e1 como un usuario nuevo y podr\u00eda perder el acceso a lo que estaba ligado a la anterior.',
+      warnConfirm: 'Archivar identidad',
+      warnCancel: 'Conservarla',
+      unlockNeeded: 'Desbloquee su b\u00f3veda primero para quitar una identidad de sitio.',
     },
   },
 

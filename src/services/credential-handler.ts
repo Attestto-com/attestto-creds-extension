@@ -128,7 +128,7 @@ export function buildCredentialHandlerScript(): string {
   // -------------------------------------------------------------------
   var ATTESTTO_DID_WALLET = {
     did: 'did:web:attestto.com:wallets:attestto-creds',
-    name: 'Attestto ID',
+    name: 'Attestto',
     icon: 'https://attestto.com/icons/attestto-id-64.svg',
     version: '0.1.0',
     protocols: ['chapi', 'didcomm-v2'],

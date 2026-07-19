@@ -1,5 +1,15 @@
-export const APP_NAME = 'Attestto ID'
+export const APP_NAME = 'Attestto'
 export const APP_VERSION = '0.1.0'
+
+/**
+ * Base URL of the Attestto platform (PWA / CORTEX) the extension hands off to
+ * for onboarding, unlock, and ID verification/KYC. Environment-configurable so
+ * dev builds point at localhost instead of production — set `VITE_PLATFORM_URL`
+ * (e.g. `http://localhost:5173`) in your dev env. Mirrors `VITE_API_URL`.
+ * The extension NEVER runs capture itself; it only links to this surface and
+ * receives the resulting DID via the sync flow.
+ */
+export const PLATFORM_URL = import.meta.env.VITE_PLATFORM_URL || 'https://app.attestto.com'
 
 export const STORAGE_KEYS = {
   LOCALE: 'attestto_ext_locale',

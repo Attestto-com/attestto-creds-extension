@@ -60,6 +60,13 @@ export interface VaultData {
    * the web. Never presented as identity — attributes flow only via VC.
    */
   siteDids?: Record<string, SiteDidEntry>
+  /**
+   * Retired per-site DIDs, keyed by origin. Archived (not deleted) when the
+   * user removes a site identity, so signatures made with the old key remain
+   * verifiable (forward-only revocation / point-in-time authority). The site's
+   * next sign-in mints a fresh `did:jwk`.
+   */
+  archivedSiteDids?: Record<string, SiteDidEntry & { archivedAt: string }>
 }
 
 /**
@@ -286,6 +293,52 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
+   * Restore vault contents from a decrypted backup (see `vault-backup.ts`).
+   *
+   * Re-encrypts the restored data under THIS device's key and hydrates the
+   * in-memory store. Requires an active session key — the caller must have just
+   * run `setup()` (fresh device) or `unlock()` first, otherwise `writeVault`
+   * throws "vault is locked".
+   */
+  async function restoreFromBackup(vault: VaultData): Promise<void> {
+    const migrated = migrateVaultToMultiIdentity(vault)
+    await writeVault(migrated)
+    await syncPublicVault(migrated)
+
+    did.value = migrated.did
+    _privateKeyJwk = migrated.privateKeyJwk
+    linkedSolanaAddress.value = migrated.linkedSolanaAddress ?? null
+    linkedIdentities.value = migrated.linkedIdentities ?? []
+    isUnlocked.value = true
+    isSetUp.value = true
+    isLoaded.value = true
+  }
+
+  /**
+   * Archive the per-site DID for `origin`: move it out of the active
+   * `siteDids` map into `archivedSiteDids` (kept for point-in-time
+   * verification). The site's next sign-in mints a fresh `did:jwk`.
+   *
+   * Mutates the encrypted vault → requires an unlocked session. Throws
+   * `PASSPHRASE_REQUIRED`-style `LOCKED` if called while locked.
+   */
+  async function archiveSiteDid(origin: string): Promise<void> {
+    const vault = await readVault()
+    if (!vault) throw new Error('LOCKED')
+    const entry = vault.siteDids?.[origin]
+    if (!entry) return
+
+    const remaining = { ...(vault.siteDids ?? {}) }
+    delete remaining[origin]
+    const archived = { ...(vault.archivedSiteDids ?? {}) }
+    archived[origin] = { ...entry, archivedAt: new Date().toISOString() }
+
+    const next: VaultData = { ...vault, siteDids: remaining, archivedSiteDids: archived }
+    await writeVault(next)
+    await syncPublicVault(next)
+  }
+
+  /**
    * Create a new DID key pair, encrypt, and persist.
    *
    * Generates a proper `did:jwk` — self-resolving DID where the public key
@@ -476,6 +529,8 @@ export const useWalletStore = defineStore('wallet', () => {
     unlock,
     lock,
     resetWallet,
+    restoreFromBackup,
+    archiveSiteDid,
     createDid,
     getPrivateKey,
     getPublicKeyJwk,

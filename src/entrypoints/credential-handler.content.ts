@@ -24,7 +24,7 @@ export default defineContentScript({
 
     const ATTESTTO_WALLET = {
       did: 'did:web:attestto.com:wallets:attestto-creds',
-      name: 'Attestto ID',
+      name: 'Attestto',
       icon: extensionIcon,
       version: '0.1.0',
       protocols: ['chapi' as const, 'didcomm-v2' as const],

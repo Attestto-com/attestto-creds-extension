@@ -5,22 +5,40 @@
  * approval window uses, so both surfaces agree.
  */
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { readPublicVault } from '@/utils/vault'
 import { normalizeOrigin } from '@/utils/site-did'
 import { isOriginTrusted } from '@/utils/trusted-origins'
+import { computeStateForUrl, type TrustState } from '@/utils/tab-state'
+import { lookupHost } from '@/utils/trust-registry'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const loading = ref(true)
 const host = ref<string | null>(null)
-const siteName = ref<string | null>(null)
 const isSecure = ref(false)
 const faviconSrc = ref<string | null>(null)
 const hasIdentity = ref(false)
 const createdAt = ref<string | null>(null)
 const lastUsedAt = ref<string | null>(null)
+const trustState = ref<TrustState>()
+const institutionName = ref<string | null>(null)
+const institutionCategory = ref<string | null>(null)
+
+/** Navigate the active tab back, away from a red/impersonation page. */
+async function backToSafety(): Promise<void> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (tab?.id == null) return
+  try {
+    await chrome.tabs.goBack(tab.id)
+  } catch {
+    // No history to go back to → land on a neutral page instead.
+    await chrome.tabs.update(tab.id, { url: 'about:blank' })
+  }
+}
 
 onMounted(async () => {
   try {
@@ -33,10 +51,15 @@ onMounted(async () => {
 
     const u = new URL(url)
     host.value = u.host.toLowerCase().replace(/^www\./, '')
-    siteName.value = tab?.title?.trim() || null
     isSecure.value = u.protocol === 'https:'
     faviconSrc.value = tab?.favIconUrl && /^(https?|data):/.test(tab.favIconUrl) ? tab.favIconUrl : null
     hasIdentity.value = await isOriginTrusted(u.origin)
+    trustState.value = await computeStateForUrl(url)
+
+    // Registry match → official institution name/category (pre-configured only).
+    const registryEntry = await lookupHost(host.value)
+    institutionName.value = registryEntry?.name ?? null
+    institutionCategory.value = registryEntry?.category ?? null
 
     // Best-effort created/last-used from the public mirror (may be absent).
     const pub = await readPublicVault()
@@ -62,11 +85,16 @@ onMounted(async () => {
   <SiteIdentityCard
     v-else
     :host="host"
-    :site-name="siteName"
     :is-secure="isSecure"
     :favicon-src="faviconSrc"
     :has-identity="hasIdentity"
     :created-at="createdAt"
     :last-used-at="lastUsedAt"
+    :trust-state="trustState"
+    :institution-name="institutionName"
+    :institution-category="institutionCategory"
+    tls-mode="link"
+    @back-to-safety="backToSafety"
+    @view-tls="router.push('/tls')"
   />
 </template>

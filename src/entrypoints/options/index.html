@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Attestto ID — Settings</title>
+    <!-- Open the full settings page in a real browser tab, never the cramped
+         embedded modal inside the extensions manager. WXT reads this meta and
+         emits `options_ui.open_in_tab: true` (a config-level manifest.options_ui
+         is overwritten by the entrypoint, so it must be set here). -->
+    <meta name="manifest.open_in_tab" content="true" />
+    <title>Attestto — Settings</title>
   </head>
   <body>
     <div id="app"></div>

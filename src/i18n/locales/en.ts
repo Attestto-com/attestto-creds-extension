@@ -31,6 +31,27 @@ export default {
     },
   },
 
+  bottomNav: {
+    site: 'Site',
+    accounts: 'Accounts',
+    credentials: 'Credentials',
+    inbox: 'Inbox',
+  },
+
+  inbox: {
+    title: 'Inbox',
+    empty: 'Nothing waiting. Proof requests and prepared presentations show up here.',
+    pendingTitle: 'Needs your response',
+    preparedTitle: 'Ready to present',
+    preparedCount: '{count} prepared presentation | {count} prepared presentations',
+    preparedHint: 'Pushed from your dashboard, ready to share.',
+  },
+
+  footer: {
+    poweredBy: 'Powered by Attestto',
+    settings: 'Settings',
+  },
+
   wallet: {
     unlocked: 'Wallet Unlocked',
     locked: 'Wallet Locked',
@@ -142,7 +163,7 @@ export default {
     currentSite: {
       loading: 'Checking site…',
       noSite: 'Visit a website to check it.',
-      verifiedLabel: 'Verified institution',
+      verifiedLabel: 'Known institution (CR registry)',
       pinnedLabel: 'You trust this site',
       neutralLabel: 'Not yet evaluated',
       yellowLabel: 'Use caution',
@@ -165,6 +186,8 @@ export default {
       siteIdentity: 'Site identity',
       notVerified: 'Not an Attestto-verified site',
       yourIdentity: 'Your identity here',
+      whois: 'Who is',
+      accounts: 'Accounts',
       levelBasic: 'Basic — not tied to any physical person or data',
       created: 'ID created',
       lastUsed: 'Last used here',
@@ -180,6 +203,7 @@ export default {
       tlsSnapshotNote: 'From Attestto public-sector snapshot',
       tlsSnapshotNoteDated: 'From Attestto public-sector snapshot · as of {date}',
       tlsScanError: 'Scan failed — certificate could not be read',
+      antiPhishing: 'Phishing-proof: an identity works only on the site where you created it — keys never leave this extension.',
     },
   },
   report: {
@@ -198,11 +222,44 @@ export default {
     overview: 'Overview',
     security: 'Security',
     privacy: 'Privacy',
+    backup: 'Backup',
     subtitle: 'Settings',
   },
 
+  backup: {
+    title: 'Backup & recovery',
+    subtitle: 'Keep a copy of your vault so you never lose your identity, credentials, and keys.',
+    lockedTitle: 'Unlock to create a backup',
+    lockedBody: 'Your vault is locked. Unlock it to export a backup.',
+    unlock: 'Unlock',
+    unlockPassphrase: 'Device passphrase',
+    passphrase: {
+      title: 'Password-protected file',
+      body: 'Download one encrypted file. Restore it on any device with the password you set here. Choose a strong password you will not forget — it cannot be reset.',
+      newLabel: 'Backup password',
+      confirmLabel: 'Confirm password',
+      mismatch: 'Passwords do not match.',
+      tooShort: 'Use at least 8 characters.',
+      action: 'Download backup file',
+      done: 'Backup file downloaded.',
+    },
+    shamir: {
+      title: 'Split recovery (2 of 3)',
+      body: 'Get one file plus three recovery keys. Store each key in a different place. Any two keys restore your vault. No password to remember, and the file alone is useless.',
+      action: 'Generate recovery keys',
+      fileNote: 'A recovery data file was downloaded. Keep it together with any two of the keys below.',
+      sharesTitle: 'Your three recovery keys',
+      shareLabel: 'Key {n}',
+      copy: 'Copy',
+      copied: 'Copied',
+      warn: 'Save each key in a SEPARATE place (password manager, paper, another device). Anyone with two keys and the file can open your vault. We cannot recover these for you.',
+      downloadShares: 'Download keys as a file',
+    },
+    error: 'Something went wrong. Please try again.',
+  },
+
   overview: {
-    title: 'Welcome to Attestto ID',
+    title: 'Welcome to Attestto',
     subtitle: 'Anti-phishing protection is on. Identity is optional.',
     protection: {
       title: 'Anti-phishing protection',
@@ -211,16 +268,21 @@ export default {
       manage: 'Manage your trusted sites',
     },
     identity: {
-      title: 'Identity',
-      activeBody: 'Your identity is active.',
-      upgradeBody: 'Sign in to sites, sign documents, and store credentials. Optional — anti-phishing works without it.',
-      setup: 'Set up identity',
+      title: 'Your Attestto ID',
+      activeBody: 'Your Attestto ID is active.',
+      upgradeBody: 'Set up your Attestto ID to sign in to sites, sign documents, and store credentials. Created in the Attestto app or CORTEX. Optional — anti-phishing works without it.',
+      setup: 'Set up your Attestto ID',
       alreadyHave: 'Already have one?',
       signIn: 'Sign in',
     },
     cards: {
       security: 'Trusted sites, pin behavior, notifications.',
       privacy: 'How Attestto handles sharing and usage data.',
+    },
+    resources: {
+      help: 'Help & documentation',
+      dashboard: 'Open dashboard',
+      version: 'Version {version}',
     },
   },
 
@@ -233,6 +295,7 @@ export default {
       ask:   { label: 'Ask first',       desc: 'Confirm before adding the site. Prevents accidental trust.' },
       auto:  { label: 'Add right away',  desc: 'No confirmation. Fastest; least guard-rail.' },
       never: { label: 'Disable',         desc: 'Hide the action everywhere. Maximum caution.' },
+      always: 'Attestto always asks before adding a site to your trusted list.',
     },
     notifications: {
       title: 'Notifications',
@@ -245,12 +308,17 @@ export default {
       description: 'On Costa Rican government sites (.go.cr, .fi.cr and similar) whose certificate we have on record, show a thin bar at the top of the page summarizing the certificate. It never appears on other sites.',
       enabled: 'Show trust bar on government sites',
     },
-    trustedSites: {
-      title: 'Your trusted sites',
-      description: 'Sites you have explicitly added to your trusted list. These checks live only on this device.',
-      empty: 'You have not added any trusted sites yet.',
+    siteIdentities: {
+      title: 'Sites where you have an identity',
+      description: 'Each site gets its own private sign-in identity (a per-site DID) so sites cannot track you across the web. These live only on this device.',
+      empty: 'You have not signed in to any site with Attestto yet.',
+      created: 'Since {date}',
       remove: 'Remove',
-      addedOn: 'Added {date}',
+      warnTitle: 'Remove this identity?',
+      warnBody: 'This archives the private identity you use to sign in to {site}. To use {site} again you will go through its sign-in flow, which creates a brand-new identity — the site will treat you as a new user, and you may lose access to anything tied to the old one.',
+      warnConfirm: 'Archive identity',
+      warnCancel: 'Keep it',
+      unlockNeeded: 'Unlock your vault first to remove a site identity.',
     },
   },
 
