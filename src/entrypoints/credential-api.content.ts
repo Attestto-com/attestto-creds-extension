@@ -185,6 +185,35 @@ export default defineContentScript({
         return
       }
 
+      // credential-wallet:auth (SOC-71) — the MAIN-world identity bridge relays
+      // the adapter's auth request here so the background can sign it. `origin`
+      // is stamped from this content script (trusted), never taken from the page.
+      if (msgType === 'ATTESTTO_CW_AUTH_REQUEST') {
+        const { requestId, nonce, audience, trustedIssuers } = event.data
+        chrome.runtime.sendMessage(
+          {
+            type: 'CW_AUTH_REQUEST',
+            payload: {
+              requestId,
+              nonce,
+              audience,
+              trustedIssuers,
+              origin: window.location.origin,
+            },
+          },
+          () => {
+            if (chrome.runtime.lastError) {
+              window.postMessage({
+                type: 'ATTESTTO_CW_AUTH_RESPONSE',
+                requestId,
+                error: 'Extension not available',
+              }, window.location.origin)
+            }
+          },
+        )
+        return
+      }
+
       // Document Signing Request — page asks extension to DID-sign a document
       if (msgType === 'ATTESTTO_SIGN_REQUEST') {
         const { requestId, signingToken, documentTitle, signerName } = event.data
@@ -353,6 +382,17 @@ export default defineContentScript({
           nonce: message.payload.nonce,
           timestamp: message.payload.timestamp,
           publicKeyJwk: message.payload.publicKeyJwk,
+          error: message.payload.error,
+        }, window.location.origin)
+      }
+
+      // credential-wallet:auth-response (SOC-71) — carries the full AuthResponse
+      // object back to the MAIN world, which dispatches the adapter's event.
+      if (message.type === 'CW_AUTH_RESPONSE') {
+        window.postMessage({
+          type: 'ATTESTTO_CW_AUTH_RESPONSE',
+          requestId: message.payload.requestId,
+          response: message.payload.response,
           error: message.payload.error,
         }, window.location.origin)
       }
