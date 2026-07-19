@@ -1,4 +1,4 @@
-export const APP_NAME = 'Attestto ID'
+export const APP_NAME = 'Attestto'
 export const APP_VERSION = '0.1.0'
 
 /**

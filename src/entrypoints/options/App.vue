@@ -73,7 +73,7 @@ watch(active, () => {
        and the full page feel like one product. -->
   <div class="flex min-h-screen flex-col bg-[#0d1520]">
     <header class="border-b border-[#243044] bg-[#111a28] px-5 py-4 text-center">
-      <p class="text-base font-semibold text-[#f1f4f8]">Attestto ID</p>
+      <p class="text-base font-semibold text-[#f1f4f8]">Attestto</p>
       <p class="mt-0.5 text-[11px] text-[#a8b4c4]">{{ t('settingsNav.subtitle') }}</p>
     </header>
 

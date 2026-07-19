@@ -139,11 +139,11 @@ export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
 
   const credential = await navigator.credentials.create({
     publicKey: {
-      rp: { name: 'Attestto ID' },
+      rp: { name: 'Attestto' },
       user: {
         id: crypto.getRandomValues(new Uint8Array(16)),
         name: 'attestto-id-vault',
-        displayName: 'Attestto ID',
+        displayName: 'Attestto',
       },
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       pubKeyCredParams: [

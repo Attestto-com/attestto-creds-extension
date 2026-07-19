@@ -48,7 +48,7 @@ export default {
   },
 
   footer: {
-    poweredBy: 'Powered by Attestto ID',
+    poweredBy: 'Powered by Attestto',
     settings: 'Settings',
   },
 
@@ -259,7 +259,7 @@ export default {
   },
 
   overview: {
-    title: 'Welcome to Attestto ID',
+    title: 'Welcome to Attestto',
     subtitle: 'Anti-phishing protection is on. Identity is optional.',
     protection: {
       title: 'Anti-phishing protection',
@@ -268,10 +268,10 @@ export default {
       manage: 'Manage your trusted sites',
     },
     identity: {
-      title: 'Identity',
-      activeBody: 'Your identity is active.',
-      upgradeBody: 'Sign in to sites, sign documents, and store credentials. Optional — anti-phishing works without it.',
-      setup: 'Set up identity',
+      title: 'Your Attestto ID',
+      activeBody: 'Your Attestto ID is active.',
+      upgradeBody: 'Set up your Attestto ID to sign in to sites, sign documents, and store credentials. Created in the Attestto app or CORTEX. Optional — anti-phishing works without it.',
+      setup: 'Set up your Attestto ID',
       alreadyHave: 'Already have one?',
       signIn: 'Sign in',
     },
@@ -295,6 +295,7 @@ export default {
       ask:   { label: 'Ask first',       desc: 'Confirm before adding the site. Prevents accidental trust.' },
       auto:  { label: 'Add right away',  desc: 'No confirmation. Fastest; least guard-rail.' },
       never: { label: 'Disable',         desc: 'Hide the action everywhere. Maximum caution.' },
+      always: 'Attestto always asks before adding a site to your trusted list.',
     },
     notifications: {
       title: 'Notifications',
@@ -307,12 +308,17 @@ export default {
       description: 'On Costa Rican government sites (.go.cr, .fi.cr and similar) whose certificate we have on record, show a thin bar at the top of the page summarizing the certificate. It never appears on other sites.',
       enabled: 'Show trust bar on government sites',
     },
-    trustedSites: {
-      title: 'Your trusted sites',
-      description: 'Sites you have explicitly added to your trusted list. These checks live only on this device.',
-      empty: 'You have not added any trusted sites yet.',
+    siteIdentities: {
+      title: 'Sites where you have an identity',
+      description: 'Each site gets its own private sign-in identity (a per-site DID) so sites cannot track you across the web. These live only on this device.',
+      empty: 'You have not signed in to any site with Attestto yet.',
+      created: 'Since {date}',
       remove: 'Remove',
-      addedOn: 'Added {date}',
+      warnTitle: 'Remove this identity?',
+      warnBody: 'This archives the private identity you use to sign in to {site}. To use {site} again you will go through its sign-in flow, which creates a brand-new identity — the site will treat you as a new user, and you may lose access to anything tied to the old one.',
+      warnConfirm: 'Archive identity',
+      warnCancel: 'Keep it',
+      unlockNeeded: 'Unlock your vault first to remove a site identity.',
     },
   },
 

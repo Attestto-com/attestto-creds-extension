@@ -48,7 +48,7 @@ export default {
   },
 
   footer: {
-    poweredBy: 'Con tecnología de Attestto ID',
+    poweredBy: 'Con tecnología de Attestto',
     settings: 'Configuración',
   },
 
@@ -259,7 +259,7 @@ export default {
   },
 
   overview: {
-    title: 'Bienvenido a Attestto ID',
+    title: 'Bienvenido a Attestto',
     subtitle: 'La protecci\u00f3n contra phishing est\u00e1 activa. La identidad es opcional.',
     protection: {
       title: 'Protecci\u00f3n contra phishing',
@@ -268,10 +268,10 @@ export default {
       manage: 'Gestionar sus sitios de confianza',
     },
     identity: {
-      title: 'Identidad',
-      activeBody: 'Su identidad est\u00e1 activa.',
-      upgradeBody: 'Inicie sesi\u00f3n en sitios, firme documentos y guarde credenciales. Opcional \u2014 la protecci\u00f3n contra phishing funciona sin esto.',
-      setup: 'Configurar identidad',
+      title: 'Su Attestto ID',
+      activeBody: 'Su Attestto ID est\u00e1 activo.',
+      upgradeBody: 'Configure su Attestto ID para iniciar sesi\u00f3n en sitios, firmar documentos y guardar credenciales. Se crea en la app de Attestto o en CORTEX. Opcional \u2014 la protecci\u00f3n contra phishing funciona sin esto.',
+      setup: 'Configurar su Attestto ID',
       alreadyHave: '\u00bfYa tiene una?',
       signIn: 'Iniciar sesi\u00f3n',
     },
@@ -295,6 +295,7 @@ export default {
       ask:   { label: 'Preguntar primero',  desc: 'Confirma antes de agregar el sitio. Evita confianza accidental.' },
       auto:  { label: 'Agregar de inmediato', desc: 'Sin confirmaci\u00f3n. Lo m\u00e1s r\u00e1pido y con menos protecci\u00f3n.' },
       never: { label: 'Desactivar',          desc: 'Oculta la acci\u00f3n en todos lados. M\u00e1xima precauci\u00f3n.' },
+      always: 'Attestto siempre pregunta antes de agregar un sitio a su lista de confianza.',
     },
     notifications: {
       title: 'Notificaciones',
@@ -307,12 +308,17 @@ export default {
       description: 'En sitios del gobierno de Costa Rica (.go.cr, .fi.cr y similares) cuyo certificado tenemos registrado, muestra una barra delgada en la parte superior de la p\u00e1gina con un resumen del certificado. Nunca aparece en otros sitios.',
       enabled: 'Mostrar la barra de confianza en sitios del gobierno',
     },
-    trustedSites: {
-      title: 'Sus sitios de confianza',
-      description: 'Sitios que usted ha agregado expl\u00edcitamente a su lista de confianza. Esta informaci\u00f3n vive solo en este dispositivo.',
-      empty: 'A\u00fan no ha agregado sitios de confianza.',
+    siteIdentities: {
+      title: 'Sitios donde tiene una identidad',
+      description: 'Cada sitio recibe su propia identidad privada de inicio de sesi\u00f3n (un DID por sitio) para que los sitios no puedan rastrearlo por la web. Viven solo en este dispositivo.',
+      empty: 'A\u00fan no ha iniciado sesi\u00f3n en ning\u00fan sitio con Attestto.',
+      created: 'Desde {date}',
       remove: 'Quitar',
-      addedOn: 'Agregado el {date}',
+      warnTitle: '\u00bfQuitar esta identidad?',
+      warnBody: 'Esto archiva la identidad privada que usa para iniciar sesi\u00f3n en {site}. Para volver a usar {site} pasar\u00e1 por su flujo de inicio de sesi\u00f3n, que crea una identidad nueva: el sitio lo tratar\u00e1 como un usuario nuevo y podr\u00eda perder el acceso a lo que estaba ligado a la anterior.',
+      warnConfirm: 'Archivar identidad',
+      warnCancel: 'Conservarla',
+      unlockNeeded: 'Desbloquee su b\u00f3veda primero para quitar una identidad de sitio.',
     },
   },
 

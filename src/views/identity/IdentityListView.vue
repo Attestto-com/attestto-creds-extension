@@ -86,7 +86,7 @@ function verifyIdOffline(): void {
         <p class="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
           Welcome to
         </p>
-        <p class="mt-0.5 text-lg font-bold text-slate-900">Attestto ID</p>
+        <p class="mt-0.5 text-lg font-bold text-slate-900">Attestto</p>
         <p class="mx-auto mt-1.5 max-w-[16rem] text-[11px] leading-relaxed text-slate-600">
           Your digital identity and credentials, held in this wallet — never on the sites you use.
         </p>

@@ -1,31 +1,53 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { TrashIcon } from '@heroicons/vue/24/outline'
-import {
-  DEFAULT_SETTINGS,
-  readSettings,
-  writeSettings,
-  type SettingsConfig,
-  type PinBehavior,
-} from '@/utils/settings-config'
-import { listPins, unpinSite, type PinRecord } from '@/utils/pin-store'
+import { DEFAULT_SETTINGS, readSettings, writeSettings, type SettingsConfig } from '@/utils/settings-config'
+import { readPublicVault } from '@/utils/vault'
+import { useWalletStore } from '@/stores/wallet'
 
 const { t } = useI18n()
+const wallet = useWalletStore()
 
 const cfg = ref<SettingsConfig>({ ...DEFAULT_SETTINGS })
-const pins = ref<PinRecord[]>([])
 const loaded = ref(false)
 const justSaved = ref(false)
 let saveDebounce: ReturnType<typeof setTimeout> | null = null
 
-const pinModes: PinBehavior[] = ['ask', 'auto', 'never']
+interface SiteIdentity {
+  origin: string
+  did: string
+  createdAt: string
+  lastUsedAt: string
+}
+const siteIdentities = ref<SiteIdentity[]>([])
+
+// Removal warning + unlock (archiving mutates the encrypted vault).
+const pendingRemove = ref<SiteIdentity | null>(null)
+const removing = ref(false)
+const removeError = ref<string | null>(null)
+const needsPass = ref(false)
+const passphrase = ref('')
 
 onMounted(async () => {
-  cfg.value = { ...(await readSettings()) }
-  pins.value = await listPins()
+  const s = await readSettings()
+  // Trust behavior is fixed to "always ask" — enforce it, dropping any legacy value.
+  if (s.pinBehavior !== 'ask') {
+    s.pinBehavior = 'ask'
+    await writeSettings(s)
+  }
+  cfg.value = s
+  await loadSiteIdentities()
   loaded.value = true
 })
+
+async function loadSiteIdentities(): Promise<void> {
+  const pub = await readPublicVault()
+  const map = pub?.siteDids ?? {}
+  siteIdentities.value = Object.entries(map)
+    .map(([origin, e]) => ({ origin, did: e.did, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt }))
+    .sort((a, b) => a.origin.localeCompare(b.origin))
+}
 
 watch(
   cfg,
@@ -41,14 +63,44 @@ watch(
   { deep: true },
 )
 
-async function removePin(domain: string): Promise<void> {
-  await unpinSite(domain)
-  pins.value = await listPins()
+function hostOf(origin: string): string {
+  try {
+    return new URL(origin).host
+  } catch {
+    return origin
+  }
 }
 
-const sortedPins = computed(() =>
-  [...pins.value].sort((a, b) => a.domain.localeCompare(b.domain)),
-)
+function askRemove(item: SiteIdentity): void {
+  removeError.value = null
+  needsPass.value = false
+  passphrase.value = ''
+  pendingRemove.value = item
+}
+
+async function confirmRemove(): Promise<void> {
+  if (!pendingRemove.value) return
+  removing.value = true
+  removeError.value = null
+  try {
+    if (!wallet.isUnlocked) {
+      await wallet.unlock(needsPass.value ? passphrase.value : undefined)
+    }
+    await wallet.archiveSiteDid(pendingRemove.value.origin)
+    await loadSiteIdentities()
+    pendingRemove.value = null
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : ''
+    if (msg.startsWith('PASSPHRASE_REQUIRED')) {
+      needsPass.value = true
+      removeError.value = t('security.siteIdentities.unlockNeeded')
+    } else {
+      removeError.value = t('security.siteIdentities.unlockNeeded')
+    }
+  } finally {
+    removing.value = false
+  }
+}
 </script>
 
 <template>
@@ -68,29 +120,10 @@ const sortedPins = computed(() =>
       </span>
     </header>
 
-    <!-- Pin behavior -->
+    <!-- Trust behavior — fixed to always-ask. -->
     <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
       <h2 class="text-lg font-semibold text-[#f1f4f8]">{{ t('security.pinBehavior.title') }}</h2>
-      <p class="mt-1 mb-4 text-sm text-[#a8b4c4]">{{ t('security.pinBehavior.description') }}</p>
-      <div class="space-y-2">
-        <label
-          v-for="mode in pinModes"
-          :key="mode"
-          class="flex cursor-pointer items-start gap-3 rounded-lg border border-[#243044] p-3 hover:border-[#3b82a0]/60"
-          :class="cfg.pinBehavior === mode ? 'border-[#3b82a0] bg-[#141e2e]' : ''"
-        >
-          <input
-            v-model="cfg.pinBehavior"
-            type="radio"
-            :value="mode"
-            class="mt-1 size-4 accent-[#3b82a0]"
-          />
-          <div>
-            <div class="text-sm font-medium text-[#f1f4f8]">{{ t(`security.pinBehavior.${mode}.label`) }}</div>
-            <div class="text-xs text-[#a8b4c4]">{{ t(`security.pinBehavior.${mode}.desc`) }}</div>
-          </div>
-        </label>
-      </div>
+      <p class="mt-1 text-sm text-[#a8b4c4]">{{ t('security.pinBehavior.always') }}</p>
     </section>
 
     <!-- Notifications -->
@@ -117,27 +150,77 @@ const sortedPins = computed(() =>
       </label>
     </section>
 
-    <!-- Trusted sites -->
+    <!-- Sites where you have an identity (per-site DIDs) -->
     <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
-      <h2 class="mb-1 text-lg font-semibold text-[#f1f4f8]">{{ t('security.trustedSites.title') }}</h2>
-      <p class="mb-4 text-sm text-[#a8b4c4]">{{ t('security.trustedSites.description') }}</p>
-      <ul v-if="sortedPins.length" class="divide-y divide-[#243044] rounded-lg border border-[#243044]">
-        <li v-for="pin in sortedPins" :key="pin.domain" class="flex items-center justify-between gap-3 px-4 py-3">
+      <h2 class="mb-1 text-lg font-semibold text-[#f1f4f8]">{{ t('security.siteIdentities.title') }}</h2>
+      <p class="mb-4 text-sm text-[#a8b4c4]">{{ t('security.siteIdentities.description') }}</p>
+      <ul v-if="siteIdentities.length" class="divide-y divide-[#243044] rounded-lg border border-[#243044]">
+        <li
+          v-for="item in siteIdentities"
+          :key="item.origin"
+          class="flex items-center justify-between gap-3 px-4 py-3"
+        >
           <div class="min-w-0">
-            <p class="truncate font-mono text-sm text-[#f1f4f8]">{{ pin.domain }}</p>
-            <p class="text-xs text-[#8a97a8]">{{ t('security.trustedSites.addedOn', { date: new Date(pin.addedAt).toLocaleDateString() }) }}</p>
+            <p class="truncate font-mono text-sm text-[#f1f4f8]">{{ hostOf(item.origin) }}</p>
+            <p class="truncate text-xs text-[#8a97a8]">{{ item.did }}</p>
+            <p class="text-xs text-[#8a97a8]">
+              {{ t('security.siteIdentities.created', { date: new Date(item.createdAt).toLocaleDateString() }) }}
+            </p>
           </div>
           <button
             type="button"
-            class="flex items-center gap-1 rounded-md border border-[#243044] px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
-            @click="removePin(pin.domain)"
+            class="flex shrink-0 items-center gap-1 rounded-md border border-[#243044] px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10"
+            @click="askRemove(item)"
           >
             <TrashIcon class="size-4" />
-            {{ t('security.trustedSites.remove') }}
+            {{ t('security.siteIdentities.remove') }}
           </button>
         </li>
       </ul>
-      <p v-else class="text-sm italic text-[#8a97a8]">{{ t('security.trustedSites.empty') }}</p>
+      <p v-else class="text-sm italic text-[#8a97a8]">{{ t('security.siteIdentities.empty') }}</p>
     </section>
+
+    <!-- Remove warning + unlock -->
+    <div
+      v-if="pendingRemove"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    >
+      <div class="w-full max-w-md space-y-3 rounded-xl border border-[#243044] bg-[#111a28] p-5">
+        <h3 class="text-base font-semibold text-[#f1f4f8]">{{ t('security.siteIdentities.warnTitle') }}</h3>
+        <p class="text-sm leading-relaxed text-[#a8b4c4]">
+          {{ t('security.siteIdentities.warnBody', { site: hostOf(pendingRemove.origin) }) }}
+        </p>
+
+        <input
+          v-if="needsPass"
+          v-model="passphrase"
+          type="password"
+          autocomplete="current-password"
+          placeholder="Passphrase"
+          class="w-full rounded-md border border-[#243044] bg-[#0d1520] px-3 py-2 text-sm text-[#f1f4f8] outline-none focus:border-[#4a8ec8]"
+          @keyup.enter="confirmRemove"
+        />
+
+        <p v-if="removeError" class="text-sm text-amber-300">{{ removeError }}</p>
+
+        <div class="flex justify-end gap-2 pt-1">
+          <button
+            type="button"
+            class="rounded-md border border-[#243044] px-4 py-2 text-sm text-[#a8b4c4] hover:text-[#f1f4f8]"
+            @click="pendingRemove = null"
+          >
+            {{ t('security.siteIdentities.warnCancel') }}
+          </button>
+          <button
+            type="button"
+            :disabled="removing"
+            class="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+            @click="confirmRemove"
+          >
+            {{ t('security.siteIdentities.warnConfirm') }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

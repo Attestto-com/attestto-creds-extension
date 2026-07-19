@@ -17,9 +17,9 @@ export default defineConfig({
   }),
 
   manifest: {
-    name: 'Attestto ID',
+    name: 'Attestto',
     description:
-      'Digital ID agent — passkey-secured vault, verifiable credentials, DID-authenticated payments, and privacy-preserving presentations.',
+      'Digital ID agent: passkey-secured vault, verifiable credentials, and privacy-preserving presentations.',
     version: '0.1.0',
 
     permissions: [
