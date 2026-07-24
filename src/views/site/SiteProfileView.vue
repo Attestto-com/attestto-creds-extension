@@ -130,7 +130,6 @@ async function runHealthAnalysis(tabId: number | null): Promise<void> {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       func: analyzeSiteHealth,
-      args: [document as unknown as Document],
       world: 'MAIN',
     })
     const value = results?.[0]?.result ?? null

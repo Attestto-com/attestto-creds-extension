@@ -123,11 +123,13 @@ export interface SiteHealthResult {
 /**
  * Analyze the given document and return site health stats.
  *
- * Designed to be serializable: no module imports, no closures.
- * Can be passed directly to chrome.scripting.executeScript as an inline function
- * using `func: () => analyzeSiteHealth(document)`.
+ * Designed to be serializable: no module imports, no closures. Pass it directly
+ * as `func: analyzeSiteHealth` (no args) to chrome.scripting.executeScript — the
+ * `doc` param defaults to the injected page's `document` (args like `document`
+ * cannot be serialized across the executeScript boundary). Tests pass an explicit
+ * document.
  */
-export function analyzeSiteHealth(doc: Document): SiteHealthResult {
+export function analyzeSiteHealth(doc: Document = document): SiteHealthResult {
   const pageOrigin = doc.location?.origin ?? ''
   const pageProtocol = doc.location?.protocol ?? ''
 

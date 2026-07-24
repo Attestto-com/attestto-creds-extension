@@ -22,7 +22,7 @@ vi.mock('@/utils/gov-host', () => ({
   GOV_MATCH_PATTERNS: ['*://*.go.cr/*'],
 }))
 
-import { isInsecurePage, hasSensitiveForm } from './trust-bar.content'
+import { isInsecurePage, hasSensitiveForm } from '@/entrypoints/trust-bar.content'
 
 describe('trust-bar.content — warning path', () => {
   beforeEach(() => {
