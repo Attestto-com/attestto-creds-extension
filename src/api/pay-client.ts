@@ -90,6 +90,50 @@ export function formatCRC(amount: number): string {
   return `₡${amount.toLocaleString('es-CR')}`
 }
 
+/** Currencies the user can pick. Internally settled as USDC; user sees these. */
+export type PayCurrency = 'CRC' | 'USD'
+
+export const CURRENCIES: { code: PayCurrency; symbol: string; label: string }[] = [
+  { code: 'CRC', symbol: '₡', label: 'Colones' },
+  { code: 'USD', symbol: '$', label: 'Dólares' },
+]
+
+/** Format an amount in the chosen currency: (530,'CRC') -> "₡530". */
+export function formatMoney(amount: number, currency: PayCurrency): string {
+  const c = CURRENCIES.find((x) => x.code === currency) ?? CURRENCIES[0]
+  return `${c.symbol}${amount.toLocaleString('es-CR')}`
+}
+
+/**
+ * DEMO — a peer Pay or Request, delivered as a DID message.
+ *
+ * Both "Pay" and "Request" are the same primitive: a signed envelope addressed
+ * to the recipient's DID (derived from their Attestto alias), delivered by the
+ * relay to their Inbox. "Pay" carries a signed PayIntent; "Request" carries a
+ * payment request the recipient can approve. Mocked here — no relay, no funds.
+ */
+export interface PeerMessageResult {
+  status: 'sent'
+  kind: 'pay' | 'request'
+  toDid: string
+  reference: string
+}
+
+export async function sendPeerMessage(
+  kind: 'pay' | 'request',
+  toAlias: string,
+  amount: number,
+  currency: PayCurrency,
+  fromDid: string,
+): Promise<PeerMessageResult> {
+  const toDid = `did:sns:${toAlias.trim().replace(/\s+/g, '').toLowerCase()}.attestto.sol`
+  await delay(700) // sign with DID
+  await delay(700) // relay delivery
+  const seed = `${kind}:${toDid}:${amount}:${currency}:${fromDid}`
+  const reference = `ATT-${String(Math.abs(hash(seed)) % 1_000_000).padStart(6, '0')}`
+  return { status: 'sent', kind, toDid, reference }
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }

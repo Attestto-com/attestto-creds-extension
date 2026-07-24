@@ -2,37 +2,23 @@
 /**
  * DEMO — Accounts screen for the Attestto Pay walkthrough.
  *
- * Shows the user's Attestto identities added by alias, each surfaced as a
- * familiar IBAN (never a Solana / Circle address). Users add an identity by
- * typing an Attestto username; they cannot enter a raw account number.
+ * Shows the user's Attestto identities (added by alias, in Settings) surfaced as
+ * a familiar IBAN — never a Solana / Circle address, never a balance. The main
+ * interaction is the Pay/Request card (send a signed DID message to an alias).
+ * A trámite shortcut demonstrates paying a verified state entity.
  */
-import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   FingerPrintIcon,
-  PlusIcon,
+  IdentificationIcon,
   BanknotesIcon,
   ArrowRightIcon,
-  IdentificationIcon,
 } from '@heroicons/vue/24/outline'
-import { demoAccounts, addByAlias, formatIban } from '@/config/demo-accounts'
+import { demoAccounts, formatIban } from '@/config/demo-accounts'
 import { formatCRC, NICOYA_CONSTANCIA } from '@/api/pay-client'
+import SendRequestCard from '@/components/accounts/SendRequestCard.vue'
 
 const router = useRouter()
-const aliasInput = ref('')
-const addError = ref('')
-
-function onAdd(): void {
-  addError.value = ''
-  const alias = aliasInput.value.trim()
-  if (!alias) return
-  const added = addByAlias(alias)
-  if (!added) {
-    addError.value = 'Esa identidad ya está agregada.'
-    return
-  }
-  aliasInput.value = ''
-}
 
 function payTramite(): void {
   router.push({ name: 'pay-tramite' })
@@ -45,7 +31,7 @@ function payTramite(): void {
       Mis cuentas
     </p>
 
-    <!-- Account cards: identity + IBAN -->
+    <!-- Account cards: identity + IBAN (no balance) -->
     <div
       v-for="acct in demoAccounts"
       :key="acct.did"
@@ -66,40 +52,10 @@ function payTramite(): void {
       </div>
     </div>
 
-    <!-- Add identity by alias -->
-    <div class="rounded-lg border border-dashed border-slate-700 bg-slate-900/50 p-3">
-      <p class="mb-2 text-[10px] font-medium uppercase tracking-wider text-slate-500">
-        Agregar identidad Attestto
-      </p>
-      <div class="flex gap-2">
-        <div class="flex flex-1 items-center rounded-md border border-slate-700 bg-slate-950 px-2">
-          <span class="text-xs text-slate-600">@</span>
-          <input
-            v-model="aliasInput"
-            type="text"
-            inputmode="text"
-            autocapitalize="none"
-            spellcheck="false"
-            placeholder="tu-usuario"
-            class="w-full bg-transparent px-1.5 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none"
-            @keyup.enter="onAdd"
-          />
-        </div>
-        <button
-          class="flex items-center gap-1 rounded-md bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500"
-          @click="onAdd"
-        >
-          <PlusIcon class="h-4 w-4" />
-          Agregar
-        </button>
-      </div>
-      <p v-if="addError" class="mt-1.5 text-[10px] text-amber-400">{{ addError }}</p>
-      <p class="mt-1.5 text-[10px] leading-relaxed text-slate-500">
-        Ingresás el usuario de tu Attestto ID. La cuenta se muestra como IBAN.
-      </p>
-    </div>
+    <!-- Pay / Request by alias (the DID-message primitive) -->
+    <SendRequestCard />
 
-    <!-- Pay a trámite CTA -->
+    <!-- Pay a trámite (verified state entity) -->
     <button
       class="flex w-full items-center gap-3 rounded-lg border border-indigo-700/60 bg-indigo-950/40 p-3 text-left transition-colors hover:bg-indigo-900/40"
       @click="payTramite"

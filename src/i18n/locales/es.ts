@@ -248,6 +248,7 @@ export default {
 
   settingsNav: {
     overview: 'Resumen',
+    identities: 'Identidades',
     security: 'Seguridad',
     privacy: 'Privacidad',
     backup: 'Respaldo',

@@ -14,18 +14,20 @@
  */
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ShieldCheckIcon, LockClosedIcon, EyeSlashIcon, ArrowDownTrayIcon } from '@heroicons/vue/24/outline'
+import { ShieldCheckIcon, LockClosedIcon, EyeSlashIcon, ArrowDownTrayIcon, FingerPrintIcon } from '@heroicons/vue/24/outline'
 import OverviewView from './views/OverviewView.vue'
+import IdentitiesView from './views/IdentitiesView.vue'
 import SecurityView from './views/SecurityView.vue'
 import PrivacyView from './views/PrivacyView.vue'
 import BackupView from './views/BackupView.vue'
 
 const { t, locale } = useI18n()
 
-type Tab = 'overview' | 'security' | 'privacy' | 'backup'
+type Tab = 'overview' | 'identities' | 'security' | 'privacy' | 'backup'
 
 const TABS: Array<{ key: Tab; labelKey: string; icon: typeof ShieldCheckIcon }> = [
   { key: 'overview', labelKey: 'settingsNav.overview', icon: ShieldCheckIcon },
+  { key: 'identities', labelKey: 'settingsNav.identities', icon: FingerPrintIcon },
   { key: 'security', labelKey: 'settingsNav.security', icon: LockClosedIcon },
   { key: 'privacy',  labelKey: 'settingsNav.privacy',  icon: EyeSlashIcon },
   { key: 'backup',   labelKey: 'settingsNav.backup',   icon: ArrowDownTrayIcon },
@@ -35,7 +37,7 @@ const active = ref<Tab>(currentTab())
 
 function currentTab(): Tab {
   const q = new URLSearchParams(window.location.search).get('tab')
-  if (q === 'security' || q === 'privacy' || q === 'backup') return q
+  if (q === 'identities' || q === 'security' || q === 'privacy' || q === 'backup') return q
   return 'overview'
 }
 
@@ -80,6 +82,7 @@ watch(active, () => {
     <!-- Content — extra bottom padding clears the fixed tab bar. -->
     <main class="mx-auto w-full max-w-3xl flex-1 px-6 py-8 pb-24">
       <OverviewView v-if="active === 'overview'" @goto="goto" />
+      <IdentitiesView v-else-if="active === 'identities'" />
       <SecurityView v-else-if="active === 'security'" />
       <PrivacyView v-else-if="active === 'privacy'" />
       <BackupView v-else-if="active === 'backup'" />
@@ -90,7 +93,7 @@ watch(active, () => {
       class="fixed inset-x-0 bottom-0 z-10 border-t border-[#243044] bg-[#111a28]/95 backdrop-blur"
       aria-label="Settings sections"
     >
-      <div class="mx-auto grid max-w-md grid-cols-4">
+      <div class="mx-auto grid max-w-md grid-cols-5">
         <button
           v-for="tab in TABS"
           :key="tab.key"
