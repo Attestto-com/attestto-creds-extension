@@ -1,25 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ref, nextTick } from 'vue'
-
-// Mock @solana/web3.js before importing the composable
-const mockGetParsedTokenAccountsByOwner = vi.fn()
-
-vi.mock('@solana/web3.js', () => ({
-  Connection: function () {
-    return { getParsedTokenAccountsByOwner: mockGetParsedTokenAccountsByOwner }
-  },
-  PublicKey: function (this: { _key: string }, key: string) {
-    this._key = key
-  },
-}))
-
-// Add toBase58 to PublicKey prototype after mock is set up
-import { PublicKey } from '@solana/web3.js'
-;(PublicKey as unknown as { prototype: { toBase58: () => string } }).prototype.toBase58 = function () {
-  return (this as unknown as { _key: string })._key
-}
-
 import { useSolanaTokens } from './useSolanaTokens'
+
+// The composable now calls the Solana JSON-RPC (getTokenAccountsByOwner) over
+// `fetch` instead of bundling @solana/web3.js. Mock fetch accordingly.
+function rpcOk(value: unknown[]) {
+  return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value } }) }
+}
 
 function makeTokenAccount(mint: string, amount: string, decimals: number, uiAmount: number) {
   return {
@@ -36,10 +23,12 @@ function makeTokenAccount(mint: string, amount: string, decimals: number, uiAmou
   }
 }
 
+let fetchMock: ReturnType<typeof vi.fn>
+
 describe('useSolanaTokens', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    mockGetParsedTokenAccountsByOwner.mockResolvedValue({ value: [] })
+    fetchMock = vi.fn().mockResolvedValue(rpcOk([]))
+    vi.stubGlobal('fetch', fetchMock)
   })
 
   it('returns empty array when no wallet address provided', () => {
@@ -59,9 +48,8 @@ describe('useSolanaTokens', () => {
     const addr = ref<string | null>(null)
     const { tokens, refresh } = useSolanaTokens(addr)
 
-    mockGetParsedTokenAccountsByOwner
-      .mockResolvedValueOnce({ value: splAccounts })
-      .mockResolvedValueOnce({ value: [] })
+    // refresh() fetches SPL then Token-2022 (in Promise.all order).
+    fetchMock.mockResolvedValueOnce(rpcOk(splAccounts)).mockResolvedValueOnce(rpcOk([]))
 
     addr.value = '9WzDXwBbmPEfPafWLKkAGAtpjFCi2FMvRBWqWPWCzTfN'
     await nextTick()
@@ -73,6 +61,7 @@ describe('useSolanaTokens', () => {
     expect(tokens.value[0].decimals).toBe(6)
     expect(tokens.value[0].isToken2022).toBe(false)
     expect(tokens.value[0].rawBalance).toBe('1000000')
+    void refresh
   })
 
   it('parses Token-2022 accounts with isToken2022 true', async () => {
@@ -83,9 +72,7 @@ describe('useSolanaTokens', () => {
     const addr = ref<string | null>(null)
     const { tokens } = useSolanaTokens(addr)
 
-    mockGetParsedTokenAccountsByOwner
-      .mockResolvedValueOnce({ value: [] })
-      .mockResolvedValueOnce({ value: t22Accounts })
+    fetchMock.mockResolvedValueOnce(rpcOk([])).mockResolvedValueOnce(rpcOk(t22Accounts))
 
     addr.value = '9WzDXwBbmPEfPafWLKkAGAtpjFCi2FMvRBWqWPWCzTfN'
     await nextTick()
@@ -100,7 +87,7 @@ describe('useSolanaTokens', () => {
     const addr = ref<string | null>(null)
     const { tokens, error } = useSolanaTokens(addr)
 
-    mockGetParsedTokenAccountsByOwner.mockRejectedValue(new Error('Network error'))
+    fetchMock.mockRejectedValue(new Error('Network error'))
 
     addr.value = '9WzDXwBbmPEfPafWLKkAGAtpjFCi2FMvRBWqWPWCzTfN'
     await nextTick()
@@ -118,9 +105,7 @@ describe('useSolanaTokens', () => {
     const addr = ref<string | null>(null)
     const { tokens } = useSolanaTokens(addr)
 
-    mockGetParsedTokenAccountsByOwner
-      .mockResolvedValueOnce({ value: splAccounts })
-      .mockResolvedValueOnce({ value: [] })
+    fetchMock.mockResolvedValueOnce(rpcOk(splAccounts)).mockResolvedValueOnce(rpcOk([]))
 
     addr.value = '9WzDXwBbmPEfPafWLKkAGAtpjFCi2FMvRBWqWPWCzTfN'
     await nextTick()

@@ -45,7 +45,11 @@ export default defineConfig({
 
     web_accessible_resources: [
       {
-        resources: ['assets/*', 'offscreen/index.html', 'wallet-discovery.js', 'icon/*', 'data/*'],
+        // Only resources that pages legitimately load/inject are exposed.
+        // `offscreen/index.html` is created via chrome.offscreen.createDocument
+        // (extension-internal) and must NOT be web-accessible — exposing it let
+        // any page fingerprint/load it (SOC-13).
+        resources: ['assets/*', 'wallet-discovery.js', 'icon/*', 'data/*'],
         matches: ['<all_urls>'],
       },
     ],

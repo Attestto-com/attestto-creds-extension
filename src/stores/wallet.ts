@@ -5,7 +5,7 @@ import { readVault, writeVault, readPublicVault, syncPublicVault } from '@/utils
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
 import { setupPasskey, unlockWithPasskey, hasPasskey, getKdfMethod } from '@/utils/webauthn'
 import { STORAGE_KEYS } from '@/config/app'
-import { PublicKey } from '@solana/web3.js'
+import { isValidSolanaAddress } from '@/utils/solana-address'
 import type { StoredCredential, StoredKeyShare, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import type { SiteDidEntry } from '@/utils/site-did'
 
@@ -404,11 +404,12 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
-   * Link a Solana wallet address. Validates base58 via PublicKey constructor.
+   * Link a Solana wallet address. Validates it is a base58-encoded 32-byte key.
    */
   async function linkSolanaAddress(address: string): Promise<void> {
-    // Validate — throws if invalid base58 public key
-    new PublicKey(address)
+    if (!isValidSolanaAddress(address)) {
+      throw new Error('Invalid Solana address')
+    }
 
     linkedSolanaAddress.value = address
 
