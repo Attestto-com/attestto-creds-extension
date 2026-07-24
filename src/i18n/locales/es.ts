@@ -179,6 +179,7 @@ export default {
       backToSafetyAction: 'Volver a un sitio seguro',
       identityFooter: 'Opcional: inicie sesi\u00f3n en sitios con su ID Digital',
       setUpLink: 'Configurar identidad \u2192',
+      viewProfile: 'Ver detalles del sitio',
     },
     siteCert: {
       sslSecure: 'Conexi\u00f3n segura (HTTPS)',
@@ -206,6 +207,22 @@ export default {
       antiPhishing: 'A prueba de phishing: una identidad funciona solo en el sitio donde la cre\u00f3; sus llaves nunca salen de esta extensi\u00f3n.',
     },
   },
+  siteProfile: {
+    title: 'Detalles del sitio',
+    pinned: 'Usted confía en este sitio',
+    registryVerified: 'Institución conocida',
+    govHost: 'Sitio del gobierno CR',
+    notYetEvaluated: 'Aún no evaluado',
+    brandSquatWarning: 'Posible suplantación',
+    brandSquatDetail: 'Este dominio usa el nombre de una institución verificada pero no es el sitio oficial.',
+    punycodeWarning: 'Codificación de dominio inusual',
+    punycodeDetail: 'Este dominio usa una codificación especial. Verifique la dirección con cuidado.',
+    tlsNoSnapshot: 'Los detalles del certificado requieren un escaneo bajo demanda',
+    tlsNoSnapshotDetail: 'Este sitio no está en el muestreo del sector público. El escaneo bajo demanda es una función futura.',
+    scanThisSite: 'Escanear este sitio',
+    scanNotYetAvailable: 'Escaneo bajo demanda aún no disponible',
+  },
+
   report: {
     title: 'Reportar este sitio',
     hostLabel: 'Sitio',

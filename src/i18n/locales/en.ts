@@ -179,6 +179,7 @@ export default {
       backToSafetyAction: 'Go back to safety',
       identityFooter: 'Optional: sign in to sites with Digital ID',
       setUpLink: 'Set up identity →',
+      viewProfile: 'View site details',
     },
     siteCert: {
       sslSecure: 'Secure connection (HTTPS)',
@@ -206,6 +207,22 @@ export default {
       antiPhishing: 'Phishing-proof: an identity works only on the site where you created it — keys never leave this extension.',
     },
   },
+  siteProfile: {
+    title: 'Site details',
+    pinned: 'You trust this site',
+    registryVerified: 'Known institution',
+    govHost: 'CR government site',
+    notYetEvaluated: 'Not yet evaluated',
+    brandSquatWarning: 'Possible impersonation',
+    brandSquatDetail: 'This domain uses the name of a verified institution but is not the official site.',
+    punycodeWarning: 'Unusual domain encoding',
+    punycodeDetail: 'This domain uses a special encoding. Verify the address carefully.',
+    tlsNoSnapshot: 'Live certificate details require an on-demand scan',
+    tlsNoSnapshotDetail: 'This site is not in the public-sector snapshot. On-demand scanning is a future feature.',
+    scanThisSite: 'Scan this site',
+    scanNotYetAvailable: 'On-demand scan not yet available',
+  },
+
   report: {
     title: 'Report this site',
     hostLabel: 'Site',

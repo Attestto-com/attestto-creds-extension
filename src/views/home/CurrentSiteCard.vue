@@ -7,6 +7,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { ChevronRightIcon } from '@heroicons/vue/24/outline'
 import { readPublicVault } from '@/utils/vault'
 import { normalizeOrigin } from '@/utils/site-did'
 import { isOriginTrusted } from '@/utils/trusted-origins'
@@ -82,19 +83,34 @@ onMounted(async () => {
   <div v-else-if="!host" class="rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-white">
     {{ t('home.currentSite.noSite') }}
   </div>
-  <SiteIdentityCard
-    v-else
-    :host="host"
-    :is-secure="isSecure"
-    :favicon-src="faviconSrc"
-    :has-identity="hasIdentity"
-    :created-at="createdAt"
-    :last-used-at="lastUsedAt"
-    :trust-state="trustState"
-    :institution-name="institutionName"
-    :institution-category="institutionCategory"
-    tls-mode="link"
-    @back-to-safety="backToSafety"
-    @view-tls="router.push('/tls')"
-  />
+  <div v-else class="relative">
+    <!-- Invisible overlay button makes the entire card tappable. The card
+         itself is not interactive (no hover state needed on it) — only this
+         button is. Screen readers see the accessible label below. -->
+    <button
+      type="button"
+      class="absolute inset-0 z-10 rounded-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
+      :aria-label="t('home.currentSite.viewProfile')"
+      @click="router.push('/site-profile')"
+    />
+    <SiteIdentityCard
+      :host="host"
+      :is-secure="isSecure"
+      :favicon-src="faviconSrc"
+      :has-identity="hasIdentity"
+      :created-at="createdAt"
+      :last-used-at="lastUsedAt"
+      :trust-state="trustState"
+      :institution-name="institutionName"
+      :institution-category="institutionCategory"
+      tls-mode="hidden"
+      @back-to-safety="backToSafety"
+      @view-tls="router.push('/tls')"
+    />
+    <!-- "View details" affordance so the tap target intent is visible -->
+    <p class="mt-1.5 flex items-center justify-end gap-1 px-1 text-xs text-slate-500">
+      <ChevronRightIcon class="size-3.5" />
+      {{ t('home.currentSite.viewProfile') }}
+    </p>
+  </div>
 </template>
