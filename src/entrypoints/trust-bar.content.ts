@@ -11,6 +11,9 @@
  *   - Opt-out: respects the `trustBarEnabled` setting (default TRUE).
  *   - Per-host dismiss: × remembers the host; the bar never returns there.
  *   - Fail soft: any error → no bar, no console spam.
+ *   - "Send report" button: explicit user action only. Posts ONLY the allowed
+ *     fields (hostname, tld, findingType, severity, timestamp, extensionVersion)
+ *     via the background SW — never path, page content, or PII.
  *
  * This is a WARNING feature only — it fires on HTTP pages with sensitive forms.
  * The positive TLS info-bar has been removed; only the insecure/threat path remains.
@@ -19,6 +22,7 @@
 import { isGovHost, GOV_MATCH_PATTERNS } from '@/utils/gov-host'
 import { readSettings } from '@/utils/settings-config'
 import { isTrustBarDismissed, dismissTrustBarForHost } from '@/utils/trust-bar-dismissed'
+import { APP_VERSION } from '@/config/app'
 
 const HOST_ELEMENT_ID = 'attestto-trust-bar-host'
 
@@ -61,6 +65,11 @@ export function hasSensitiveForm(): boolean {
  * Red alert bar for an insecure page asking for personal data. Unlike the TLS
  * bar this does NOT depend on the snapshot — it fires from the live page (HTTP +
  * sensitive form). Bilingual by browser locale (CR gov audience = Spanish).
+ *
+ * Includes a "Send report" button that, only on click, forwards a minimal
+ * threat report to the Attestto backend via the background SW. The report
+ * body contains ONLY: hostname, tld, findingType, severity, timestamp,
+ * extensionVersion — never the full URL, path, page content, or any PII.
  */
 function buildInsecureBar(host: string): HTMLElement {
   const es = (navigator.language || '').toLowerCase().startsWith('es')
@@ -68,6 +77,9 @@ function buildInsecureBar(host: string): HTMLElement {
     ? 'Sitio no seguro (sin cifrado) que solicita datos personales. No ingrese su cédula, correo ni contraseña aquí.'
     : "Not secure (unencrypted) and asking for personal data. Don't enter your ID, email, or password here."
   const dismissLabel = es ? 'Descartar la advertencia de Attestto' : 'Dismiss the Attestto warning'
+  const reportLabel = es ? 'Enviar reporte a Attestto' : 'Send report to Attestto'
+  const reportSentLabel = es ? 'Reporte enviado' : 'Report sent'
+  const reportSendingLabel = es ? 'Enviando…' : 'Sending…'
 
   const hostEl = document.createElement('div')
   hostEl.id = HOST_ELEMENT_ID
@@ -93,9 +105,14 @@ function buildInsecureBar(host: string): HTMLElement {
       box-shadow: 0 1px 6px rgba(0,0,0,0.35);
     }
     .mark { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:4px; background:#dc2626; color:#fff; font-weight:700; font-size:13px; flex:0 0 auto; }
-    .msg { color:#fecaca; }
+    .msg { color:#fecaca; flex:1; min-width:0; }
     .host { font-weight:600; color:#fff; }
-    .close { pointer-events:auto; margin-left:auto; flex:0 0 auto; appearance:none; border:0; background:transparent; color:#fca5a5; font-size:16px; line-height:1; cursor:pointer; padding:2px 6px; border-radius:4px; }
+    .actions { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
+    .report { pointer-events:auto; appearance:none; border:1px solid rgba(252,165,165,0.4); background:rgba(220,38,38,0.25); color:#fca5a5; font-size:11px; font-family:inherit; line-height:1; cursor:pointer; padding:3px 8px; border-radius:4px; white-space:nowrap; }
+    .report:hover:not(:disabled) { background:rgba(220,38,38,0.45); color:#fff; border-color:rgba(252,165,165,0.7); }
+    .report:disabled { opacity:0.6; cursor:default; }
+    .report.sent { color:#86efac; border-color:rgba(134,239,172,0.4); background:rgba(21,128,61,0.25); }
+    .close { pointer-events:auto; flex:0 0 auto; appearance:none; border:0; background:transparent; color:#fca5a5; font-size:16px; line-height:1; cursor:pointer; padding:2px 6px; border-radius:4px; }
     .close:hover { color:#fff; background:rgba(255,255,255,0.1); }
   `
 
@@ -107,6 +124,46 @@ function buildInsecureBar(host: string): HTMLElement {
     <span class="msg"><span class="host">${escapeText(host)}</span> — ${escapeText(msg)}</span>
   `
 
+  // ── Report button ────────────────────────────────────────────────────────
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+
+  const report = document.createElement('button')
+  report.className = 'report'
+  report.type = 'button'
+  report.textContent = reportLabel
+  report.addEventListener('click', () => {
+    if (report.disabled) return
+    report.disabled = true
+    report.textContent = reportSendingLabel
+
+    // Derive TLD from host (last two parts — handles .go.cr, .fi.cr, etc.)
+    const parts = host.split('.')
+    const tld = parts.length >= 2 ? parts.slice(-2).join('.') : host
+
+    // Route through background SW — content scripts should not fetch directly.
+    // Body fields: only what the contract allows. No URL path, no page content.
+    chrome.runtime.sendMessage({
+      type: 'SUBMIT_THREAT_REPORT',
+      payload: {
+        findingType: 'insecure_pii_form',
+        severity: 'high',
+        hostname: host,
+        tld,
+        timestamp: new Date().toISOString(),
+        extensionVersion: APP_VERSION,
+      },
+    }).then(() => {
+      report.textContent = reportSentLabel
+      report.classList.add('sent')
+    }).catch(() => {
+      report.disabled = false
+      report.textContent = reportLabel
+    })
+  })
+  actions.appendChild(report)
+
+  // ── Dismiss button ───────────────────────────────────────────────────────
   const close = document.createElement('button')
   close.className = 'close'
   close.type = 'button'
@@ -117,7 +174,9 @@ function buildInsecureBar(host: string): HTMLElement {
     clearPagePush()
     void dismissTrustBarForHost(host)
   })
-  bar.appendChild(close)
+  actions.appendChild(close)
+
+  bar.appendChild(actions)
 
   shadow.appendChild(style)
   shadow.appendChild(bar)

@@ -27,6 +27,7 @@ import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
 import { signDidAuth, type WalletAuthResponse } from '@/services/did-auth'
 import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
+import { fetchCertScan, submitThreatReport } from '@/api/backend-client'
 
 export default defineBackground(() => {
   // ── Toolbar trust state (ATT-727) ──────────────────
@@ -2312,6 +2313,29 @@ export default defineBackground(() => {
           sendChapiErrorToTab(pendingDeny.senderTabId, pendingDeny.apiReq.requestId, 'User declined')
         }
         sendResponse({ ok: true })
+        break
+      }
+
+      // ── Backend scan + report ──────────────────────────────────────────────
+
+      case 'CERT_SCAN_REQUEST': {
+        // Only the hostname is forwarded — never path, query, or credentials.
+        const { hostname } = message.payload as { hostname: string }
+        fetchCertScan(hostname)
+          .then((result) => sendResponse(result))
+          .catch((err) => {
+            sendResponse({ ok: false, host: hostname, error: err instanceof Error ? err.message : 'Scan failed' })
+          })
+        break
+      }
+
+      case 'SUBMIT_THREAT_REPORT': {
+        const reportPayload = message.payload as Parameters<typeof submitThreatReport>[0]
+        submitThreatReport(reportPayload)
+          .then((result) => sendResponse(result))
+          .catch((err) => {
+            sendResponse({ ok: false, error: err instanceof Error ? err.message : 'Submit failed' })
+          })
         break
       }
     }

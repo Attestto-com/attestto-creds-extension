@@ -10,11 +10,17 @@
  *   - Brand label + homograph/brand-squat warning.
  *   - TOFU pin state (user has explicitly trusted this site).
  *   - Bundled TLS certificate snapshot if the host is in it.
- *     If NOT in the snapshot: honest empty state — no fabricated data.
+ *     If NOT in the snapshot: honest empty state + live scan on user request.
  *   - Site health stats (DOM analysis, in-browser only, on demand).
  *
  * Read-only display only. No new storage writes.
  * No content-script injection — popup only per doctrine.
+ *
+ * Scan mechanism:
+ *   "Scan this site" sends CERT_SCAN_REQUEST to the background SW (which
+ *   calls the Attestto backend GET /scan?host=...). Only the hostname is
+ *   forwarded — never the full URL, path, or any user data.
+ *   Fires only on explicit user click (consent required per policy).
  *
  * Site health mechanism:
  *   Uses chrome.scripting.executeScript (already in manifest) to inject
@@ -43,6 +49,7 @@ import { isGovHost } from '@/utils/gov-host'
 import { homographState, type HomographVerdict } from '@/utils/homograph'
 import { isPinned } from '@/utils/pin-store'
 import { analyzeSiteHealth, type SiteHealthResult } from '@/utils/site-health'
+import type { CertScanResult } from '@/api/backend-client'
 import TlsCertificateCard from '@/components/TlsCertificateCard.vue'
 import SiteHealthPanel from '@/components/SiteHealthPanel.vue'
 import PopupPanel from '@/components/layout/PopupPanel.vue'
@@ -66,6 +73,33 @@ const pinned = ref(false)
 
 const tls = ref<TlsSnapshotRow | null>(null)
 const tlsSnapDate = ref<string | null>(null)
+
+// ── live scan (backend, on user click) ────────────────────────────────────────
+const scanLoading = ref(false)
+const scanResult = ref<CertScanResult | null>(null)
+const scanError = ref(false)
+
+async function runLiveScan(): Promise<void> {
+  if (!host.value || scanLoading.value) return
+  scanLoading.value = true
+  scanError.value = false
+  scanResult.value = null
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'CERT_SCAN_REQUEST',
+      payload: { hostname: host.value },
+    }) as CertScanResult
+    if (response?.ok === false) {
+      scanError.value = true
+    } else {
+      scanResult.value = response
+    }
+  } catch {
+    scanError.value = true
+  } finally {
+    scanLoading.value = false
+  }
+}
 
 // ── site health ───────────────────────────────────────────────────────────────
 const healthLoading = ref(false)
@@ -314,31 +348,76 @@ function goBack(): void {
           :snapshot-date="tlsSnapDate"
         />
 
-        <!-- Not in snapshot: honest empty state + stub CTA -->
+        <!-- Not in snapshot: honest empty state + live scan on user click -->
         <div
           v-else
-          class="rounded-md border border-slate-800 bg-slate-950/40 p-3 text-center"
+          class="rounded-md border border-slate-800 bg-slate-950/40 p-3"
         >
-          <MagnifyingGlassIcon class="mx-auto mb-1.5 size-6 text-slate-500" />
-          <p class="text-sm font-medium text-white/70">
-            {{ t('siteProfile.tlsNoSnapshot') }}
-          </p>
-          <p class="mt-0.5 text-xs text-slate-500">
-            {{ t('siteProfile.tlsNoSnapshotDetail') }}
-          </p>
-          <!-- Stub button — on-demand scan is a future backend feature -->
-          <!-- stub-guard-ignore -->
+          <!-- Scan result: cert details -->
+          <template v-if="scanResult">
+            <!-- Expired warning -->
+            <div
+              v-if="scanResult.expired"
+              class="mb-2 flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-300"
+            >
+              <ExclamationTriangleIcon class="size-3.5 shrink-0" />
+              {{ t('siteProfile.scanExpired') }}
+            </div>
+            <!-- Cert fields -->
+            <dl class="space-y-1.5 text-xs">
+              <div v-if="scanResult.ca" class="flex justify-between gap-2">
+                <dt class="text-slate-400">{{ t('siteProfile.scanCa') }}</dt>
+                <dd class="text-right font-medium text-white">{{ scanResult.ca }}</dd>
+              </div>
+              <div v-if="scanResult.validationTier" class="flex justify-between gap-2">
+                <dt class="text-slate-400">{{ t('siteProfile.scanValidation') }}</dt>
+                <dd class="text-right font-medium text-white">{{ scanResult.validationTier }}</dd>
+              </div>
+              <div v-if="scanResult.daysToExpiry !== undefined" class="flex justify-between gap-2">
+                <dt class="text-slate-400">{{ t('siteProfile.scanExpiry') }}</dt>
+                <dd
+                  class="text-right font-medium"
+                  :class="scanResult.expired ? 'text-red-400' : 'text-white'"
+                >
+                  {{ t('siteProfile.scanExpiryDays', { days: scanResult.daysToExpiry }) }}
+                </dd>
+              </div>
+            </dl>
+          </template>
+
+          <!-- Scan error -->
+          <div
+            v-else-if="scanError"
+            class="flex items-center justify-center gap-1.5 py-1 text-xs text-red-400"
+          >
+            <ExclamationTriangleIcon class="size-3.5 shrink-0" />
+            {{ t('siteProfile.scanError') }}
+          </div>
+
+          <!-- Pre-scan empty state -->
+          <template v-else>
+            <div class="text-center">
+              <MagnifyingGlassIcon class="mx-auto mb-1.5 size-6 text-slate-500" />
+              <p class="text-sm font-medium text-white/70">
+                {{ t('siteProfile.tlsNoSnapshot') }}
+              </p>
+              <p class="mt-0.5 text-xs text-slate-500">
+                {{ t('siteProfile.tlsNoSnapshotDetail') }}
+              </p>
+            </div>
+          </template>
+
+          <!-- Scan button — fires only on click (per-event consent) -->
           <button
+            v-if="!scanResult"
             type="button"
-            disabled
-            class="mt-3 inline-flex cursor-not-allowed items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/40 px-3 py-1.5 text-xs font-medium text-slate-500 opacity-60"
-            :title="t('siteProfile.scanNotYetAvailable')"
+            :disabled="scanLoading"
+            class="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-slate-700 bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-700/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            @click="runLiveScan"
           >
             <MagnifyingGlassIcon class="size-3.5" />
-            {{ t('siteProfile.scanThisSite') }}
+            {{ scanLoading ? t('siteProfile.scanScanning') : t('siteProfile.scanThisSite') }}
           </button>
-          <!-- TODO: wire to on-demand backend scan once the consent-gated
-               endpoint (backend-scan phase 2) is ready. -->
         </div>
       </div>
 
