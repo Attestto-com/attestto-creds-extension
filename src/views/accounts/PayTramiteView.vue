@@ -124,7 +124,6 @@ function back(): void {
               <p class="truncate text-xs font-medium text-white">{{ acct.label }}</p>
               <p class="font-mono text-[10px] text-slate-400">{{ formatIban(acct.iban) }}</p>
             </div>
-            <span class="text-[10px] text-emerald-400">{{ formatCRC(acct.balanceCRC) }}</span>
           </label>
         </div>
       </div>

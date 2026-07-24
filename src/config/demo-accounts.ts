@@ -21,9 +21,15 @@ export interface DemoAccount {
   label: string
   /** Familiar account identifier the user sees. NO Solana / Circle address. */
   iban: string
-  /** Mock spendable balance, in CRC colones (integer). */
-  balanceCRC: number
 }
+
+/**
+ * NOTE: there is deliberately NO balance field. The browser never queries the
+ * chain or the server for a balance — that would require broadcasting the
+ * wallet's public key/address, and the public key never travels from the
+ * browser. Payments follow the card model: no client-side pre-check, the
+ * backend accepts or rejects at settlement time.
+ */
 
 /** CR IBAN convention: "CR" + 2 check + 18 digits. Fabricated for the demo. */
 function mockIbanForAlias(alias: string): string {
@@ -48,7 +54,6 @@ export function accountFromAlias(alias: string): DemoAccount {
     did: `did:sns:${clean}.attestto.sol`,
     label: clean,
     iban: mockIbanForAlias(clean),
-    balanceCRC: 48_500,
   }
 }
 

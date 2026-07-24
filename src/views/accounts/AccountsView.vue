@@ -13,6 +13,7 @@ import {
   PlusIcon,
   BanknotesIcon,
   ArrowRightIcon,
+  IdentificationIcon,
 } from '@heroicons/vue/24/outline'
 import { demoAccounts, addByAlias, formatIban } from '@/config/demo-accounts'
 import { formatCRC, NICOYA_CONSTANCIA } from '@/api/pay-client'
@@ -61,10 +62,7 @@ function payTramite(): void {
             {{ formatIban(acct.iban) }}
           </p>
         </div>
-        <div class="text-right">
-          <p class="text-[9px] uppercase tracking-wide text-slate-500">Saldo</p>
-          <p class="text-sm font-semibold text-emerald-400">{{ formatCRC(acct.balanceCRC) }}</p>
-        </div>
+        <IdentificationIcon class="h-5 w-5 shrink-0 text-slate-600" />
       </div>
     </div>
 
