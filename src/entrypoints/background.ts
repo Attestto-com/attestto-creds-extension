@@ -24,6 +24,7 @@ import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
 import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
+import { signDidAuth, type WalletAuthResponse } from '@/services/did-auth'
 import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
 
@@ -257,6 +258,20 @@ export default defineBackground(() => {
     origin: string
     senderTabId: number | null
     unregister?: () => void
+    /**
+     * Protocol variant. Absent = the legacy `attestto:auth` proof-of-possession
+     * flow verified by CORTEX's DidAuthController. 'cw' = the identity-bridge
+     * `credential-wallet:auth` flow verified by `@attestto/id-wallet-adapter`'s
+     * `verifyAuth` (SOC-71). The two sign DIFFERENT canonical payloads, so the
+     * approve branch must know which is in flight.
+     */
+    protocol?: 'cw'
+    /** (cw) Audience the verifier issued — signed and echoed back. */
+    audience?: string
+    /** (cw) Envelope nonce that correlates the site's request → response event (distinct from the signed `nonce`). */
+    envelopeNonce?: string
+    /** (cw) Issuer DIDs the site will accept; carried through for the consent UI. */
+    trustedIssuers?: string[]
   }
   const pendingAuthRequests = new Map<string, PendingAuthRequest>()
 
@@ -361,7 +376,21 @@ export default defineBackground(() => {
     }
 
     pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
+    await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendAuthErrorToTab)
+  }
 
+  /**
+   * Open the shared auth approval popup for a request already stored in
+   * `pendingAuthRequests`. Used by both the legacy (`attestto:auth`) and the
+   * `credential-wallet:auth` (SOC-71) flows — the only per-flow difference is
+   * which error sender reports a failure/cancel back to the page.
+   */
+  async function openAuthApprovalWindow(
+    requestId: string,
+    origin: string,
+    senderTabId: number | null,
+    sendError: (tabId: number | null, requestId: string, error: string) => void,
+  ): Promise<void> {
     // Resolve the requesting page's title so the approval popup shows the same
     // "site certificate" heading the toolbar popup does (parity with
     // CurrentSiteCard, which reads tab.title). Best-effort — the tab may be gone.
@@ -376,8 +405,8 @@ export default defineBackground(() => {
     }
 
     const params = new URLSearchParams({
-      authRequest: authReq.requestId,
-      origin: authReq.origin || '',
+      authRequest: requestId,
+      origin: origin || '',
     })
     if (siteName) params.set('siteName', siteName)
 
@@ -398,18 +427,62 @@ export default defineBackground(() => {
         focused: true,
       })
       const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingAuthRequests.has(authReq.requestId)) {
-          pendingAuthRequests.delete(authReq.requestId)
-          sendAuthErrorToTab(senderTabId, authReq.requestId, 'User cancelled — approval window closed')
+        if (pendingAuthRequests.has(requestId)) {
+          pendingAuthRequests.delete(requestId)
+          sendError(senderTabId, requestId, 'User cancelled — approval window closed')
         }
       })
-      const pending = pendingAuthRequests.get(authReq.requestId)
+      const pending = pendingAuthRequests.get(requestId)
       if (pending) pending.unregister = unregister
     } catch (err) {
       console.error('[Attestto ID] Failed to open auth approval window:', err)
-      pendingAuthRequests.delete(authReq.requestId)
-      sendAuthErrorToTab(senderTabId, authReq.requestId, 'Could not open approval window')
+      pendingAuthRequests.delete(requestId)
+      sendError(senderTabId, requestId, 'Could not open approval window')
     }
+  }
+
+  /**
+   * Handle a `credential-wallet:auth` request (SOC-71) — the wallet side of the
+   * identity-bridge DID-login flow verified by `@attestto/id-wallet-adapter`'s
+   * `verifyAuth`. Mirrors `handleAuthRequest` but records the protocol +
+   * audience + envelope nonce so the approve branch signs the adapter's
+   * `attestto-did-auth-v1` canonical payload (not the legacy `attestto:auth`
+   * one) and returns a full `AuthResponse`.
+   */
+  async function handleCwAuthRequest(
+    authReq: {
+      requestId: string
+      nonce: string
+      audience: string
+      origin: string
+      timestamp?: string
+      trustedIssuers?: string[]
+    },
+    senderTabId: number | null,
+  ): Promise<void> {
+    if (!hasIdentity(await readPublicVault())) {
+      sendCwAuthErrorToTab(
+        senderTabId,
+        authReq.requestId,
+        'No Digital ID found. Open the Attestto extension and select "Set up identity" to create one, then try again.',
+      )
+      return
+    }
+
+    pendingAuthRequests.set(authReq.requestId, {
+      requestId: authReq.requestId,
+      nonce: authReq.nonce,
+      // The signed timestamp is minted at approval time (fresh per the verifier's
+      // freshness window), so the request-time value is not used for signing.
+      timestamp: authReq.timestamp ?? '',
+      origin: authReq.origin,
+      senderTabId,
+      protocol: 'cw',
+      audience: authReq.audience,
+      envelopeNonce: authReq.requestId,
+      trustedIssuers: authReq.trustedIssuers,
+    })
+    await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendCwAuthErrorToTab)
   }
 
   function sendAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
@@ -430,6 +503,34 @@ export default defineBackground(() => {
       chrome.tabs.sendMessage(tabId, {
         type: 'AUTH_RESPONSE',
         payload: { requestId, ...data },
+      })
+    }
+  }
+
+  // ── credential-wallet:auth response bridge (SOC-71) ──────────────
+  // These route back through the ISOLATED content script, which posts
+  // ATTESTTO_CW_AUTH_RESPONSE to the page; the MAIN world then dispatches the
+  // `credential-wallet:auth-response` event `verifyAuth` listens for. `requestId`
+  // is the envelope nonce the site used to correlate request → response.
+
+  function sendCwAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CW_AUTH_RESPONSE',
+        payload: { requestId, error },
+      })
+    }
+  }
+
+  function sendCwAuthResponseToTab(
+    tabId: number | null,
+    requestId: string,
+    response: WalletAuthResponse,
+  ): void {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'CW_AUTH_RESPONSE',
+        payload: { requestId, response },
       })
     }
   }
@@ -1755,6 +1856,22 @@ export default defineBackground(() => {
         return true // async sendResponse
       }
 
+      case 'CW_AUTH_REQUEST': {
+        // credential-wallet:auth (SOC-71) — verified by the adapter's verifyAuth.
+        const cwAuthReq = message.payload as {
+          requestId: string
+          nonce: string
+          audience: string
+          origin: string
+          timestamp?: string
+          trustedIssuers?: string[]
+        }
+        handleCwAuthRequest(cwAuthReq, sender.tab?.id ?? null).then(() => {
+          sendResponse({ ok: true })
+        })
+        return true // async sendResponse
+      }
+
       case 'AUTH_GET_PENDING': {
         const authReqId = message.payload?.requestId as string
         const pendingAuth = pendingAuthRequests.get(authReqId)
@@ -1778,9 +1895,12 @@ export default defineBackground(() => {
         pendingAuthReq.unregister?.()
         pendingAuthRequests.delete(authApproveId)
 
+        const isCwAuth = pendingAuthReq.protocol === 'cw'
+        const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
+
         readVault().then(async (vault) => {
           if (!vault) {
-            sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'Vault not ready')
+            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'Vault not ready')
             sendResponse({ ok: false, error: 'Vault not ready' })
             return
           }
@@ -1803,9 +1923,38 @@ export default defineBackground(() => {
             await writeVault(vault)
             await syncPublicVault(vault)
 
-            // Canonical auth payload — MUST match backend DidAuthController
-            // exactly. The page may pass an explicit `audience`; if it doesn't,
-            // we fall back to origin (matching CORTEX's `audience ?? origin`).
+            // Deciding to sign in IS the trust decision — pin the site so its
+            // popup grade reflects it (no separate "Trust this site" step). The
+            // per-origin phishing acknowledgment already gated this choice.
+            try {
+              const trustedHost = new URL(pendingAuthReq.origin).host.toLowerCase().replace(/^www\./, '')
+              if (trustedHost) await pinSite(trustedHost)
+            } catch {
+              // Best-effort: never block sign-in on a pin failure.
+            }
+
+            if (isCwAuth) {
+              // credential-wallet:auth (SOC-71) — sign the adapter's versioned
+              // canonical payload and return a full AuthResponse. A fresh
+              // timestamp is minted now so it lands inside the verifier's
+              // freshness window regardless of how long consent took.
+              const response = await signDidAuth({
+                did: entry.did,
+                nonce: pendingAuthReq.nonce,
+                audience: pendingAuthReq.audience || pendingAuthReq.origin,
+                origin: pendingAuthReq.origin,
+                privateKeyJwk: entry.privateKeyJwk,
+                publicKeyJwk: publicJwkOf(entry) as JsonWebKey,
+              })
+              sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, response)
+              sendResponse({ ok: true, response })
+              return
+            }
+
+            // Legacy `attestto:auth` proof-of-possession — canonical payload
+            // MUST match backend DidAuthController exactly. The page may pass an
+            // explicit `audience`; if it doesn't, we fall back to origin
+            // (matching CORTEX's `audience ?? origin`).
             //   ${nonce}|${audience||origin}|${origin}|${timestamp}
             const audience = pendingAuthReq.origin
             const canonicalPayload = `${pendingAuthReq.nonce}|${audience}|${pendingAuthReq.origin}|${pendingAuthReq.timestamp}`
@@ -1827,16 +1976,6 @@ export default defineBackground(() => {
 
             const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
 
-            // Deciding to sign in IS the trust decision — pin the site so its
-            // popup grade reflects it (no separate "Trust this site" step). The
-            // per-origin phishing acknowledgment already gated this choice.
-            try {
-              const trustedHost = new URL(pendingAuthReq.origin).host.toLowerCase().replace(/^www\./, '')
-              if (trustedHost) await pinSite(trustedHost)
-            } catch {
-              // Best-effort: never block sign-in on a pin failure.
-            }
-
             // Surface the public-key half so the backend can verify by
             // stateless proof-of-possession (TOFU) — pairwise did:jwk keys are
             // never pre-registered.
@@ -1851,7 +1990,7 @@ export default defineBackground(() => {
             sendResponse({ ok: true, ...responseData })
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : 'Auth signing failed'
-            sendAuthErrorToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, errMsg)
+            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, errMsg)
             sendResponse({ ok: false, error: errMsg })
           }
         })
@@ -1864,7 +2003,13 @@ export default defineBackground(() => {
         if (pendingAuthDeny) {
           pendingAuthDeny.unregister?.()
           pendingAuthRequests.delete(authDenyId)
-          sendAuthErrorToTab(pendingAuthDeny.senderTabId, pendingAuthDeny.requestId, 'User declined')
+          // Route the denial back on the SAME protocol the request arrived on.
+          // A cw (credential-wallet:auth) request must get a CW_AUTH_RESPONSE so
+          // the MAIN-world listener resolves requestAuth immediately; sending the
+          // legacy AUTH_RESPONSE would leave it hanging until its 120s timeout.
+          const denyErr =
+            pendingAuthDeny.protocol === 'cw' ? sendCwAuthErrorToTab : sendAuthErrorToTab
+          denyErr(pendingAuthDeny.senderTabId, pendingAuthDeny.requestId, 'User declined')
         }
         sendResponse({ ok: true })
         break

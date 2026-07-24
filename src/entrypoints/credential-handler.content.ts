@@ -48,6 +48,71 @@ export default defineContentScript({
     })
 
     // -----------------------------------------------------------------
+    // DID Authentication (SOC-71) — credential-wallet:auth
+    // -----------------------------------------------------------------
+    // A verifying site (via @attestto/id-wallet-adapter `requestAuth`) dispatches
+    // `credential-wallet:auth`; the wallet signs the challenge and replies with
+    // `credential-wallet:auth-response`, which the adapter's `verifyAuth` checks.
+    //
+    // MAIN world can't reach the background, so we relay through the ISOLATED
+    // content script via postMessage. The envelope `nonce` correlates the
+    // request → response event; the inner `request.nonce` is what gets signed.
+
+    window.addEventListener('credential-wallet:auth', (e: Event) => {
+      const detail = (e as CustomEvent<{
+        nonce: string
+        walletDid?: string
+        request?: { nonce?: string; audience?: string; origin?: string; trustedIssuers?: string[] }
+      }>).detail
+
+      const envelopeNonce = detail?.nonce
+      const request = detail?.request
+      if (!envelopeNonce || !request?.nonce) return
+
+      // Only answer auth aimed at this wallet (the adapter passes the discovered
+      // wallet DID). Ignore requests targeted at a different wallet.
+      if (detail.walletDid && detail.walletDid !== ATTESTTO_WALLET.did) return
+
+      function dispatchAuthResponse(response: unknown) {
+        window.dispatchEvent(
+          new CustomEvent('credential-wallet:auth-response', {
+            detail: { nonce: envelopeNonce, response },
+          }),
+        )
+      }
+
+      function handleResponse(event: MessageEvent) {
+        if (event.source !== window) return
+        if (event.data?.type !== 'ATTESTTO_CW_AUTH_RESPONSE') return
+        if (event.data?.requestId !== envelopeNonce) return
+        window.removeEventListener('message', handleResponse)
+
+        if (event.data.error || !event.data.response) {
+          // Resolve the site's requestAuth with an unapproved response rather
+          // than letting it hang until its timeout; verifyAuth then rejects it.
+          dispatchAuthResponse({ approved: false })
+        } else {
+          dispatchAuthResponse(event.data.response)
+        }
+      }
+
+      window.addEventListener('message', handleResponse)
+
+      window.postMessage({
+        type: 'ATTESTTO_CW_AUTH_REQUEST',
+        requestId: envelopeNonce,
+        nonce: request.nonce,
+        audience: request.audience || window.location.origin,
+        trustedIssuers: request.trustedIssuers,
+      }, window.location.origin)
+
+      // Safety timeout mirrors the adapter's default requestAuth window.
+      setTimeout(() => {
+        window.removeEventListener('message', handleResponse)
+      }, 120000)
+    })
+
+    // -----------------------------------------------------------------
     // Override navigator.credentials.get for CHAPI + Attestto VP
     // -----------------------------------------------------------------
 
