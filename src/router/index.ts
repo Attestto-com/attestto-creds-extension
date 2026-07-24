@@ -38,6 +38,11 @@ const router = createRouter({
       component: () => import('@/views/site/TlsDetailView.vue'),
     },
     {
+      path: '/site-profile',
+      name: 'site-profile',
+      component: () => import('@/views/site/SiteProfileView.vue'),
+    },
+    {
       path: '/credentials/:id/present',
       name: 'present-credential',
       component: () => import('@/views/credentials/PresentCredentialView.vue'),

@@ -33,7 +33,7 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
-  { key: 'site', to: '/', labelKey: 'bottomNav.site', icon: GlobeAltIcon, match: ['home'] },
+  { key: 'site', to: '/', labelKey: 'bottomNav.site', icon: GlobeAltIcon, match: ['home', 'tls-detail', 'site-profile'] },
   {
     key: 'accounts',
     to: '/identities',
