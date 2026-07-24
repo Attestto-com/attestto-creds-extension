@@ -18,6 +18,8 @@ import {
   CheckCircleIcon,
   XCircleIcon,
   ExclamationCircleIcon,
+  GlobeAltIcon,
+  CodeBracketIcon,
 } from '@heroicons/vue/24/outline'
 import type { SiteHealthResult } from '@/utils/site-health'
 
@@ -419,6 +421,136 @@ defineProps<{ health: SiteHealthResult }>()
             {{
               health.links.insecureLinks === 0 ? t('siteHealth.none') : health.links.insecureLinks
             }}
+          </span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- ── 5. Supply Chain (third-party + scripts) ──────────────────────────── -->
+    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+      <div class="mb-2.5 flex items-center gap-2">
+        <GlobeAltIcon class="size-4 shrink-0 text-orange-400" />
+        <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          {{ t('siteHealth.supplyChain.title') }}
+        </span>
+      </div>
+
+      <ul class="space-y-1.5">
+        <!-- Non-gov scripts on gov host -->
+        <li v-if="health.scripts.govHostWithNonGovScripts" class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.supplyChain.nonGovScriptsOnGov') }}</span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-300">
+            <XCircleIcon class="size-3" />
+            {{ t('siteHealth.yes') }}
+          </span>
+        </li>
+
+        <!-- Third-party non-gov script count -->
+        <li class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.supplyChain.thirdPartyScripts') }}</span>
+          <span
+            class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+            :class="
+              health.scripts.externalThirdPartyNonGov === 0
+                ? 'bg-emerald-500/15 text-emerald-300'
+                : 'bg-amber-500/15 text-amber-300'
+            "
+          >
+            <CheckCircleIcon v-if="health.scripts.externalThirdPartyNonGov === 0" class="size-3" />
+            <ExclamationCircleIcon v-else class="size-3" />
+            {{
+              health.scripts.externalThirdPartyNonGov === 0
+                ? t('siteHealth.none')
+                : health.scripts.externalThirdPartyNonGov
+            }}
+          </span>
+        </li>
+
+        <!-- Inline scripts -->
+        <li class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.supplyChain.inlineScripts') }}</span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-slate-700/60 px-2 py-0.5 text-[11px] font-medium text-slate-300">
+            {{ health.scripts.inlineCount }}
+          </span>
+        </li>
+
+        <!-- Non-gov resources on gov host -->
+        <li v-if="health.thirdPartyLinks.govHostWithNonGovResources" class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.supplyChain.nonGovResourcesOnGov') }}</span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-300">
+            <ExclamationCircleIcon class="size-3" />
+            {{ t('siteHealth.yes') }}
+          </span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- ── 6. Page Internals (comments + tech stack) ─────────────────────────── -->
+    <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+      <div class="mb-2.5 flex items-center gap-2">
+        <CodeBracketIcon class="size-4 shrink-0 text-teal-400" />
+        <span class="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+          {{ t('siteHealth.pageInternals.title') }}
+        </span>
+      </div>
+
+      <ul class="space-y-1.5">
+        <!-- HTML comments total -->
+        <li class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.pageInternals.htmlComments') }}</span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-slate-700/60 px-2 py-0.5 text-[11px] font-medium text-slate-300">
+            {{ health.comments.total }}
+          </span>
+        </li>
+
+        <!-- Flagged comments -->
+        <li class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.pageInternals.flaggedComments') }}</span>
+          <span
+            class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+            :class="
+              health.comments.flaggedCount === 0
+                ? 'bg-emerald-500/15 text-emerald-300'
+                : 'bg-amber-500/15 text-amber-300'
+            "
+          >
+            <CheckCircleIcon v-if="health.comments.flaggedCount === 0" class="size-3" />
+            <ExclamationCircleIcon v-else class="size-3" />
+            {{ health.comments.flaggedCount === 0 ? t('siteHealth.none') : health.comments.flaggedCount }}
+          </span>
+        </li>
+
+        <!-- Comment sample (first flagged) -->
+        <li v-if="health.comments.samples.length > 0" class="flex flex-col gap-1">
+          <span class="text-xs text-slate-400">{{ t('siteHealth.pageInternals.commentSample') }}:</span>
+          <span class="rounded bg-slate-800 px-2 py-1 text-[10px] text-slate-400 break-all">
+            {{ health.comments.samples[0] }}
+          </span>
+        </li>
+
+        <!-- Tech stack -->
+        <li class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.pageInternals.techStack') }}</span>
+          <span v-if="health.techStack.detectedPlatforms.length === 0" class="text-[11px] text-slate-500">
+            {{ t('siteHealth.pageInternals.noneDetected') }}
+          </span>
+          <div v-else class="flex flex-wrap gap-1 justify-end">
+            <span
+              v-for="p in health.techStack.detectedPlatforms"
+              :key="p"
+              class="rounded bg-slate-700/60 px-1.5 py-0.5 text-[10px] text-slate-300"
+            >
+              {{ p }}
+            </span>
+          </div>
+        </li>
+
+        <!-- Version disclosed -->
+        <li v-if="health.techStack.versionDisclosed" class="flex items-center justify-between gap-2">
+          <span class="text-xs text-slate-300">{{ t('siteHealth.pageInternals.versionDisclosed') }}</span>
+          <span class="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-300">
+            <ExclamationCircleIcon class="size-3" />
+            {{ health.techStack.generatorMetaValue }}
           </span>
         </li>
       </ul>

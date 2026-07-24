@@ -279,3 +279,89 @@ describe('analyzeSiteHealth', () => {
     })
   })
 })
+
+// ── NEW FIXTURES ──────────────────────────────────────────────────────────────
+
+const COMMENTS_SECRET_SITE = `
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Comments Test</title></head>
+<body>
+  <!-- Normal comment: just a note -->
+  <!-- https://internal.staging.example.com/admin -->
+  <!-- TODO: fix password=abc123 -->
+  <!-- abc123def456abc123def456abc123de -->
+  <p>Content here</p>
+</body>
+</html>
+`
+
+const GOV_NONGOV_SCRIPT_SITE = `
+<!DOCTYPE html>
+<html lang="es">
+<head><title>BCCR - Hacienda</title></head>
+<body>
+  <script src="https://cdn.googletagmanager.com/gtm.js"></script>
+  <script src="/app.js"></script>
+  <p>Content</p>
+</body>
+</html>
+`
+
+const WORDPRESS_SITE = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="generator" content="WordPress 5.9.3">
+  <link rel="stylesheet" href="/wp-content/themes/mytheme/style.css">
+  <title>WP Site</title>
+</head>
+<body><p>Hello</p></body>
+</html>
+`
+
+const ASPNET_SITE = `
+<!DOCTYPE html>
+<html lang="en">
+<head><title>ASP.NET Site</title></head>
+<body>
+  <form action="/Page.aspx" method="post">
+    <input type="hidden" name="__VIEWSTATE" value="abc123">
+    <input type="submit" value="Submit">
+  </form>
+</body>
+</html>
+`
+
+// ── NEW TESTS ─────────────────────────────────────────────────────────────────
+
+describe('comments check', () => {
+  it('detects comment nodes and flags suspicious ones', () => {
+    const result = analyzeSiteHealth(parseHtml(COMMENTS_SECRET_SITE, 'https://example.com/'))
+    expect(result.comments.total).toBeGreaterThan(0)
+    expect(result.comments.flaggedCount).toBeGreaterThanOrEqual(2)
+    expect(result.comments.samples.length).toBeLessThanOrEqual(3)
+  })
+})
+
+describe('scripts and supply chain check', () => {
+  it('flags govHostWithNonGovScripts on gov host with external non-gov script', () => {
+    const result = analyzeSiteHealth(parseHtml(GOV_NONGOV_SCRIPT_SITE, 'https://hacienda.go.cr/'))
+    expect(result.scripts.govHostWithNonGovScripts).toBe(true)
+    expect(result.scripts.externalThirdPartyNonGov).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('tech stack detection', () => {
+  it('detects WordPress and reports version disclosed', () => {
+    const result = analyzeSiteHealth(parseHtml(WORDPRESS_SITE, 'https://example.com/'))
+    expect(result.techStack.detectedPlatforms).toContain('wordpress')
+    expect(result.techStack.versionDisclosed).toBe(true)
+    expect(result.techStack.generatorMetaValue).toContain('WordPress')
+  })
+
+  it('detects ASP.NET from VIEWSTATE and .aspx action', () => {
+    const result = analyzeSiteHealth(parseHtml(ASPNET_SITE, 'https://example.com/'))
+    expect(result.techStack.detectedPlatforms).toContain('aspnet')
+  })
+})
