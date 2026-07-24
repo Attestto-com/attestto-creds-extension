@@ -16,7 +16,14 @@
 export interface Tramite {
   id: string
   title: string
+  /** The payee institution (merchant). */
   authority: string
+  /** 'state' renders the verified government badge; 'private' does not. */
+  authorityKind: 'state' | 'private'
+  /** The payee's resolvable DID — proof the merchant is who it claims to be. */
+  authorityDid: string
+  /** Cédula jurídica of the institution, for the receipt. */
+  authorityCedula: string
   /** Line items that sum to `total` — includes fiscal stamps (timbres). */
   lines: { label: string; amountCRC: number }[]
   total: number
@@ -27,6 +34,9 @@ export const NICOYA_CONSTANCIA: Tramite = {
   id: 'nicoya-constancia',
   title: 'Constancia Municipal',
   authority: 'Municipalidad de Nicoya',
+  authorityKind: 'state',
+  authorityDid: 'did:sns:nicoya.muni.attestto.sol',
+  authorityCedula: '3-014-042127',
   lines: [
     { label: 'Constancia / certificación', amountCRC: 500 },
     { label: 'Timbre fiscal (Tesorería Nacional)', amountCRC: 25 },

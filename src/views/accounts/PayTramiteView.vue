@@ -14,6 +14,7 @@ import {
   ShieldCheckIcon,
   CheckCircleIcon,
   ChevronLeftIcon,
+  BuildingLibraryIcon,
 } from '@heroicons/vue/24/outline'
 import { demoAccounts, formatIban } from '@/config/demo-accounts'
 import {
@@ -65,7 +66,27 @@ function back(): void {
     <!-- Trámite summary -->
     <div class="rounded-lg border border-slate-700 bg-slate-900 p-3">
       <p class="text-sm font-semibold text-white">{{ tramite.title }}</p>
-      <p class="text-[10px] text-slate-400">{{ tramite.authority }}</p>
+
+      <!-- Merchant / payee -->
+      <div class="mt-1.5 flex items-start gap-2">
+        <BuildingLibraryIcon class="mt-0.5 h-4 w-4 shrink-0 text-sky-400" />
+        <div class="min-w-0 flex-1">
+          <p class="text-[11px] font-medium text-slate-200">{{ tramite.authority }}</p>
+          <p class="font-mono text-[9px] text-slate-500">
+            Céd. jurídica {{ tramite.authorityCedula }}
+          </p>
+        </div>
+      </div>
+
+      <!-- Verified state-entity badges -->
+      <div v-if="tramite.authorityKind === 'state'" class="mt-2 flex flex-wrap gap-1.5">
+        <span class="inline-flex items-center gap-1 rounded-full border border-sky-700/60 bg-sky-950/40 px-2 py-0.5 text-[9px] font-medium text-sky-300">
+          <BuildingLibraryIcon class="h-3 w-3" /> Entidad estatal
+        </span>
+        <span class="inline-flex items-center gap-1 rounded-full border border-emerald-700/60 bg-emerald-950/40 px-2 py-0.5 text-[9px] font-medium text-emerald-300">
+          <ShieldCheckIcon class="h-3 w-3" /> Identidad verificada
+        </span>
+      </div>
 
       <div class="mt-3 space-y-1.5 border-t border-slate-800 pt-3">
         <div
@@ -146,6 +167,10 @@ function back(): void {
         <div class="flex justify-between">
           <span class="text-slate-400">Trámite</span>
           <span class="text-slate-200">{{ tramite.title }}</span>
+        </div>
+        <div class="flex justify-between gap-2">
+          <span class="shrink-0 text-slate-400">Pagado a</span>
+          <span class="truncate text-slate-200">{{ tramite.authority }}</span>
         </div>
         <div class="flex justify-between">
           <span class="text-slate-400">Pagado por</span>
