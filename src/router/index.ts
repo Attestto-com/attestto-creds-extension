@@ -13,6 +13,16 @@ const router = createRouter({
       component: () => import('@/views/home/HomeView.vue'),
     },
     {
+      path: '/accounts',
+      name: 'accounts',
+      component: () => import('@/views/accounts/AccountsView.vue'),
+    },
+    {
+      path: '/accounts/pay',
+      name: 'pay-tramite',
+      component: () => import('@/views/accounts/PayTramiteView.vue'),
+    },
+    {
       path: '/identities',
       name: 'identity-list',
       component: () => import('@/views/identity/IdentityListView.vue'),

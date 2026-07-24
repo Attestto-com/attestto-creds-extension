@@ -36,10 +36,10 @@ const TABS: Tab[] = [
   { key: 'site', to: '/', labelKey: 'bottomNav.site', icon: GlobeAltIcon, match: ['home', 'tls-detail', 'site-profile'] },
   {
     key: 'accounts',
-    to: '/identities',
+    to: '/accounts',
     labelKey: 'bottomNav.accounts',
     icon: FingerPrintIcon,
-    match: ['identity-list', 'identity-detail'],
+    match: ['accounts', 'pay-tramite', 'identity-list', 'identity-detail'],
   },
   {
     key: 'credentials',
