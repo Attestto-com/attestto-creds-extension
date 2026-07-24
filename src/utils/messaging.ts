@@ -264,6 +264,37 @@ export interface SignAttesttoPdfRequestMessage {
   }
 }
 
+// ── Backend scan + report (routed through SW) ────────────────────────────────
+
+/**
+ * Ask the background SW to call GET /scan?host=<hostname> and return the
+ * result. The popup sends this; the SW fetches and replies.
+ * Only the hostname is ever sent — never a full URL or path.
+ */
+export interface CertScanRequestMessage {
+  type: 'CERT_SCAN_REQUEST'
+  payload: { hostname: string }
+}
+
+/**
+ * Ask the background SW to POST /report with the minimal allowed body.
+ * Content scripts and popups send this after explicit user consent.
+ * Fields must match ThreatReportBody — no URL/path/PII permitted.
+ */
+export interface SubmitThreatReportMessage {
+  type: 'SUBMIT_THREAT_REPORT'
+  payload: {
+    findingType: string
+    severity: string
+    hostname: string
+    tld: string
+    timestamp: string
+    certVerdict?: string
+    heuristicIds?: string[]
+    extensionVersion: string
+  }
+}
+
 export type ExtensionMessage =
   | NotificationReceivedMessage
   | SessionExpiredMessage
@@ -285,6 +316,8 @@ export type ExtensionMessage =
   | PaymentRequestMessage
   | SignDocumentRequestMessage
   | SignAttesttoPdfRequestMessage
+  | CertScanRequestMessage
+  | SubmitThreatReportMessage
 
 // ── Helpers ──────────────────────────────────────────
 

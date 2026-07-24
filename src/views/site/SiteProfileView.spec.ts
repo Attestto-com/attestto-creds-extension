@@ -32,6 +32,10 @@ Object.defineProperty(globalThis, 'chrome', {
     },
     runtime: {
       getURL: vi.fn((p: string) => `chrome-extension://fake/${p}`),
+      sendMessage: vi.fn().mockResolvedValue({ ok: true, host: 'bccr.fi.cr', ca: 'DigiCert', validationTier: 'EV', daysToExpiry: 180, expired: false }),
+    },
+    scripting: {
+      executeScript: vi.fn().mockResolvedValue([{ result: null }]),
     },
     storage: {
       local: {
@@ -191,17 +195,53 @@ describe('SiteProfileView', () => {
       expect(wrapper.text()).toContain(en.siteProfile.tlsNoSnapshot)
     })
 
-    it('renders the scan CTA button as disabled', async () => {
+    it('renders the scan CTA button as enabled (live scan available)', async () => {
       const wrapper = await mountView()
-      const btn = wrapper.find('button[disabled]')
-      expect(btn.exists()).toBe(true)
-      expect(btn.text()).toContain(en.siteProfile.scanThisSite)
+      // Find a button containing the scan label that is NOT disabled
+      const buttons = wrapper.findAll('button')
+      const scanBtn = buttons.find((b) => b.text().includes(en.siteProfile.scanThisSite))
+      expect(scanBtn?.exists()).toBe(true)
+      expect(scanBtn?.attributes('disabled')).toBeUndefined()
     })
 
     it('does NOT render TlsCertificateCard', async () => {
       const wrapper = await mountView()
       // TlsCertificateCard is absent — the CA row is not rendered
       expect(wrapper.text()).not.toContain('DigiCert')
+    })
+
+    it('calls chrome.runtime.sendMessage with CERT_SCAN_REQUEST on scan click', async () => {
+      const wrapper = await mountView()
+      const buttons = wrapper.findAll('button')
+      const scanBtn = buttons.find((b) => b.text().includes(en.siteProfile.scanThisSite))
+      await scanBtn?.trigger('click')
+      expect(globalThis.chrome.runtime.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'CERT_SCAN_REQUEST' }),
+      )
+    })
+
+    it('shows CA and validation tier after a successful scan', async () => {
+      const wrapper = await mountView()
+      const buttons = wrapper.findAll('button')
+      const scanBtn = buttons.find((b) => b.text().includes(en.siteProfile.scanThisSite))
+      await scanBtn?.trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('DigiCert')
+      expect(wrapper.text()).toContain('EV')
+    })
+
+    it('shows scan error when backend returns ok:false', async () => {
+      ;(globalThis.chrome.runtime.sendMessage as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: false,
+        host: 'example.com',
+        error: 'timeout',
+      })
+      const wrapper = await mountView()
+      const buttons = wrapper.findAll('button')
+      const scanBtn = buttons.find((b) => b.text().includes(en.siteProfile.scanThisSite))
+      await scanBtn?.trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain(en.siteProfile.scanError)
     })
   })
 
