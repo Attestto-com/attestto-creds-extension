@@ -11,9 +11,17 @@
  *   - TOFU pin state (user has explicitly trusted this site).
  *   - Bundled TLS certificate snapshot if the host is in it.
  *     If NOT in the snapshot: honest empty state — no fabricated data.
+ *   - Site health stats (DOM analysis, in-browser only, on demand).
  *
  * Read-only display only. No new storage writes.
  * No content-script injection — popup only per doctrine.
+ *
+ * Site health mechanism:
+ *   Uses chrome.scripting.executeScript (already in manifest) to inject
+ *   analyzeSiteHealth as a serialized inline function into the active tab
+ *   and immediately return the result. Runs only when the user opens this
+ *   profile view — never in the background. No new permissions required
+ *   (activeTab + scripting are already declared in wxt.config.ts).
  */
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -34,7 +42,9 @@ import { lookupHost } from '@/utils/trust-registry'
 import { isGovHost } from '@/utils/gov-host'
 import { homographState, type HomographVerdict } from '@/utils/homograph'
 import { isPinned } from '@/utils/pin-store'
+import { analyzeSiteHealth, type SiteHealthResult } from '@/utils/site-health'
 import TlsCertificateCard from '@/components/TlsCertificateCard.vue'
+import SiteHealthPanel from '@/components/SiteHealthPanel.vue'
 import PopupPanel from '@/components/layout/PopupPanel.vue'
 
 const router = useRouter()
@@ -57,12 +67,20 @@ const pinned = ref(false)
 const tls = ref<TlsSnapshotRow | null>(null)
 const tlsSnapDate = ref<string | null>(null)
 
+// ── site health ───────────────────────────────────────────────────────────────
+const healthLoading = ref(false)
+const healthResult = ref<SiteHealthResult | null>(null)
+const healthError = ref(false)
+let activeTabId: number | null = null
+
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     const url = tab?.url ?? null
     if (!url || !/^https?:/.test(url)) return
+
+    activeTabId = tab?.id ?? null
 
     const u = new URL(url)
     host.value = u.host.toLowerCase().replace(/^www\./, '')
@@ -92,10 +110,38 @@ onMounted(async () => {
       const { brandLabelFromHost } = await import('@/utils/trust-registry')
       brandLabel.value = brandLabelFromHost(host.value)
     }
+
+    // Kick off site health analysis immediately after the tab is known.
+    // Runs on explicit user action (opening the profile), not in background.
+    void runHealthAnalysis(activeTabId)
   } finally {
     loading.value = false
   }
 })
+
+async function runHealthAnalysis(tabId: number | null): Promise<void> {
+  if (tabId === null) return
+  healthLoading.value = true
+  healthError.value = false
+  try {
+    // Serialize analyzeSiteHealth as an inline function injected into the
+    // active tab. The function has no closure captures and returns a plain
+    // object — safe to serialize and transfer across the extension boundary.
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: analyzeSiteHealth,
+      args: [document as unknown as Document],
+      world: 'MAIN',
+    })
+    const value = results?.[0]?.result ?? null
+    healthResult.value = value as SiteHealthResult | null
+    if (!healthResult.value) healthError.value = true
+  } catch {
+    healthError.value = true
+  } finally {
+    healthLoading.value = false
+  }
+}
 
 function goBack(): void {
   router.push('/')
@@ -295,6 +341,35 @@ function goBack(): void {
           <!-- TODO: wire to on-demand backend scan once the consent-gated
                endpoint (backend-scan phase 2) is ready. -->
         </div>
+      </div>
+
+      <!-- 3. Site health ──────────────────────────────────────────────── -->
+      <div>
+        <p class="mb-1.5 px-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+          {{ t('siteHealth.sectionTitle') }}
+        </p>
+
+        <!-- Analyzing -->
+        <div
+          v-if="healthLoading"
+          class="rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-400"
+        >
+          {{ t('siteHealth.analyzing') }}
+        </div>
+
+        <!-- Error state -->
+        <div
+          v-else-if="healthError"
+          class="rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-500"
+        >
+          {{ t('siteHealth.analyzeError') }}
+        </div>
+
+        <!-- Results -->
+        <SiteHealthPanel
+          v-else-if="healthResult"
+          :health="healthResult"
+        />
       </div>
     </template>
   </div>
