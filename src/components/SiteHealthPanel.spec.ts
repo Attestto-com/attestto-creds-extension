@@ -46,6 +46,10 @@ const CLEAN_RESULT: SiteHealthResult = {
     externalLinks: 4,
     insecureLinks: 0,
   },
+  comments: { total: 0, flaggedCount: 0, samples: [] },
+  thirdPartyLinks: { internalCount: 0, externalCount: 0, govCount: 0, nonGovExternalCount: 0, thirdPartyResourceCount: 0, govHostWithNonGovResources: false },
+  scripts: { externalFirstParty: 0, externalThirdParty: 0, externalThirdPartyNonGov: 0, inlineCount: 0, govHostWithNonGovScripts: false },
+  techStack: { detectedPlatforms: [], jsFramework: null, versionDisclosed: false, outdatedHint: false, generatorMetaValue: null },
 }
 
 const PROBLEM_RESULT: SiteHealthResult = {
@@ -79,6 +83,10 @@ const PROBLEM_RESULT: SiteHealthResult = {
     externalLinks: 10,
     insecureLinks: 4,
   },
+  comments: { total: 0, flaggedCount: 0, samples: [] },
+  thirdPartyLinks: { internalCount: 0, externalCount: 0, govCount: 0, nonGovExternalCount: 0, thirdPartyResourceCount: 0, govHostWithNonGovResources: false },
+  scripts: { externalFirstParty: 0, externalThirdParty: 0, externalThirdPartyNonGov: 0, inlineCount: 0, govHostWithNonGovScripts: false },
+  techStack: { detectedPlatforms: [], jsFramework: null, versionDisclosed: false, outdatedHint: false, generatorMetaValue: null },
 }
 
 function mountPanel(health: SiteHealthResult) {
@@ -200,5 +208,57 @@ describe('SiteHealthPanel', () => {
       const w = mountPanel(PROBLEM_RESULT)
       expect(w.text()).toContain('4')
     })
+  })
+})
+
+const SUPPLY_CHAIN_RESULT: SiteHealthResult = {
+  security: { isHttps: true, mixedContentCount: 0, unsafeFormCount: 0, passwordOnHttp: false, blankNoOpenerCount: 0 },
+  a11y: { imgMissingAlt: 0, imgTotal: 0, inputMissingLabel: 0, missingHtmlLang: false, h1Count: 1, headingLevelsSkipped: false, hasAriaLandmarks: true },
+  meta: { hasTitle: true, titleLength: 20, hasMetaDescription: false, hasCanonical: false, hasFavicon: false, hasOpenGraph: false },
+  links: { totalLinks: 0, internalLinks: 0, externalLinks: 0, insecureLinks: 0 },
+  comments: { total: 0, flaggedCount: 0, samples: [] },
+  thirdPartyLinks: { internalCount: 0, externalCount: 0, govCount: 0, nonGovExternalCount: 0, thirdPartyResourceCount: 0, govHostWithNonGovResources: false },
+  scripts: { externalFirstParty: 1, externalThirdParty: 2, externalThirdPartyNonGov: 2, inlineCount: 1, govHostWithNonGovScripts: true },
+  techStack: { detectedPlatforms: [], jsFramework: null, versionDisclosed: false, outdatedHint: false, generatorMetaValue: null },
+}
+
+const TECH_STACK_RESULT: SiteHealthResult = {
+  security: { isHttps: true, mixedContentCount: 0, unsafeFormCount: 0, passwordOnHttp: false, blankNoOpenerCount: 0 },
+  a11y: { imgMissingAlt: 0, imgTotal: 0, inputMissingLabel: 0, missingHtmlLang: false, h1Count: 1, headingLevelsSkipped: false, hasAriaLandmarks: false },
+  meta: { hasTitle: true, titleLength: 20, hasMetaDescription: false, hasCanonical: false, hasFavicon: false, hasOpenGraph: false },
+  links: { totalLinks: 0, internalLinks: 0, externalLinks: 0, insecureLinks: 0 },
+  comments: { total: 0, flaggedCount: 0, samples: [] },
+  thirdPartyLinks: { internalCount: 0, externalCount: 0, govCount: 0, nonGovExternalCount: 0, thirdPartyResourceCount: 0, govHostWithNonGovResources: false },
+  scripts: { externalFirstParty: 0, externalThirdParty: 0, externalThirdPartyNonGov: 0, inlineCount: 0, govHostWithNonGovScripts: false },
+  techStack: { detectedPlatforms: ['wordpress'], jsFramework: null, versionDisclosed: true, outdatedHint: false, generatorMetaValue: 'WordPress 5.9.3' },
+}
+
+describe('supply chain section', () => {
+  it('renders the supply chain section', () => {
+    const w = mountPanel(SUPPLY_CHAIN_RESULT)
+    expect(w.text()).toContain(en.siteHealth.supplyChain.title)
+  })
+
+  it('shows non-gov scripts on gov host warning when govHostWithNonGovScripts is true', () => {
+    const w = mountPanel(SUPPLY_CHAIN_RESULT)
+    expect(w.text()).toContain(en.siteHealth.supplyChain.nonGovScriptsOnGov)
+  })
+})
+
+describe('page internals section', () => {
+  it('renders the page internals section', () => {
+    const w = mountPanel(TECH_STACK_RESULT)
+    expect(w.text()).toContain(en.siteHealth.pageInternals.title)
+  })
+
+  it('shows detected platforms including wordpress', () => {
+    const w = mountPanel(TECH_STACK_RESULT)
+    expect(w.text()).toContain('wordpress')
+  })
+
+  it('shows version disclosure warning when versionDisclosed is true', () => {
+    const w = mountPanel(TECH_STACK_RESULT)
+    expect(w.text()).toContain(en.siteHealth.pageInternals.versionDisclosed)
+    expect(w.text()).toContain('WordPress 5.9.3')
   })
 })

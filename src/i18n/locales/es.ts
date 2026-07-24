@@ -402,6 +402,22 @@ export default {
       external: 'Externos',
       insecure: 'Inseguros (http://)',
     },
+    supplyChain: {
+      title: 'Cadena de suministro',
+      thirdPartyScripts: 'Scripts de terceros',
+      nonGovScriptsOnGov: 'Scripts no gubernamentales en sitio gov',
+      inlineScripts: 'Scripts en línea',
+      nonGovResourcesOnGov: 'Recursos no gubernamentales en sitio gov',
+    },
+    pageInternals: {
+      title: 'Internos de página',
+      htmlComments: 'Comentarios HTML',
+      flaggedComments: 'Comentarios marcados',
+      commentSample: 'Muestra',
+      techStack: 'Plataforma detectada',
+      versionDisclosed: 'Versión expuesta en la página',
+      noneDetected: 'Ninguno detectado',
+    },
   },
 
   formats: {
