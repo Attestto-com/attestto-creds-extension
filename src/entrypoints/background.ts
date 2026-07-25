@@ -651,6 +651,8 @@ export default defineBackground(() => {
     vault.ed25519PrivateKeyJwk = privateKeyJwk
     vault.ed25519PublicKeyB64 = publicKeyB64
     await writeVault(vault)
+    // Mirror the public Ed25519 key so the popup/consumers see it.
+    await syncPublicVault(vault)
 
     return { privateKey: keyPair.privateKey, publicKeyB64 }
   }
@@ -1164,6 +1166,9 @@ export default defineBackground(() => {
     vault.did = publicJwkToDid(newPublicJwk)
 
     await writeVault(vault)
+    // Mirror the rotated did:jwk into the public vault, or hasIdentity() (auth
+    // fail-fast) and the popup keep reading a stale/empty did after rotation.
+    await syncPublicVault(vault)
 
     const newPublicKeyJwk: JsonWebKey = {
       kty: newPublicJwk.kty,
@@ -1293,6 +1298,9 @@ export default defineBackground(() => {
       vault.did = publicJwkToDid(publicJwk)
 
       await writeVault(vault)
+      // Mirror the restored did:jwk into the public vault, or hasIdentity()
+      // (auth fail-fast) and the popup keep reading an empty did after recovery.
+      await syncPublicVault(vault)
       sendKeyRestoreResponse(senderTabId, restoreReq.requestId, null)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Key restoration failed'
@@ -1443,6 +1451,7 @@ export default defineBackground(() => {
             if (vault) {
               vault.linkedSolanaAddress = address
               await writeVault(vault)
+              await syncPublicVault(vault)
             }
             sendResponse({ ok: true })
           })
@@ -1476,6 +1485,7 @@ export default defineBackground(() => {
           if (vault) {
             vault.proofRequests = [...(vault.proofRequests ?? []), proofRequest]
             await writeVault(vault)
+            await syncPublicVault(vault)
           }
         })
 
@@ -1510,6 +1520,7 @@ export default defineBackground(() => {
           if (vault) {
             vault.preparedPresentations = [...(vault.preparedPresentations ?? []), prep]
             await writeVault(vault)
+            await syncPublicVault(vault)
           }
           sendResponse({ ok: true, preparedId: prep.id })
         })
