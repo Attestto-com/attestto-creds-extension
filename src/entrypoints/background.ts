@@ -29,6 +29,19 @@ import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
 import { fetchCertScan, submitThreatReport } from '@/api/backend-client'
 
+/**
+ * Fire-and-forget message to a page tab's content script.
+ *
+ * The tab may have closed or navigated between when its id was captured and
+ * now — `chrome.tabs.sendMessage` then rejects with "No tab with id: N", an
+ * expected race, not a failure. Swallow it so it doesn't surface as an
+ * "Unchecked runtime.lastError" in the service-worker console. Callers here
+ * never read the response (the page receives it via the content-script bridge).
+ */
+function notifyTab(tabId: number, message: unknown): void {
+  void chrome.tabs.sendMessage(tabId, message).catch(() => {})
+}
+
 export default defineBackground(() => {
   // ── Toolbar trust state (ATT-727) ──────────────────
   // Wires per-tab icon tinting + badge + RED-state notifications. Reads from
@@ -330,7 +343,7 @@ export default defineBackground(() => {
 
   function sendSigningErrorToTab(tabId: number | null, requestId: string, error: string): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'SIGN_DOCUMENT_RESPONSE',
         payload: { requestId, error },
       })
@@ -343,7 +356,7 @@ export default defineBackground(() => {
     data: { did: string; signature: string; publicKeyJwk: Record<string, string>; timestamp: string },
   ): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'SIGN_DOCUMENT_RESPONSE',
         payload: { requestId, ...data },
       })
@@ -488,7 +501,7 @@ export default defineBackground(() => {
 
   function sendAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'AUTH_RESPONSE',
         payload: { requestId, error },
       })
@@ -501,7 +514,7 @@ export default defineBackground(() => {
     data: { did: string; signature: string; nonce: string; timestamp: string; publicKeyJwk: Record<string, string> },
   ): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'AUTH_RESPONSE',
         payload: { requestId, ...data },
       })
@@ -516,7 +529,7 @@ export default defineBackground(() => {
 
   function sendCwAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'CW_AUTH_RESPONSE',
         payload: { requestId, error },
       })
@@ -529,7 +542,7 @@ export default defineBackground(() => {
     response: WalletAuthResponse,
   ): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'CW_AUTH_RESPONSE',
         payload: { requestId, response },
       })
@@ -584,7 +597,7 @@ export default defineBackground(() => {
 
   function sendAttesttoPdfErrorToTab(tabId: number | null, requestId: string, error: string): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'SIGN_ATTESTTO_PDF_RESPONSE',
         payload: { requestId, error },
       })
@@ -597,7 +610,7 @@ export default defineBackground(() => {
     data: { did: string; signature: string; publicKey: string },
   ): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'SIGN_ATTESTTO_PDF_RESPONSE',
         payload: { requestId, ...data },
       })
@@ -702,7 +715,7 @@ export default defineBackground(() => {
 
   function sendPaymentErrorToTab(tabId: number | null, requestId: string, error: string): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'PAYMENT_RESPONSE',
         payload: { requestId, error },
       })
@@ -715,7 +728,7 @@ export default defineBackground(() => {
     data: { did: string; signature: string; publicKeyJwk: Record<string, string> },
   ): void {
     if (tabId) {
-      chrome.tabs.sendMessage(tabId, {
+      notifyTab(tabId, {
         type: 'PAYMENT_RESPONSE',
         payload: { requestId, ...data },
       })
@@ -972,7 +985,7 @@ export default defineBackground(() => {
       console.warn('[Attestto ID] Dropping CHAPI error — no originating tabId', { requestId })
       return
     }
-    chrome.tabs.sendMessage(tabId, {
+    notifyTab(tabId, {
       type: 'CREDENTIAL_API_RESPONSE',
       payload: { requestId, error },
     })
@@ -994,7 +1007,7 @@ export default defineBackground(() => {
       })
 
       if (pending.senderTabId) {
-        chrome.tabs.sendMessage(pending.senderTabId, {
+        notifyTab(pending.senderTabId, {
           type: 'CREDENTIAL_API_RESPONSE',
           payload: { requestId: pending.apiReq.requestId, presentation: vp },
         })
@@ -1119,7 +1132,7 @@ export default defineBackground(() => {
       console.warn('[Attestto ID] Dropping DID_SYNC_RESPONSE — no originating tabId', { requestId })
       return
     }
-    chrome.tabs.sendMessage(tabId, {
+    notifyTab(tabId, {
       type: 'DID_SYNC_RESPONSE',
       payload: { requestId, publicKeyJwk, holderDid, error },
     })
@@ -1186,7 +1199,7 @@ export default defineBackground(() => {
       console.warn('[Attestto ID] Dropping KEY_ROTATE_RESPONSE — no originating tabId', { requestId })
       return
     }
-    chrome.tabs.sendMessage(tabId, {
+    notifyTab(tabId, {
       type: 'KEY_ROTATE_RESPONSE',
       payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
     })
@@ -1243,7 +1256,7 @@ export default defineBackground(() => {
       console.warn('[Attestto ID] Dropping KEY_BACKUP_RESPONSE — no originating tabId', { requestId })
       return
     }
-    chrome.tabs.sendMessage(tabId, {
+    notifyTab(tabId, {
       type: 'KEY_BACKUP_RESPONSE',
       payload: { requestId, shares, error },
     })
@@ -1309,7 +1322,7 @@ export default defineBackground(() => {
       console.warn('[Attestto ID] Dropping KEY_RESTORE_RESPONSE — no originating tabId', { requestId })
       return
     }
-    chrome.tabs.sendMessage(tabId, {
+    notifyTab(tabId, {
       type: 'KEY_RESTORE_RESPONSE',
       payload: { requestId, success: error === null, error },
     })
@@ -1322,7 +1335,7 @@ export default defineBackground(() => {
       console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE error — no originating tabId', { requestId })
       return
     }
-    chrome.tabs.sendMessage(tabId, {
+    notifyTab(tabId, {
       type: 'RESHARE_STORED_VP_RESPONSE',
       payload: { requestId, error },
     })
@@ -1593,7 +1606,7 @@ export default defineBackground(() => {
           }))
 
           if (listSenderTabId) {
-            chrome.tabs.sendMessage(listSenderTabId, {
+            notifyTab(listSenderTabId, {
               type: 'LIST_STORED_CREDENTIALS_RESPONSE',
               payload: { requestId: listReqId, credentials: creds },
             })
@@ -1638,7 +1651,7 @@ export default defineBackground(() => {
           }
 
           if (reshareSenderTabId) {
-            chrome.tabs.sendMessage(reshareSenderTabId, {
+            notifyTab(reshareSenderTabId, {
               type: 'RESHARE_STORED_VP_RESPONSE',
               payload: {
                 requestId: resharePayload.requestId,
@@ -2290,7 +2303,7 @@ export default defineBackground(() => {
 
             // Send VP back to the original requesting tab (not the popup)
             if (pending.senderTabId) {
-              chrome.tabs.sendMessage(pending.senderTabId, {
+              notifyTab(pending.senderTabId, {
                 type: 'CREDENTIAL_API_RESPONSE',
                 payload: { requestId: pending.apiReq.requestId, presentation: vp },
               })
