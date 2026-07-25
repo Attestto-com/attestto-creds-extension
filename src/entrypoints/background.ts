@@ -14,7 +14,6 @@ import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { parseProofRequest } from '@/services/didcomm'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
-import { hasIdentity } from '@/utils/identity-presence'
 import type { LinkedIdentity } from '@/stores/wallet'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
@@ -375,20 +374,13 @@ export default defineBackground(() => {
     authReq: { requestId: string; nonce: string; timestamp: string; origin: string },
     senderTabId: number | null,
   ): Promise<void> {
-    // Fail fast when there is no identity to sign with. Opening the approval
-    // popup with an empty identity list leaves the requesting page spinning
-    // until its 30s timeout (the "Waiting for approval…" hang). Reply
-    // immediately with an actionable message so the site can prompt the user
-    // to create a Digital ID instead.
-    if (!hasIdentity(await readPublicVault())) {
-      sendAuthErrorToTab(
-        senderTabId,
-        authReq.requestId,
-        'No Digital ID found. Open the Attestto extension and select "Set up identity" to create one, then try again.',
-      )
-      return
-    }
-
+    // Always open the approval popup — including when no identity exists yet.
+    // The popup's "No DID created yet" state offers an in-popup "Create DID"
+    // (createDidAndRetry -> wallet.createDid, which syncs the public vault), so
+    // the user creates a Digital ID and completes sign-in in one flow. An
+    // earlier fail-fast replaced that flow with a dead-end error message on the
+    // page — the popup is fully actionable (Create DID / Cancel), so there is no
+    // empty-list hang.
     pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendAuthErrorToTab)
   }
@@ -474,15 +466,9 @@ export default defineBackground(() => {
     },
     senderTabId: number | null,
   ): Promise<void> {
-    if (!hasIdentity(await readPublicVault())) {
-      sendCwAuthErrorToTab(
-        senderTabId,
-        authReq.requestId,
-        'No Digital ID found. Open the Attestto extension and select "Set up identity" to create one, then try again.',
-      )
-      return
-    }
-
+    // No fail-fast on missing identity — open the popup so its "Create DID"
+    // flow can mint one and complete the sign-in in one step (see
+    // handleAuthRequest). The popup is fully actionable, so no empty-list hang.
     pendingAuthRequests.set(authReq.requestId, {
       requestId: authReq.requestId,
       nonce: authReq.nonce,
