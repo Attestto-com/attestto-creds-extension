@@ -93,6 +93,17 @@ Loading the dev build does NOT see data created by the prod build (or vice versa
 - Background SW changes require a `chrome://extensions` reload (HMR doesn't restart the service worker). Popup/Vue changes hot-reload via Vite dev server.
 - WXT dev mode opens a fresh Chrome window with the extension auto-loaded — if you can't see your changes, check whether you're looking at the right Chrome window or whether you loaded `.output/chrome-mv3/` (production, stale) instead of `.output/chrome-mv3-dev/`.
 
+## Branch hygiene (no branch left forgotten)
+
+Default branch is `develop`. `feature/*` and `fix/*` branch from `develop`, merge back via PR.
+
+- **Every PR is squash-merged with `--delete-branch`.** The repo also has `delete_branch_on_merge` enabled, so a merged head branch is removed automatically — never leave it behind manually either.
+- **A branch exists only while its PR is open.** No long-lived personal branches. If work stalls, either open a draft PR (so it's tracked) or delete the branch — never leave an orphan with no PR.
+- **Dependabot PRs are merged or closed within the week**, not left to pile up. An open `dependabot/*` branch with no decision is debt.
+- **Before starting work, prune first:** `git fetch --prune`, then delete any local branch whose upstream is gone (`git branch -v | grep gone`).
+- **`main`/`master` are frozen legacy** (pre-gitflow, no common ancestor with `develop`). Do not branch from them, PR into them, or resurrect them. Retire only with explicit owner sign-off after confirming nothing (Web Store listing, CI, DNS) points at them.
+- When you finish any branch task, the last step is: confirm the branch is deleted. A merged PR with a surviving branch is an incomplete task.
+
 ## Key files
 
 | File | Purpose |
