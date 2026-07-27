@@ -358,6 +358,15 @@ async function approve() {
  * preserves any existing vault rather than replacing it.
  */
 async function setupPasskeyAndRetry() {
+  // If the passphrase field is showing, this authenticator lacks PRF and a
+  // recovery passphrase is REQUIRED. Enrolling with an empty passphrase would
+  // just re-create a passkey, fail PRF again, and loop back here (reads as
+  // "nothing happened"). Guard it so the user gets a clear ask instead.
+  if (showPassphraseField.value && passphrase.value.trim().length < 8) {
+    error.value = 'Enter a recovery passphrase of at least 8 characters, then set up the passkey.'
+    return
+  }
+
   settingUpPasskey.value = true
   error.value = null
   try {
