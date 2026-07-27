@@ -36,6 +36,11 @@ const resetConfirm = ref(false)
 const showPasskeySetup = ref(false)
 const settingUpPasskey = ref(false)
 
+// Create-DID state — the "No DID yet" branch now enrolls a passkey (createDid
+// is passkey-first), so it may need a recovery passphrase on non-PRF devices.
+const creatingDid = ref(false)
+const showCreateDidPassphrase = ref(false)
+
 /** Payment mode — detected from URL params */
 const isPayment = ref(false)
 const paymentAmount = ref(0)
@@ -419,9 +424,38 @@ async function deny() {
 }
 
 async function createDidAndRetry() {
-  await wallet.createDid()
-  if (wallet.did) {
-    selectedDid.value = wallet.did
+  // createDid is passkey-first: on a non-PRF authenticator it needs a recovery
+  // passphrase. Once the field is showing, require it rather than looping on an
+  // empty value (which would re-prompt the authenticator and fail PRF again).
+  if (showCreateDidPassphrase.value && passphrase.value.trim().length < 8) {
+    error.value = 'Enter a recovery passphrase of at least 8 characters, then create your DID.'
+    return
+  }
+
+  creatingDid.value = true
+  error.value = null
+  try {
+    await wallet.createDid(showCreateDidPassphrase.value ? passphrase.value : undefined)
+    if (wallet.did) {
+      selectedDid.value = wallet.did
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Could not create your DID'
+    // Authenticator lacks PRF (or an existing passphrase vault) — reveal the
+    // passphrase field and let the user set/enter one, then retry.
+    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE') || msg.startsWith('PASSPHRASE_REQUIRED')) {
+      showCreateDidPassphrase.value = true
+      error.value = 'This device needs a recovery passphrase to protect your wallet. Enter one (8+ characters), then create your DID.'
+    } else if (
+      msg.startsWith('Passkey registration cancelled') ||
+      (err instanceof DOMException && err.name === 'NotAllowedError')
+    ) {
+      error.value = 'Passkey setup was cancelled. Try again to continue.'
+    } else {
+      error.value = msg
+    }
+  } finally {
+    creatingDid.value = false
   }
 }
 
@@ -611,14 +645,38 @@ async function handleResetVault() {
       <div class="rounded-lg border border-amber-700/50 bg-amber-950/30 p-4 text-center space-y-3">
         <KeyIcon class="mx-auto h-6 w-6 text-amber-400" />
         <p class="text-xs text-amber-200">No DID created yet</p>
+        <p class="text-[10px] text-slate-400 leading-relaxed">
+          Creating your DID also sets up a device passkey to protect it. Your keys never leave this device.
+        </p>
+      </div>
+
+      <!-- Recovery passphrase — shown when this authenticator lacks PRF and
+           createDid needs a passphrase to protect the vault. -->
+      <div v-if="showCreateDidPassphrase" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
+          Recovery passphrase
+        </label>
+        <input
+          v-model="passphrase"
+          type="password"
+          autocomplete="new-password"
+          placeholder="Min 8 characters"
+          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
+          @keyup.enter="createDidAndRetry"
+        />
+      </div>
+
+      <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
+        <p class="text-xs text-red-300">{{ error }}</p>
       </div>
 
       <div class="grid grid-cols-2 gap-2">
         <button
-          class="rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-indigo-500"
+          class="rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+          :disabled="creatingDid"
           @click="createDidAndRetry()"
         >
-          Create DID
+          {{ creatingDid ? 'Creating…' : 'Create DID' }}
         </button>
         <button
           class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800"

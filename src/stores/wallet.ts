@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { encryptVault, generateEncryptionKey } from '@/utils/crypto'
+import { encryptVault } from '@/utils/crypto'
 import { readVault, writeVault, readPublicVault, syncPublicVault } from '@/utils/vault'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
 import { setupPasskey, unlockWithPasskey, hasPasskey, getKdfMethod } from '@/utils/webauthn'
@@ -409,13 +409,38 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
-   * Create a new DID key pair, encrypt, and persist.
+   * Create a new DID key pair, encrypt, and persist — **passkey-first**.
    *
    * Generates a proper `did:jwk` — self-resolving DID where the public key
    * is encoded in the identifier itself. Any Universal Resolver can construct
    * the DID Document without a network call.
+   *
+   * The vault is encrypted under a **passkey-derived key**, never a throwaway
+   * random key. This restores the pre-ATT-724 invariant that every vault has a
+   * registered passkey: before ATT-724 the popup forced `setup()` (which
+   * enrolls a passkey) before any DID could exist, so signing always had a
+   * credential to verify against. ATT-724 removed that gate, and this method —
+   * reachable from the "Create DID" buttons — used to mint a vault under a
+   * random key with NO passkey. Post-ATT-1098 (which requires a fresh
+   * user-verification for every signature) those vaults could unlock but never
+   * sign. Enrolling the passkey here closes that gap at the source.
+   *
+   * @param passphrase  Required only when the authenticator lacks WebAuthn PRF
+   *                    — surfaced as a tagged `PRF_REQUIRES_PASSPHRASE` error
+   *                    (fresh enroll) or `PASSPHRASE_REQUIRED` (existing
+   *                    passphrase-KDF vault), same contract as `setup()`/
+   *                    `unlock()`. Callers should reveal a passphrase field and
+   *                    retry.
    */
-  async function createDid(): Promise<void> {
+  async function createDid(passphrase?: string): Promise<void> {
+    // Obtain the vault key from the passkey. Reuse an already-registered
+    // credential if one exists; otherwise enrol a new one. Both cache the
+    // derived key in session storage, so the encrypt below is under the key
+    // future unlocks reproduce.
+    const aesKeyBase64 = (await hasPasskey())
+      ? await unlockWithPasskey(passphrase)
+      : (await setupPasskey(passphrase)).aesKeyBase64
+
     const keyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
       true,
@@ -431,8 +456,8 @@ export const useWalletStore = defineStore('wallet', () => {
     did.value = newDid
     _privateKeyJwk = privateJwk
     isUnlocked.value = true
+    isSetUp.value = true
 
-    const encKey = await generateEncryptionKey()
     const vault: VaultData = {
       did: newDid,
       privateKeyJwk: privateJwk,
@@ -444,10 +469,9 @@ export const useWalletStore = defineStore('wallet', () => {
       verificationMethod: vm,
       linkedIdentities: [],
     }
-    const encrypted = await encryptVault(vault, encKey)
+    const encrypted = await encryptVault(vault, aesKeyBase64)
 
     await chrome.storage.local.set({ [STORAGE_KEYS.VAULT]: encrypted })
-    await chrome.storage.session.set({ [STORAGE_KEYS.SESSION_KEY]: encKey })
     await syncPublicVault(vault)
     isLoaded.value = true
   }
