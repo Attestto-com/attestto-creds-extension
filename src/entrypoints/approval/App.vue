@@ -30,6 +30,12 @@ const showPassphraseField = ref(false)
 const showResetVault = ref(false)
 const resetConfirm = ref(false)
 
+// Passkey-setup state — revealed when signing is blocked because no passkey is
+// registered on this device (ATT-1098 gate). Offers an in-place enroll so the
+// approval isn't a dead end.
+const showPasskeySetup = ref(false)
+const settingUpPasskey = ref(false)
+
 /** Payment mode — detected from URL params */
 const isPayment = ref(false)
 const paymentAmount = ref(0)
@@ -331,6 +337,7 @@ async function approve() {
     // tagged/DOMException text is not useful to the person approving.
     if (msg.startsWith('USER_VERIFICATION_UNAVAILABLE')) {
       error.value = 'No passkey is set up on this device to verify you. Set up your wallet passkey to sign.'
+      showPasskeySetup.value = true
     } else if (
       msg.startsWith('USER_VERIFICATION_CANCELLED') ||
       (err instanceof DOMException && err.name === 'NotAllowedError')
@@ -341,6 +348,41 @@ async function approve() {
     }
   } finally {
     approving.value = false
+  }
+}
+
+/**
+ * Enroll a wallet passkey in place, then retry the approval. Reached from the
+ * "Set up passkey" button shown when signing was blocked by the ATT-1098 gate
+ * (no passkey registered). Uses the non-destructive `enrollPasskey` — it
+ * preserves any existing vault rather than replacing it.
+ */
+async function setupPasskeyAndRetry() {
+  settingUpPasskey.value = true
+  error.value = null
+  try {
+    await wallet.enrollPasskey(showPassphraseField.value ? passphrase.value : undefined)
+    // Passkey now registered — clear the gate state and re-run the approval,
+    // which will find the credential and pass requireUserVerification().
+    showPasskeySetup.value = false
+    await approve()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Passkey setup failed'
+    // Authenticator lacks PRF — enroll needs a recovery passphrase. Reveal the
+    // existing passphrase field and let the user set one, then retry.
+    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE')) {
+      showPassphraseField.value = true
+      error.value = 'This device needs a recovery passphrase to protect your vault. Enter one, then set up the passkey again.'
+    } else if (
+      msg.startsWith('Passkey registration cancelled') ||
+      (err instanceof DOMException && err.name === 'NotAllowedError')
+    ) {
+      error.value = 'Passkey setup was cancelled. Try again to continue.'
+    } else {
+      error.value = msg
+    }
+  } finally {
+    settingUpPasskey.value = false
   }
 }
 
@@ -670,6 +712,24 @@ async function handleResetVault() {
       <!-- Error -->
       <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
         <p class="text-xs text-red-300">{{ error }}</p>
+      </div>
+
+      <!-- Passkey setup — shown when signing was blocked because no passkey is
+           registered on this device. Enrolls in place (preserves the vault) and
+           retries the approval, so the prompt is no longer a dead end. -->
+      <div v-if="showPasskeySetup" class="rounded-lg border border-purple-700/50 bg-purple-950/20 p-3 space-y-2">
+        <p class="text-[10px] text-slate-400 leading-relaxed">
+          Set up a device passkey (Touch ID, Windows Hello, or your device PIN) to verify it's you before signing.
+          Your keys never leave this device.
+        </p>
+        <button
+          class="w-full rounded-md bg-purple-600 px-3 py-2 text-xs font-medium text-white hover:bg-purple-500 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          :disabled="settingUpPasskey || approving"
+          @click="setupPasskeyAndRetry"
+        >
+          <FingerPrintIcon class="h-4 w-4" />
+          {{ settingUpPasskey ? 'Setting up…' : 'Set up passkey' }}
+        </button>
       </div>
 
       <!-- Reset vault panel — only when unlock returned PRF_UNAVAILABLE -->
