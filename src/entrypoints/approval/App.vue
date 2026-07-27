@@ -30,6 +30,17 @@ const showPassphraseField = ref(false)
 const showResetVault = ref(false)
 const resetConfirm = ref(false)
 
+// Passkey-setup state — revealed when signing is blocked because no passkey is
+// registered on this device (ATT-1098 gate). Offers an in-place enroll so the
+// approval isn't a dead end.
+const showPasskeySetup = ref(false)
+const settingUpPasskey = ref(false)
+
+// Create-DID state — the "No DID yet" branch now enrolls a passkey (createDid
+// is passkey-first), so it may need a recovery passphrase on non-PRF devices.
+const creatingDid = ref(false)
+const showCreateDidPassphrase = ref(false)
+
 /** Payment mode — detected from URL params */
 const isPayment = ref(false)
 const paymentAmount = ref(0)
@@ -331,6 +342,7 @@ async function approve() {
     // tagged/DOMException text is not useful to the person approving.
     if (msg.startsWith('USER_VERIFICATION_UNAVAILABLE')) {
       error.value = 'No passkey is set up on this device to verify you. Set up your wallet passkey to sign.'
+      showPasskeySetup.value = true
     } else if (
       msg.startsWith('USER_VERIFICATION_CANCELLED') ||
       (err instanceof DOMException && err.name === 'NotAllowedError')
@@ -341,6 +353,50 @@ async function approve() {
     }
   } finally {
     approving.value = false
+  }
+}
+
+/**
+ * Enroll a wallet passkey in place, then retry the approval. Reached from the
+ * "Set up passkey" button shown when signing was blocked by the ATT-1098 gate
+ * (no passkey registered). Uses the non-destructive `enrollPasskey` — it
+ * preserves any existing vault rather than replacing it.
+ */
+async function setupPasskeyAndRetry() {
+  // If the passphrase field is showing, this authenticator lacks PRF and a
+  // recovery passphrase is REQUIRED. Enrolling with an empty passphrase would
+  // just re-create a passkey, fail PRF again, and loop back here (reads as
+  // "nothing happened"). Guard it so the user gets a clear ask instead.
+  if (showPassphraseField.value && passphrase.value.trim().length < 8) {
+    error.value = 'Enter a recovery passphrase of at least 8 characters, then set up the passkey.'
+    return
+  }
+
+  settingUpPasskey.value = true
+  error.value = null
+  try {
+    await wallet.enrollPasskey(showPassphraseField.value ? passphrase.value : undefined)
+    // Passkey now registered — clear the gate state and re-run the approval,
+    // which will find the credential and pass requireUserVerification().
+    showPasskeySetup.value = false
+    await approve()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Passkey setup failed'
+    // Authenticator lacks PRF — enroll needs a recovery passphrase. Reveal the
+    // existing passphrase field and let the user set one, then retry.
+    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE')) {
+      showPassphraseField.value = true
+      error.value = 'This device needs a recovery passphrase to protect your vault. Enter one, then set up the passkey again.'
+    } else if (
+      msg.startsWith('Passkey registration cancelled') ||
+      (err instanceof DOMException && err.name === 'NotAllowedError')
+    ) {
+      error.value = 'Passkey setup was cancelled. Try again to continue.'
+    } else {
+      error.value = msg
+    }
+  } finally {
+    settingUpPasskey.value = false
   }
 }
 
@@ -368,9 +424,38 @@ async function deny() {
 }
 
 async function createDidAndRetry() {
-  await wallet.createDid()
-  if (wallet.did) {
-    selectedDid.value = wallet.did
+  // createDid is passkey-first: on a non-PRF authenticator it needs a recovery
+  // passphrase. Once the field is showing, require it rather than looping on an
+  // empty value (which would re-prompt the authenticator and fail PRF again).
+  if (showCreateDidPassphrase.value && passphrase.value.trim().length < 8) {
+    error.value = 'Enter a recovery passphrase of at least 8 characters, then create your DID.'
+    return
+  }
+
+  creatingDid.value = true
+  error.value = null
+  try {
+    await wallet.createDid(showCreateDidPassphrase.value ? passphrase.value : undefined)
+    if (wallet.did) {
+      selectedDid.value = wallet.did
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Could not create your DID'
+    // Authenticator lacks PRF (or an existing passphrase vault) — reveal the
+    // passphrase field and let the user set/enter one, then retry.
+    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE') || msg.startsWith('PASSPHRASE_REQUIRED')) {
+      showCreateDidPassphrase.value = true
+      error.value = 'This device needs a recovery passphrase to protect your wallet. Enter one (8+ characters), then create your DID.'
+    } else if (
+      msg.startsWith('Passkey registration cancelled') ||
+      (err instanceof DOMException && err.name === 'NotAllowedError')
+    ) {
+      error.value = 'Passkey setup was cancelled. Try again to continue.'
+    } else {
+      error.value = msg
+    }
+  } finally {
+    creatingDid.value = false
   }
 }
 
@@ -560,14 +645,38 @@ async function handleResetVault() {
       <div class="rounded-lg border border-amber-700/50 bg-amber-950/30 p-4 text-center space-y-3">
         <KeyIcon class="mx-auto h-6 w-6 text-amber-400" />
         <p class="text-xs text-amber-200">No DID created yet</p>
+        <p class="text-[10px] text-slate-400 leading-relaxed">
+          Creating your DID also sets up a device passkey to protect it. Your keys never leave this device.
+        </p>
+      </div>
+
+      <!-- Recovery passphrase — shown when this authenticator lacks PRF and
+           createDid needs a passphrase to protect the vault. -->
+      <div v-if="showCreateDidPassphrase" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
+        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
+          Recovery passphrase
+        </label>
+        <input
+          v-model="passphrase"
+          type="password"
+          autocomplete="new-password"
+          placeholder="Min 8 characters"
+          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
+          @keyup.enter="createDidAndRetry"
+        />
+      </div>
+
+      <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
+        <p class="text-xs text-red-300">{{ error }}</p>
       </div>
 
       <div class="grid grid-cols-2 gap-2">
         <button
-          class="rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-indigo-500"
+          class="rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+          :disabled="creatingDid"
           @click="createDidAndRetry()"
         >
-          Create DID
+          {{ creatingDid ? 'Creating…' : 'Create DID' }}
         </button>
         <button
           class="rounded-lg border border-slate-700 px-3 py-2.5 text-xs font-medium text-slate-300 hover:bg-slate-800"
@@ -670,6 +779,24 @@ async function handleResetVault() {
       <!-- Error -->
       <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
         <p class="text-xs text-red-300">{{ error }}</p>
+      </div>
+
+      <!-- Passkey setup — shown when signing was blocked because no passkey is
+           registered on this device. Enrolls in place (preserves the vault) and
+           retries the approval, so the prompt is no longer a dead end. -->
+      <div v-if="showPasskeySetup" class="rounded-lg border border-purple-700/50 bg-purple-950/20 p-3 space-y-2">
+        <p class="text-[10px] text-slate-400 leading-relaxed">
+          Set up a device passkey (Touch ID, Windows Hello, or your device PIN) to verify it's you before signing.
+          Your keys never leave this device.
+        </p>
+        <button
+          class="w-full rounded-md bg-purple-600 px-3 py-2 text-xs font-medium text-white hover:bg-purple-500 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          :disabled="settingUpPasskey || approving"
+          @click="setupPasskeyAndRetry"
+        >
+          <FingerPrintIcon class="h-4 w-4" />
+          {{ settingUpPasskey ? 'Setting up…' : 'Set up passkey' }}
+        </button>
       </div>
 
       <!-- Reset vault panel — only when unlock returned PRF_UNAVAILABLE -->
