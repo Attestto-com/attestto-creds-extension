@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useWalletStore } from '@/stores/wallet'
 import { getPreferredIdentity, setPreferredIdentity } from '@/utils/site-identity-prefs'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
+import { requireUserVerification, getKdfMethod } from '@/utils/webauthn'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 import {
   ShieldCheckIcon,
@@ -249,9 +250,14 @@ async function approve() {
 
     // Unlock the vault at the moment of signing. Vaults set up with a
     // passphrase need it passed here; ones using PRF unlock silently.
+    // Track whether the unlock itself verified the user: a PRF unlock performs a
+    // fresh WebAuthn user-verification to derive the key, which already
+    // satisfies the signing gate below (avoids a double biometric prompt).
+    let unlockProvidedFreshUv = false
     if (!wallet.isUnlocked) {
       try {
         await wallet.unlock(showPassphraseField.value ? passphrase.value : undefined)
+        unlockProvidedFreshUv = (await getKdfMethod()) === 'prf'
       } catch (unlockErr) {
         const msg = unlockErr instanceof Error ? unlockErr.message : 'Unlock failed'
 
@@ -272,6 +278,16 @@ async function approve() {
 
         throw unlockErr
       }
+    }
+
+    // ATT-1098: every signing operation requires a fresh user-verification
+    // bound to this approval. An unlocked vault caches its session key, so
+    // without this a signature could be produced with no human present. Skip
+    // only when the unlock we just performed already verified the user (PRF).
+    // Fail-closed: requireUserVerification throws on cancel/failure and we never
+    // reach the signing dispatch below.
+    if (!unlockProvidedFreshUv) {
+      await requireUserVerification()
     }
 
     const msgType = isAuth.value
@@ -310,7 +326,19 @@ async function approve() {
       error.value = response?.error || 'Approval failed'
     }
   } catch (err) {
-    error.value = err instanceof Error ? err.message : 'Unknown error'
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    // Fail-closed user-verification outcomes get plain-language copy; the raw
+    // tagged/DOMException text is not useful to the person approving.
+    if (msg.startsWith('USER_VERIFICATION_UNAVAILABLE')) {
+      error.value = 'No passkey is set up on this device to verify you. Set up your wallet passkey to sign.'
+    } else if (
+      msg.startsWith('USER_VERIFICATION_CANCELLED') ||
+      (err instanceof DOMException && err.name === 'NotAllowedError')
+    ) {
+      error.value = 'Verification was cancelled. Try again to continue.'
+    } else {
+      error.value = msg
+    }
   } finally {
     approving.value = false
   }

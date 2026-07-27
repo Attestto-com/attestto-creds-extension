@@ -294,6 +294,50 @@ export async function unlockWithPasskey(passphrase?: string): Promise<string> {
   return aesKeyBase64
 }
 
+// ── Signing gate (ATT-1098) ─────────────────────────────
+
+/**
+ * Prove fresh user-verification immediately before a signing operation.
+ *
+ * A WebAuthn assertion over the registered platform credential with
+ * `userVerification: 'required'` forces the authenticator to verify the human
+ * (Touch ID / Windows Hello / device PIN) right now. Unlike `unlockWithPasskey`
+ * this derives no key material and does not touch the PRF extension — the only
+ * thing that matters is that the user was verified for THIS operation. It exists
+ * because an already-unlocked vault caches its session key, so signing would
+ * otherwise proceed with no user present.
+ *
+ * Fail-closed: throws if no credential is registered, or if the user cancels or
+ * the authenticator fails. Callers MUST NOT sign when this throws.
+ */
+export async function requireUserVerification(): Promise<void> {
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID)
+  const credIdBase64 = stored[STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID] as string | undefined
+  if (!credIdBase64) {
+    throw new Error(
+      'USER_VERIFICATION_UNAVAILABLE: no passkey is registered on this device to verify you before signing.',
+    )
+  }
+
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{
+        id: fromBase64Url(credIdBase64),
+        type: 'public-key',
+        transports: ['internal'],
+      }],
+      userVerification: 'required',
+    },
+  }) as PublicKeyCredential | null
+
+  // A null assertion (or a NotAllowedError thrown out of get()) means the user
+  // cancelled or the authenticator did not verify them. Either way, no signature.
+  if (!assertion) {
+    throw new Error('USER_VERIFICATION_CANCELLED: verification was cancelled.')
+  }
+}
+
 // ── Helpers ─────────────────────────────────────────────
 
 /**
