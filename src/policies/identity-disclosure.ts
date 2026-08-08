@@ -72,6 +72,16 @@ export function isSensitiveField(path: string): boolean {
 }
 
 /**
+ * The disclosure tier for a claim path — the enforcement primitive the
+ * `PresentCredentialView` SD-JWT badge is wired to (Story 1.8, FR9). An unlisted
+ * claim defaults to `standard` (fail-safe: never crashes the disclosure UI).
+ * Same source of truth as {@link isSensitiveField}.
+ */
+export function disclosureTierFor(path: string): DisclosureTier {
+  return getFieldPolicy(path)?.tier ?? 'standard'
+}
+
+/**
  * Get all field labels for a list of requested claim paths.
  * Useful for building the consent UI.
  */

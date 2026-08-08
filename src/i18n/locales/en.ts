@@ -117,7 +117,7 @@ export default {
     noDataShared: 'No data was shared with {name}',
     backToCredentials: 'Back to Credentials',
     transport: {
-      didcomm: 'DIDComm v2 (P2P encrypted)',
+      didcomm: 'DIDComm v2',
       pushToVault: 'Push to Vault',
       platform: 'Attestto Platform',
     },

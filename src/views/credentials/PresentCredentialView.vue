@@ -11,6 +11,8 @@ import { useCredentialsStore } from '@/stores/credentials'
 import { useWalletStore } from '@/stores/wallet'
 import { parseSdJwt, decodeDisclosures, createSdJwtPresentation } from '@/services/sdjwt'
 import { createJsonLdVp } from '@/services/jsonld-vp'
+import { disclosureTierFor } from '@/policies/identity-disclosure'
+import type { DisclosureTier } from '@/policies/identity-disclosure'
 import type { StoredCredential } from '@/types/credential'
 
 const route = useRoute()
@@ -19,7 +21,7 @@ const credentialsStore = useCredentialsStore()
 const walletStore = useWalletStore()
 
 const credential = ref<StoredCredential | null>(null)
-const disclosureItems = ref<Array<{ salt: string; claimName: string; claimValue: unknown; selected: boolean }>>([])
+const disclosureItems = ref<Array<{ salt: string; claimName: string; claimValue: unknown; selected: boolean; tier: DisclosureTier }>>([])
 const nonce = ref('')
 const audience = ref('')
 const generatedVp = ref('')
@@ -62,7 +64,11 @@ onMounted(async () => {
     try {
       const parsed = await parseSdJwt(found.raw)
       const decoded = decodeDisclosures(parsed.disclosures)
-      disclosureItems.value = decoded.map((d) => ({ ...d, selected: true }))
+      disclosureItems.value = decoded.map((d) => ({
+        ...d,
+        selected: true,
+        tier: disclosureTierFor(d.claimName),
+      }))
     } catch {
       disclosureItems.value = []
     }
@@ -165,6 +171,14 @@ async function copyToClipboard(): Promise<void> {
             class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
           />
           <span class="text-[11px] text-slate-300">{{ item.claimName }}</span>
+          <span
+            v-if="item.tier === 'sensitive'"
+            data-testid="sensitive-badge"
+            class="text-[9px] font-semibold uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded px-1 py-px"
+            :aria-label="`${item.claimName} is a sensitive field`"
+          >
+            Sensitive
+          </span>
           <span class="text-[10px] text-slate-500 ml-auto truncate max-w-[120px]">
             {{ String(item.claimValue) }}
           </span>
