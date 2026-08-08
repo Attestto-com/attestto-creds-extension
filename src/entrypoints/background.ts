@@ -17,14 +17,11 @@ import { handlePaymentApprove } from '@/background/handlers/payment-approve.hand
 import { handleChapiApprove } from '@/background/handlers/chapi-approve.handler'
 import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestto-pdf-approve.handler'
 import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
-import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createBuildBundle } from '@/background/ctx/build-bundle'
-import { createSigningAdapters, es256RawSign } from '@/background/adapters/signing-adapters'
+import { createSigningAdapters } from '@/background/adapters/signing-adapters'
 import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
 import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
 import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
-import { createChapiVp } from '@/services/jsonld-vp'
-import type { JwsSigner } from '@/services/jws'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
@@ -162,19 +159,6 @@ export default defineBackground(() => {
 
   // ── Pending CHAPI Requests (waiting for user consent via popup) ──
 
-  interface PendingChapiRequest {
-    apiReq: CredentialApiRequestMessage['payload']
-    holderDid: string
-    vcs: Record<string, unknown>[]
-    challenge: string
-    domain: string
-    privateKeyJwk: JsonWebKey
-    verificationMethod?: string
-    senderTabId: number | null
-  }
-
-  const pendingChapiRequests = new Map<string, PendingChapiRequest>()
-
   /** Raw CHAPI requests waiting for the popup to unlock + approve */
   interface PendingChapiRawRequest {
     apiReq: CredentialApiRequestMessage['payload']
@@ -254,20 +238,6 @@ export default defineBackground(() => {
       logPrefix: '[Attestto Sign]',
       reportCancelled: (message) => sendSigningErrorToTab(senderTabId, signReq.requestId, message),
     })
-  }
-
-  /**
-   * A gated JWS signer bound to a P-256 key — the background path for `createChapiVp`
-   * so VP signing routes through the same gate as the extracted APPROVE cores (AD-11c).
-   * The key import + `crypto.subtle.sign` live in the injected `es256RawSign` adapter
-   * (Story 1.13 Phase 1b); the gate wraps it here. This is the LAST `createGatedSign`
-   * left in the entrypoint — it goes when `completeChapiRequest` (the notification-flow
-   * CHAPI path, its only caller) is extracted in a later phase. `assertPresence` is a
-   * passthrough (parity) until the real WebAuthn gate is wired.
-   */
-  function gatedJwsSigner(privateJwk: JsonWebKey): JwsSigner {
-    const sign = createGatedSign({ assertPresence: async () => {}, rawSign: (p) => es256RawSign(privateJwk, p) })
-    return async (signingInput: Uint8Array) => (await sign(signingInput)).bytes
   }
 
   /**
@@ -503,43 +473,17 @@ export default defineBackground(() => {
     )
   }
 
-  // ── Notification Button Handling ───────────────────
-
-  chrome.notifications.onButtonClicked.addListener(
-    (notificationId, buttonIndex) => {
-      // CHAPI consent notifications
-      if (pendingChapiRequests.has(notificationId)) {
-        if (buttonIndex === 0) {
-          completeChapiRequest(notificationId)
-        } else {
-          denyChapiRequest(notificationId)
-        }
-        chrome.notifications.clear(notificationId)
-        return
-      }
-
-      // Credential offer notifications
-      if (buttonIndex === 0) {
-        // Accept
-        acceptCredentialOffer(notificationId).then((credentialId) => {
-          if (credentialId) {
-            chrome.runtime.sendMessage({
-              type: 'CREDENTIAL_ACCEPTED',
-              payload: { credentialId },
-            })
-          }
-        })
-      } else {
-        // Reject
-        pendingOffers.delete(notificationId)
-        chrome.runtime.sendMessage({
-          type: 'CREDENTIAL_REJECTED',
-          payload: { reason: 'User declined' },
-        })
-      }
-      chrome.notifications.clear(notificationId)
-    },
-  )
+  // ── Notification button handling — REMOVED (Story 1.13 Phase 6) ──
+  // There was a `chrome.notifications.onButtonClicked` listener here that
+  // treated EVERY button-bearing notification as a credential offer. No
+  // notification in this extension is a credential offer any more: offers moved
+  // to the approval window (see `openCredentialOfferApprovalWindow`), and the
+  // three flows that DO raise button notifications — PROOF_ACCESS_REQUEST,
+  // DIDCOMM_INBOUND, and the non-CHAPI CREDENTIAL_API_REQUEST — carry ids the
+  // listener never matched. "Review" therefore did nothing and "Dismiss"
+  // broadcast a spurious CREDENTIAL_REJECTED that nothing listens for.
+  // Those three flows still have no notification handler; that is a product gap
+  // filed separately, not something a dead listener was covering.
 
   // ── CHAPI Request Handler ────────────────────────────
 
@@ -565,47 +509,10 @@ export default defineBackground(() => {
     })
   }
 
-  /**
-   * Send a CHAPI error to the originating tab. tabId MUST be the sender.tab.id
-   * captured at request-receipt time — never the active-tab fallback (that would
-   * route the error to whatever tab the user is currently looking at).
-   */
-  async function completeChapiRequest(notifId: string): Promise<void> {
-    const pending = pendingChapiRequests.get(notifId)
-    if (!pending) return
-    pendingChapiRequests.delete(notifId)
-
-    try {
-      const vp = await createChapiVp({
-        credentials: pending.vcs,
-        holderDid: pending.holderDid,
-        sign: gatedJwsSigner(pending.privateKeyJwk),
-        challenge: pending.challenge,
-        domain: pending.domain,
-        verificationMethod: pending.verificationMethod,
-      })
-
-      if (pending.senderTabId) {
-        notifyTab(pending.senderTabId, {
-          type: 'CREDENTIAL_API_RESPONSE',
-          payload: { requestId: pending.apiReq.requestId, presentation: vp },
-        })
-      } else {
-        console.warn('[Attestto ID] Dropping CHAPI VP — no originating tabId', {
-          requestId: pending.apiReq.requestId,
-        })
-      }
-    } catch {
-      sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Failed to build presentation')
-    }
-  }
-
-  function denyChapiRequest(notifId: string): void {
-    const pending = pendingChapiRequests.get(notifId)
-    if (!pending) return
-    pendingChapiRequests.delete(notifId)
-    sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'User declined')
-  }
+  // `completeChapiRequest` / `denyChapiRequest` — REMOVED (Story 1.13 Phase 6).
+  // They read `pendingChapiRequests`, a map nothing ever wrote to, so both
+  // early-returned on every call. The live CHAPI path is the approval window
+  // (`handleChapiRequest` → CHAPI_APPROVE → `handleChapiApprove`).
 
   // ── DID Sync Handler ───────────────────────────────────
 
