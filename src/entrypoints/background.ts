@@ -10,7 +10,7 @@
  */
 
 import { MESSAGE_ROUTES } from '@/background/router/routes'
-import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
+import type { KeyAdminCtx } from '@/background/ctx/ctx-bundles'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
@@ -19,6 +19,7 @@ import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestt
 import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
 import { createBuildBundle } from '@/background/ctx/build-bundle'
 import { createSigningAdapters } from '@/background/adapters/signing-adapters'
+import { createKeyAdminAdapters, createUntrustedAdapters } from '@/background/adapters/chrome-adapters'
 import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
 import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
 import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
@@ -336,24 +337,13 @@ export default defineBackground(() => {
     keyAdmin: unwiredBundle('keyAdmin'),
   })
 
-  /**
-   * Transitional inline KeyAdmin ctx (Story 1.13 Phase 2) for the extracted
-   * key-lifecycle cores (rotate/backup/restore): `store` = read/write/mirror via the
-   * vault utils, `keygen` = P-256 generation. A fresh object per call. Consolidated
-   * into `buildBundle('keyAdmin')` in a later phase, mirroring how signing moved in 1b.
-   */
-  const keyAdminCtx = () => ({
-    store: { read: readVault, write: writeVault, syncPublic: syncPublicVault },
-    keygen: {
-      generateP256: async () => {
-        const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
-        return {
-          privateKeyJwk: await crypto.subtle.exportKey('jwk', kp.privateKey),
-          publicKeyJwk: await crypto.subtle.exportKey('jwk', kp.publicKey),
-        }
-      },
-    },
-  })
+  // KeyAdmin's concrete surface (store + P-256 keygen) and the untrusted tier's
+  // chrome surface are built in `adapters/chrome-adapters.ts` (Story 1.13
+  // Phase 11). The entrypoint now holds no crypto symbol at all — `generateP256`
+  // used to be a bare `crypto.subtle.generateKey` here, which is exactly what the
+  // F1 capability fence forbids.
+  const keyAdminAdapters = createKeyAdminAdapters({ readVault, writeVault, syncPublicVault })
+  const untrustedAdapters = createUntrustedAdapters()
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
 
@@ -726,20 +716,9 @@ export default defineBackground(() => {
         // same as before. The inline ctx is a thin chrome adapter; the real
         // capability-scoped bundle is built by the composition root (Story 1.13),
         // which also removes this cast.
-        const didcommCtx: Pick<UntrustedCtx, 'notifications' | 'runtime'> = {
-          notifications: {
-            create: async (id, options) => {
-              chrome.notifications.create(id, options as chrome.notifications.NotificationOptions<true>)
-            },
-          },
-          runtime: {
-            sendMessage: async (msg) => { chrome.runtime.sendMessage(msg) },
-            getURL: (path) => chrome.runtime.getURL(path),
-          },
-        }
         void MESSAGE_ROUTES.DIDCOMM_INBOUND.handle(
           (message as DIDCommInboundMessage).payload,
-          didcommCtx as never,
+          untrustedAdapters as never,
         )
         sendResponse({ ok: true })
         break
@@ -821,24 +800,7 @@ export default defineBackground(() => {
         // router's `buildBundle`). The handler returns the DID_SYNC_RESPONSE data;
         // this case owns transport (`sendDidSyncResponse`) and the runtime ack.
         const didSyncCtx: Pick<KeyAdminCtx, 'store' | 'keygen' | 'clock'> = {
-          store: {
-            read: () => readVault(),
-            write: (v) => writeVault(v),
-            syncPublic: (v) => syncPublicVault(v),
-          },
-          keygen: {
-            generateP256: async () => {
-              const keyPair = await crypto.subtle.generateKey(
-                { name: 'ECDSA', namedCurve: 'P-256' },
-                true,
-                ['sign', 'verify'],
-              )
-              return {
-                privateKeyJwk: await crypto.subtle.exportKey('jwk', keyPair.privateKey),
-                publicKeyJwk: await crypto.subtle.exportKey('jwk', keyPair.publicKey),
-              }
-            },
-          },
+          ...keyAdminAdapters,
           clock: { now: () => Date.now() },
         }
 
@@ -878,7 +840,7 @@ export default defineBackground(() => {
         }
         const rotateReq = message.payload as KeyRotateMessage['payload']
         const rotateTabId = sender.tab?.id ?? null
-        handleKeyRotate(keyAdminCtx()).then((result) => {
+        handleKeyRotate(keyAdminAdapters).then((result) => {
           sendKeyRotateResponse(rotateTabId, rotateReq.requestId, result.newPublicKeyJwk, result.oldPublicKeyJwk, result.error)
           sendResponse({ ok: true })
         })
@@ -893,7 +855,7 @@ export default defineBackground(() => {
         }
         const backupReq = message.payload as KeyBackupMessage['payload']
         const backupTabId = sender.tab?.id ?? null
-        handleKeyBackup(keyAdminCtx()).then((result) => {
+        handleKeyBackup(keyAdminAdapters).then((result) => {
           sendKeyBackupResponse(backupTabId, backupReq.requestId, result.shares, result.error)
           sendResponse({ ok: true })
         })
@@ -908,7 +870,7 @@ export default defineBackground(() => {
         }
         const restoreReq = message.payload as KeyRestoreMessage['payload']
         const restoreTabId = sender.tab?.id ?? null
-        handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminCtx()).then((result) => {
+        handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminAdapters).then((result) => {
           sendKeyRestoreResponse(restoreTabId, restoreReq.requestId, result.error)
           sendResponse({ ok: true })
         })
