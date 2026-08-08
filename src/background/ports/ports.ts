@@ -77,6 +77,17 @@ export interface Pending {
   put(row: PendingRow): Promise<void>
   get(id: string): Promise<PendingRow | null>
   markConsumed(id: string): Promise<void>
+  /**
+   * ATOMIC consume (Story 1.13, ConsentCtx-facing — distinct from the router's
+   * `consumed`-idempotency, which `takePending` MUST NOT touch; single-writer on
+   * `consumed` stays the router, AD-6 stage 8). Returns the row and removes it in
+   * one indivisible step, or `null` if it was already taken/absent. Async-returning
+   * now (Story 1.15 backs it with `chrome.storage.session`, inherently async) so the
+   * five awaited APPROVE call-sites don't re-open on a later sync→async flip. The
+   * atomicity is load-bearing: two concurrent APPROVEs for one `id` must NOT both win
+   * (double-sign) — so this is `get`-and-`delete` with NO `await` between.
+   */
+  takePending(id: string): Promise<PendingRow | null>
 }
 
 /** OS notification surface. */

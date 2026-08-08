@@ -287,6 +287,7 @@ describe('dispatch — stage 8 idempotency seam (mutation iv: replay)', () => {
       get: vi.fn(async (id: string) => ({ id, consumed, payload: {} })),
       markConsumed: vi.fn(async () => { consumed = true }),
       put: vi.fn(async () => {}),
+      takePending: vi.fn(async () => null), // dispatch doesn't use it; present to satisfy the port
     }
   }
 
@@ -306,6 +307,7 @@ describe('dispatch — stage 8 idempotency seam (mutation iv: replay)', () => {
       get: vi.fn(async () => { throw new Error('store down') }),
       markConsumed: vi.fn(async () => {}),
       put: vi.fn(async () => {}),
+      takePending: vi.fn(async () => null),
     }
     const { d, s } = deps({ pending })
     const res = await dispatch(msg('WALLET_LINK', {}, 'req-2'), {} as chrome.runtime.MessageSender, d)

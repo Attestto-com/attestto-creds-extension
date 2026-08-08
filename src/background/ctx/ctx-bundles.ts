@@ -27,6 +27,8 @@ import type {
   KeyVaultStore,
   KeyGen,
   SigningVaultStore,
+  Provisioning,
+  SitePin,
 } from '@/background/ports/ports'
 
 /**
@@ -56,6 +58,19 @@ export interface SigningCtx {
   vault: VaultRead
   store: SigningVaultStore
   clock: Clock
+  /**
+   * Narrow key-provisioning capability (Story 1.11 F1) — APDF's lazy Ed25519 key,
+   * AUTH's per-site DID. Returns only PUBLIC material (AD-2). Story 1.13: the
+   * composition root's `buildBundle('signing')` mints a fresh bundle per message
+   * whose provisioning SETS a private key-slot that the ONE gated `crypto.sign`
+   * reads (unset ⇒ root key) — so the request-dependent signing key never widens
+   * the sign surface (still exactly one gated primitive, AD-11c). Handlers name
+   * only the single provisioning method they use (`Pick<Provisioning, …>`); the
+   * bundle is the superset.
+   */
+  provisioning: Provisioning
+  /** AUTH's sign-in-as-trust write (Story 1.11 F1) — distinct capability from provisioning. */
+  pin: SitePin
 }
 
 /** Consent/approval tier. */
