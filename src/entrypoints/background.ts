@@ -55,6 +55,7 @@ import {
   sendReshareError,
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
+import { createPendingConsent } from '@/background/consent/pending-consent'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
 import { approvalParams } from '@/utils/approval-params'
 
@@ -215,6 +216,52 @@ export default defineBackground(() => {
     unregister?: () => void
   }
   const pendingAttesttoPdfRequests = new Map<string, PendingAttesttoPdfRequest>()
+
+  // ── Pending-consent registries (Story 1.13 Phase 7) ────────────
+  // `*_GET_PENDING` and `*_DENY` were ten near-identical case bodies. The DENY
+  // half has to disarm the approval window before purging (else the closing
+  // window reports a second cancellation) and has to be idempotent — both now
+  // live once, in `consent/pending-consent.ts`. Each flow supplies only its
+  // not-found string and how it reports a denial to the page.
+  const offerConsent = createPendingConsent({
+    rows: pendingOffers,
+    notFound: 'Offer not found or already handled',
+    reportDenied: () => {},
+  })
+  const signingConsent = createPendingConsent({
+    rows: pendingSigningRequests,
+    notFound: 'No pending signing request found',
+    reportDenied: (row) => sendSigningErrorToTab(row.senderTabId, row.signReq.requestId, 'User declined signing'),
+  })
+  const authConsent = createPendingConsent({
+    rows: pendingAuthRequests,
+    notFound: 'No pending auth request found',
+    // Route the denial back on the SAME protocol the request arrived on. A cw
+    // (credential-wallet:auth) request must get a CW_AUTH_RESPONSE so the
+    // MAIN-world listener resolves requestAuth immediately; sending the legacy
+    // AUTH_RESPONSE would leave it hanging until its 120s timeout.
+    reportDenied: (row) =>
+      (row.protocol === 'cw' ? sendCwAuthErrorToTab : sendAuthErrorToTab)(
+        row.senderTabId,
+        row.requestId,
+        'User declined',
+      ),
+  })
+  const attesttoPdfConsent = createPendingConsent({
+    rows: pendingAttesttoPdfRequests,
+    notFound: 'No pending Attestto PDF sign request found',
+    reportDenied: (row) => sendAttesttoPdfErrorToTab(row.senderTabId, row.req.requestId, 'User declined signing'),
+  })
+  const paymentConsent = createPendingConsent({
+    rows: pendingPaymentRequests,
+    notFound: 'No pending payment request found',
+    reportDenied: (row) => sendPaymentErrorToTab(row.senderTabId, row.payReq.requestId, 'User declined payment'),
+  })
+  const chapiConsent = createPendingConsent({
+    rows: pendingChapiRawRequests,
+    notFound: 'No pending request found',
+    reportDenied: (row) => sendChapiErrorToTab(row.senderTabId, row.apiReq.requestId, 'User declined'),
+  })
 
   /**
    * Open the approval popup for a document signing request.
@@ -551,24 +598,18 @@ export default defineBackground(() => {
 
       // ── Credential Offer Approval Window Handlers ───
       case 'CREDENTIAL_OFFER_GET_PENDING': {
-        const notifId = message.payload?.notifId as string | undefined
-        if (!notifId) {
-          sendResponse({ ok: false, error: 'No notifId provided' })
-          break
-        }
-        const pending = pendingOffers.get(notifId)
-        if (!pending) {
-          sendResponse({ ok: false, error: 'Offer not found or already handled' })
-          break
-        }
-        sendResponse({
-          ok: true,
-          offer: {
-            format: pending.offer.format,
-            issuerName: pending.offer.issuerName,
-          },
-          origin: pending.origin,
-        })
+        // Answers with a PROJECTION, not the row: the approval page needs only
+        // what it renders, and the raw offer carries the credential itself.
+        const peeked = offerConsent.peek(message.payload?.notifId as string | undefined)
+        sendResponse(
+          peeked.ok
+            ? {
+                ok: true,
+                offer: { format: peeked.request.offer.format, issuerName: peeked.request.offer.issuerName },
+                origin: peeked.request.origin,
+              }
+            : peeked,
+        )
         break
       }
 
@@ -586,11 +627,7 @@ export default defineBackground(() => {
       }
 
       case 'CREDENTIAL_OFFER_DENY': {
-        const notifId = message.payload?.notifId as string | undefined
-        if (notifId) {
-          pendingOffers.get(notifId)?.unregister?.()
-          pendingOffers.delete(notifId)
-        }
+        offerConsent.deny(message.payload?.notifId as string | undefined)
         sendResponse({ ok: true })
         break
       }
@@ -983,16 +1020,9 @@ export default defineBackground(() => {
         break
       }
 
-      case 'SIGN_DOCUMENT_GET_PENDING': {
-        const signReqId = message.payload?.requestId as string
-        const pendingSign = pendingSigningRequests.get(signReqId)
-        if (pendingSign) {
-          sendResponse({ ok: true, request: pendingSign })
-        } else {
-          sendResponse({ ok: false, error: 'No pending signing request found' })
-        }
+      case 'SIGN_DOCUMENT_GET_PENDING':
+        sendResponse(signingConsent.peek(message.payload?.requestId as string))
         break
-      }
 
       case 'SIGN_DOCUMENT_APPROVE': {
         const signApproveId = message.payload?.requestId as string
@@ -1034,17 +1064,10 @@ export default defineBackground(() => {
         break
       }
 
-      case 'SIGN_DOCUMENT_DENY': {
-        const signDenyId = message.payload?.requestId as string
-        const pendingSignDeny = pendingSigningRequests.get(signDenyId)
-        if (pendingSignDeny) {
-          pendingSignDeny.unregister?.()
-          pendingSigningRequests.delete(signDenyId)
-          sendSigningErrorToTab(pendingSignDeny.senderTabId, pendingSignDeny.signReq.requestId, 'User declined signing')
-        }
+      case 'SIGN_DOCUMENT_DENY':
+        signingConsent.deny(message.payload?.requestId as string)
         sendResponse({ ok: true })
         break
-      }
 
       // ── DID Authentication Request Handler (login via extension — ATT-123) ──
 
@@ -1072,16 +1095,9 @@ export default defineBackground(() => {
         return true // async sendResponse
       }
 
-      case 'AUTH_GET_PENDING': {
-        const authReqId = message.payload?.requestId as string
-        const pendingAuth = pendingAuthRequests.get(authReqId)
-        if (pendingAuth) {
-          sendResponse({ ok: true, request: pendingAuth })
-        } else {
-          sendResponse({ ok: false, error: 'No pending auth request found' })
-        }
+      case 'AUTH_GET_PENDING':
+        sendResponse(authConsent.peek(message.payload?.requestId as string))
         break
-      }
 
       case 'AUTH_APPROVE': {
         const authApproveId = message.payload?.requestId as string
@@ -1140,23 +1156,10 @@ export default defineBackground(() => {
         return true // async sendResponse
       }
 
-      case 'AUTH_DENY': {
-        const authDenyId = message.payload?.requestId as string
-        const pendingAuthDeny = pendingAuthRequests.get(authDenyId)
-        if (pendingAuthDeny) {
-          pendingAuthDeny.unregister?.()
-          pendingAuthRequests.delete(authDenyId)
-          // Route the denial back on the SAME protocol the request arrived on.
-          // A cw (credential-wallet:auth) request must get a CW_AUTH_RESPONSE so
-          // the MAIN-world listener resolves requestAuth immediately; sending the
-          // legacy AUTH_RESPONSE would leave it hanging until its 120s timeout.
-          const denyErr =
-            pendingAuthDeny.protocol === 'cw' ? sendCwAuthErrorToTab : sendAuthErrorToTab
-          denyErr(pendingAuthDeny.senderTabId, pendingAuthDeny.requestId, 'User declined')
-        }
+      case 'AUTH_DENY':
+        authConsent.deny(message.payload?.requestId as string)
         sendResponse({ ok: true })
         break
-      }
 
       // ── Attestto self-attested PDF signing (ATT-364) ───────────────
 
@@ -1168,16 +1171,9 @@ export default defineBackground(() => {
         break
       }
 
-      case 'SIGN_ATTESTTO_PDF_GET_PENDING': {
-        const apdfId = message.payload?.requestId as string
-        const pendingApdf = pendingAttesttoPdfRequests.get(apdfId)
-        if (pendingApdf) {
-          sendResponse({ ok: true, request: pendingApdf })
-        } else {
-          sendResponse({ ok: false, error: 'No pending Attestto PDF sign request found' })
-        }
+      case 'SIGN_ATTESTTO_PDF_GET_PENDING':
+        sendResponse(attesttoPdfConsent.peek(message.payload?.requestId as string))
         break
-      }
 
       case 'SIGN_ATTESTTO_PDF_APPROVE': {
         const apdfApproveId = message.payload?.requestId as string
@@ -1214,17 +1210,10 @@ export default defineBackground(() => {
         break
       }
 
-      case 'SIGN_ATTESTTO_PDF_DENY': {
-        const apdfDenyId = message.payload?.requestId as string
-        const pendingApdfDeny = pendingAttesttoPdfRequests.get(apdfDenyId)
-        if (pendingApdfDeny) {
-          pendingApdfDeny.unregister?.()
-          pendingAttesttoPdfRequests.delete(apdfDenyId)
-          sendAttesttoPdfErrorToTab(pendingApdfDeny.senderTabId, pendingApdfDeny.req.requestId, 'User declined signing')
-        }
+      case 'SIGN_ATTESTTO_PDF_DENY':
+        attesttoPdfConsent.deny(message.payload?.requestId as string)
         sendResponse({ ok: true })
         break
-      }
 
       // ── Payment Request Handler ──
 
@@ -1238,16 +1227,9 @@ export default defineBackground(() => {
 
       // ── Payment Popup Handlers (DID-authenticated payment flow) ──
 
-      case 'PAYMENT_GET_PENDING': {
-        const payReqId = message.payload?.requestId as string
-        const pendingPay = pendingPaymentRequests.get(payReqId)
-        if (pendingPay) {
-          sendResponse({ ok: true, request: pendingPay })
-        } else {
-          sendResponse({ ok: false, error: 'No pending payment request found' })
-        }
+      case 'PAYMENT_GET_PENDING':
+        sendResponse(paymentConsent.peek(message.payload?.requestId as string))
         break
-      }
 
       case 'PAYMENT_APPROVE': {
         const payApproveId = message.payload?.requestId as string
@@ -1290,30 +1272,16 @@ export default defineBackground(() => {
         break
       }
 
-      case 'PAYMENT_DENY': {
-        const payDenyId = message.payload?.requestId as string
-        const pendingPayDeny = pendingPaymentRequests.get(payDenyId)
-        if (pendingPayDeny) {
-          pendingPayDeny.unregister?.()
-          pendingPaymentRequests.delete(payDenyId)
-          sendPaymentErrorToTab(pendingPayDeny.senderTabId, pendingPayDeny.payReq.requestId, 'User declined payment')
-        }
+      case 'PAYMENT_DENY':
+        paymentConsent.deny(message.payload?.requestId as string)
         sendResponse({ ok: true })
         break
-      }
 
       // ── CHAPI Popup Handlers (Phantom-style approval flow) ──
 
-      case 'CHAPI_GET_PENDING': {
-        const chapiReqId = message.payload?.requestId as string
-        const rawReq = pendingChapiRawRequests.get(chapiReqId)
-        if (rawReq) {
-          sendResponse({ ok: true, request: rawReq })
-        } else {
-          sendResponse({ ok: false, error: 'No pending request found' })
-        }
+      case 'CHAPI_GET_PENDING':
+        sendResponse(chapiConsent.peek(message.payload?.requestId as string))
         break
-      }
 
       case 'CHAPI_APPROVE': {
         const approveReqId = message.payload?.requestId as string
@@ -1356,17 +1324,10 @@ export default defineBackground(() => {
         break
       }
 
-      case 'CHAPI_DENY': {
-        const denyReqId = message.payload?.requestId as string
-        const pendingDeny = pendingChapiRawRequests.get(denyReqId)
-        if (pendingDeny) {
-          pendingDeny.unregister?.()
-          pendingChapiRawRequests.delete(denyReqId)
-          sendChapiErrorToTab(pendingDeny.senderTabId, pendingDeny.apiReq.requestId, 'User declined')
-        }
+      case 'CHAPI_DENY':
+        chapiConsent.deny(message.payload?.requestId as string)
         sendResponse({ ok: true })
         break
-      }
 
       // ── Backend scan + report ──────────────────────────────────────────────
 
