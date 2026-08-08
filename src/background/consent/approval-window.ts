@@ -49,14 +49,18 @@ export interface ApprovalWindowPlatform {
 }
 
 /**
- * The slice of a pending-request map an opener needs. Deliberately NOT the whole
- * `Map`: an opener may check, purge, and attach an unregister hook to a row it
- * did not create, but it has no business writing new rows — the caller owns that.
+ * The slice of a pending flow an opener needs. Deliberately NOT the whole flow:
+ * an opener may CLAIM a row it did not create (to cancel it) and attach the
+ * disarm hook, but it has no business writing new rows — the caller owns that.
+ *
+ * Story 1.15 collapsed the old `has` + `delete` pair into a single `take`. Two
+ * steps were a race the moment rows moved to storage: an APPROVE landing between
+ * them would leave both paths believing they owned the row, and the page would be
+ * told twice. `take` returns the row to exactly one caller.
  */
 export interface PendingRows {
-  has(id: string): boolean
-  delete(id: string): boolean
-  get(id: string): { unregister?: () => void } | undefined
+  take(id: string): Promise<unknown>
+  attachUnregister(id: string, unregister: () => void): void
 }
 
 export interface OpenApprovalRequest {
@@ -161,18 +165,17 @@ export function createApprovalWindows(platform: ApprovalWindowPlatform): Approva
         focused: true,
       })
       const unregister = registerApprovalWindow(win?.id, () => {
-        // Guarded: an approve/deny that already consumed the row must not be
-        // re-reported as a cancellation.
-        if (!rows.has(id)) return
-        rows.delete(id)
-        reportCancelled?.(WINDOW_CLOSED_MESSAGE)
+        // Claim-then-report: an approve/deny that already took the row wins, and
+        // this cancellation reports nothing. Exactly one outcome reaches the page.
+        void rows.take(id).then((claimed) => {
+          if (claimed) reportCancelled?.(WINDOW_CLOSED_MESSAGE)
+        })
       })
-      const pending = rows.get(id)
-      if (pending) pending.unregister = unregister
+      rows.attachUnregister(id, unregister)
     } catch (err) {
       console.error(`${logPrefix} Failed to open approval window:`, err)
-      rows.delete(id)
-      reportCancelled?.(OPEN_FAILED_MESSAGE)
+      const claimed = await rows.take(id)
+      if (claimed) reportCancelled?.(OPEN_FAILED_MESSAGE)
     }
   }
 

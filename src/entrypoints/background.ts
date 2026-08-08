@@ -59,6 +59,8 @@ import {
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
 import { createPendingConsent } from '@/background/consent/pending-consent'
+import { createPendingFlow } from '@/background/consent/pending-flow'
+import { createPendingStore, chromePendingStorage } from '@/background/consent/pending-store'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
 import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
 import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
@@ -194,40 +196,48 @@ export default defineBackground(() => {
     idleLock.resume()
   })
 
-  // ── Pending Credential Offers ─────────────────────
+  // ── Pending consent rows (Story 1.15) ─────────────
+  // These were six `Map`s inside this closure. MV3 kills the worker after ~30s
+  // idle and a consent flow is defined by waiting for a human, so the row a user
+  // was about to approve routinely no longer existed by the time they clicked —
+  // the page got "No pending request" for an approval genuinely given. Rows now
+  // live in `chrome.storage.session` via `consent/pending-store.ts`, which
+  // outlives the worker and dies with the browser.
+  //
+  // The `unregister` hook is NOT part of these types any more: it cannot be
+  // serialized, and after a restart there is no window cleanup to disarm.
+  // `pending-flow.ts` keeps it worker-local, keyed by the same id.
+  const pendingFlow = <T,>(flow: string) =>
+    createPendingFlow<T>(
+      createPendingStore({ flow, storage: chromePendingStorage(), now: () => Date.now() }),
+    )
 
   interface PendingOffer {
     offer: CredentialOfferMessage['payload']
     origin: string | null
-    unregister?: () => void
   }
-  const pendingOffers = new Map<string, PendingOffer>()
-
-  // ── Pending CHAPI Requests (waiting for user consent via popup) ──
+  const pendingOffers = pendingFlow<PendingOffer>('offer')
 
   /** Raw CHAPI requests waiting for the popup to unlock + approve */
   interface PendingChapiRawRequest {
     apiReq: CredentialApiRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingChapiRawRequests = new Map<string, PendingChapiRawRequest>()
+  const pendingChapiRawRequests = pendingFlow<PendingChapiRawRequest>('chapi')
 
   /** Pending payment requests waiting for user approval in the popup */
   interface PendingPaymentRequest {
     payReq: PaymentRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingPaymentRequests = new Map<string, PendingPaymentRequest>()
+  const pendingPaymentRequests = pendingFlow<PendingPaymentRequest>('payment')
 
   /** Pending document signing requests waiting for user approval in the popup */
   interface PendingSigningRequest {
     signReq: SignDocumentRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingSigningRequests = new Map<string, PendingSigningRequest>()
+  const pendingSigningRequests = pendingFlow<PendingSigningRequest>('signing')
 
   /** Pending DID authentication requests (login via extension — ATT-123) */
   interface PendingAuthRequest {
@@ -236,7 +246,6 @@ export default defineBackground(() => {
     timestamp: string
     origin: string
     senderTabId: number | null
-    unregister?: () => void
     /**
      * Protocol variant. Absent = the legacy `attestto:auth` proof-of-possession
      * flow verified by CORTEX's DidAuthController. 'cw' = the identity-bridge
@@ -252,15 +261,14 @@ export default defineBackground(() => {
     /** (cw) Issuer DIDs the site will accept; carried through for the consent UI. */
     trustedIssuers?: string[]
   }
-  const pendingAuthRequests = new Map<string, PendingAuthRequest>()
+  const pendingAuthRequests = pendingFlow<PendingAuthRequest>('auth')
 
   /** Pending Attestto self-attested PDF sign requests (ATT-364) */
   interface PendingAttesttoPdfRequest {
     req: SignAttesttoPdfRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingAttesttoPdfRequests = new Map<string, PendingAttesttoPdfRequest>()
+  const pendingAttesttoPdfRequests = pendingFlow<PendingAttesttoPdfRequest>('attesttoPdf')
 
   // ── Pending-consent registries (Story 1.13 Phase 7) ────────────
   // `*_GET_PENDING` and `*_DENY` were ten near-identical case bodies. The DENY
@@ -269,17 +277,17 @@ export default defineBackground(() => {
   // live once, in `consent/pending-consent.ts`. Each flow supplies only its
   // not-found string and how it reports a denial to the page.
   const offerConsent = createPendingConsent({
-    rows: pendingOffers,
+    flow: pendingOffers,
     notFound: 'Offer not found or already handled',
     reportDenied: () => {},
   })
   const signingConsent = createPendingConsent({
-    rows: pendingSigningRequests,
+    flow: pendingSigningRequests,
     notFound: 'No pending signing request found',
     reportDenied: (row) => sendSigningErrorToTab(row.senderTabId, row.signReq.requestId, 'User declined signing'),
   })
   const authConsent = createPendingConsent({
-    rows: pendingAuthRequests,
+    flow: pendingAuthRequests,
     notFound: 'No pending auth request found',
     // Route the denial back on the SAME protocol the request arrived on. A cw
     // (credential-wallet:auth) request must get a CW_AUTH_RESPONSE so the
@@ -293,17 +301,17 @@ export default defineBackground(() => {
       ),
   })
   const attesttoPdfConsent = createPendingConsent({
-    rows: pendingAttesttoPdfRequests,
+    flow: pendingAttesttoPdfRequests,
     notFound: 'No pending Attestto PDF sign request found',
     reportDenied: (row) => sendAttesttoPdfErrorToTab(row.senderTabId, row.req.requestId, 'User declined signing'),
   })
   const paymentConsent = createPendingConsent({
-    rows: pendingPaymentRequests,
+    flow: pendingPaymentRequests,
     notFound: 'No pending payment request found',
     reportDenied: (row) => sendPaymentErrorToTab(row.senderTabId, row.payReq.requestId, 'User declined payment'),
   })
   const chapiConsent = createPendingConsent({
-    rows: pendingChapiRawRequests,
+    flow: pendingChapiRawRequests,
     notFound: 'No pending request found',
     reportDenied: (row) => sendChapiErrorToTab(row.senderTabId, row.apiReq.requestId, 'User declined'),
   })
@@ -315,7 +323,7 @@ export default defineBackground(() => {
     signReq: SignDocumentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    pendingSigningRequests.set(signReq.requestId, { signReq, senderTabId })
+    await pendingSigningRequests.put(signReq.requestId, { signReq, senderTabId })
     await approvalWindows.open({
       id: signReq.requestId,
       params: approvalParams.signing({
@@ -387,7 +395,7 @@ export default defineBackground(() => {
     // earlier fail-fast replaced that flow with a dead-end error message on the
     // page — the popup is fully actionable (Create DID / Cancel), so there is no
     // empty-list hang.
-    pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
+    await pendingAuthRequests.put(authReq.requestId, { ...authReq, senderTabId })
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendAuthErrorToTab)
   }
 
@@ -452,7 +460,7 @@ export default defineBackground(() => {
     // No fail-fast on missing identity — open the popup so its "Create DID"
     // flow can mint one and complete the sign-in in one step (see
     // handleAuthRequest). The popup is fully actionable, so no empty-list hang.
-    pendingAuthRequests.set(authReq.requestId, {
+    await pendingAuthRequests.put(authReq.requestId, {
       requestId: authReq.requestId,
       nonce: authReq.nonce,
       // The signed timestamp is minted at approval time (fresh per the verifier's
@@ -477,7 +485,7 @@ export default defineBackground(() => {
     req: SignAttesttoPdfRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    pendingAttesttoPdfRequests.set(req.requestId, { req, senderTabId })
+    await pendingAttesttoPdfRequests.put(req.requestId, { req, senderTabId })
     await approvalWindows.open({
       id: req.requestId,
       params: approvalParams.attesttoPdf({
@@ -505,7 +513,7 @@ export default defineBackground(() => {
     payReq: PaymentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    pendingPaymentRequests.set(payReq.requestId, { payReq, senderTabId })
+    await pendingPaymentRequests.put(payReq.requestId, { payReq, senderTabId })
     await approvalWindows.open({
       id: payReq.requestId,
       params: approvalParams.payment({
@@ -533,9 +541,11 @@ export default defineBackground(() => {
    * only take the pending row and inject the real vault/origin/clock adapters.
    */
   async function acceptCredentialOffer(notificationId: string): Promise<string | null> {
-    const pending = pendingOffers.get(notificationId)
+    // Atomic claim (Story 1.15): the get/delete pair this replaced could be
+    // interleaved with the approval window's own cleanup once rows became
+    // storage-backed, and both paths would think they owned the offer.
+    const pending = await pendingOffers.take(notificationId)
     if (!pending) return null
-    pendingOffers.delete(notificationId)
 
     return handleCredentialOfferAccept(
       { offer: pending.offer, origin: pending.origin },
@@ -578,7 +588,7 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     // Store the raw request + sender tab for the approval page to use
-    pendingChapiRawRequests.set(apiReq.requestId, { apiReq, senderTabId })
+    await pendingChapiRawRequests.put(apiReq.requestId, { apiReq, senderTabId })
     await approvalWindows.open({
       id: apiReq.requestId,
       params: approvalParams.chapi({ id: apiReq.requestId, origin: apiReq.origin }),
@@ -642,17 +652,18 @@ export default defineBackground(() => {
       case 'CREDENTIAL_OFFER_GET_PENDING': {
         // Answers with a PROJECTION, not the row: the approval page needs only
         // what it renders, and the raw offer carries the credential itself.
-        const peeked = offerConsent.peek(message.payload?.notifId as string | undefined)
-        sendResponse(
-          peeked.ok
-            ? {
-                ok: true,
-                offer: { format: peeked.request.offer.format, issuerName: peeked.request.offer.issuerName },
-                origin: peeked.request.origin,
-              }
-            : peeked,
-        )
-        break
+        offerConsent.peek(message.payload?.notifId as string | undefined).then((peeked) => {
+          sendResponse(
+            peeked.ok
+              ? {
+                  ok: true,
+                  offer: { format: peeked.request.offer.format, issuerName: peeked.request.offer.issuerName },
+                  origin: peeked.request.origin,
+                }
+              : peeked,
+          )
+        })
+        return true // async
       }
 
       case 'CREDENTIAL_OFFER_APPROVE': {
@@ -661,7 +672,7 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No notifId provided' })
           break
         }
-        pendingOffers.get(notifId)?.unregister?.()
+        // The disarm happens inside `acceptCredentialOffer`'s atomic take.
         acceptCredentialOffer(notifId).then((credentialId) => {
           sendResponse({ ok: !!credentialId, credentialId })
         })
@@ -669,9 +680,8 @@ export default defineBackground(() => {
       }
 
       case 'CREDENTIAL_OFFER_DENY': {
-        offerConsent.deny(message.payload?.notifId as string | undefined)
-        sendResponse({ ok: true })
-        break
+        offerConsent.deny(message.payload?.notifId as string | undefined).then(() => sendResponse({ ok: true }))
+        return true // async
       }
 
       case 'CREDENTIAL_OFFER': {
@@ -684,7 +694,7 @@ export default defineBackground(() => {
         // identity-sync format AND the origin was approved before.
         handleCredentialOffer(offer, senderOrigin, {
           isOriginTrusted,
-          stage: (notifId, staged, origin) => pendingOffers.set(notifId, { offer: staged, origin }),
+          stage: (notifId, staged, origin) => pendingOffers.put(notifId, { offer: staged, origin }),
           accept: acceptCredentialOffer,
           requestConsent: openCredentialOfferApprovalWindow,
           newNotifId: () => `credential-offer-${Date.now()}`,
@@ -925,53 +935,53 @@ export default defineBackground(() => {
       }
 
       case 'SIGN_DOCUMENT_GET_PENDING':
-        sendResponse(signingConsent.peek(message.payload?.requestId as string))
-        break
+        signingConsent.peek(message.payload?.requestId as string).then(sendResponse)
+        return true // async
 
       case 'SIGN_DOCUMENT_APPROVE': {
         const signApproveId = message.payload?.requestId as string
         const selectedSignDid = message.payload?.selectedDid as string
-        const pendingSigning = pendingSigningRequests.get(signApproveId)
-
-        if (!pendingSigning) {
-          sendResponse({ ok: false, error: 'No pending signing request' })
-          break
-        }
-        pendingSigning.unregister?.()
-        pendingSigningRequests.delete(signApproveId)
-
-        // Story 1.13 Phase 1b — the extracted signing CORE gets its ctx from the
-        // composition root's `buildBundle('signing')` (AD-3): a fresh bundle whose
-        // ONE gated `crypto.sign` signs with the root key (no provisioning here). The
-        // inline `createGatedSign` adapter is gone. This case still owns the pending
-        // Map + transport + window-unregister (SW lifecycle state, AD-14).
-        const signDocumentCtx = buildBundle('signing')
-
-        handleSignDocumentApprove(
-          { signingToken: pendingSigning.signReq.signingToken, selectedDid: selectedSignDid },
-          signDocumentCtx,
-        ).then((result) => {
-          if (result.ok) {
-            const responseData = {
-              did: result.did,
-              signature: result.signature,
-              timestamp: result.timestamp,
-              publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
-            }
-            sendSigningResponseToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } else {
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, result.error)
-            sendResponse({ ok: false, error: result.error })
+        // Story 1.15 — ONE atomic claim replaces get + unregister + delete. The
+        // row is storage-backed now, so it also survives the worker restart this
+        // approval almost certainly outlived.
+        pendingSigningRequests.take(signApproveId).then((pendingSigning) => {
+          if (!pendingSigning) {
+            sendResponse({ ok: false, error: 'No pending signing request' })
+            return
           }
+
+          // Story 1.13 Phase 1b — the extracted signing CORE gets its ctx from the
+          // composition root's `buildBundle('signing')` (AD-3): a fresh bundle whose
+          // ONE gated `crypto.sign` signs with the root key (no provisioning here). The
+          // inline `createGatedSign` adapter is gone. This case still owns the
+          // transport (SW lifecycle state, AD-14).
+          const signDocumentCtx = buildBundle('signing')
+
+          return handleSignDocumentApprove(
+            { signingToken: pendingSigning.signReq.signingToken, selectedDid: selectedSignDid },
+            signDocumentCtx,
+          ).then((result) => {
+            if (result.ok) {
+              const responseData = {
+                did: result.did,
+                signature: result.signature,
+                timestamp: result.timestamp,
+                publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+              }
+              sendSigningResponseToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
+            }
+          })
         })
-        break
+        return true // async
       }
 
       case 'SIGN_DOCUMENT_DENY':
-        signingConsent.deny(message.payload?.requestId as string)
-        sendResponse({ ok: true })
-        break
+        signingConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true }))
+        return true // async
 
       // ── DID Authentication Request Handler (login via extension — ATT-123) ──
 
@@ -1000,70 +1010,67 @@ export default defineBackground(() => {
       }
 
       case 'AUTH_GET_PENDING':
-        sendResponse(authConsent.peek(message.payload?.requestId as string))
-        break
+        authConsent.peek(message.payload?.requestId as string).then(sendResponse)
+        return true // async
 
       case 'AUTH_APPROVE': {
         const authApproveId = message.payload?.requestId as string
         const selectedAuthDid = message.payload?.selectedDid as string | undefined
-        const pendingAuthReq = pendingAuthRequests.get(authApproveId)
-
-        if (!pendingAuthReq) {
-          sendResponse({ ok: false, error: 'No pending auth request' })
-          break
-        }
-        pendingAuthReq.unregister?.()
-        pendingAuthRequests.delete(authApproveId)
-
-        const isCwAuth = pendingAuthReq.protocol === 'cw'
-        const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
-        // `selectedDid` is intentionally ignored — login uses a pairwise per-origin
-        // DID, not the identity chooser (see handler).
-        void selectedAuthDid
-
-        // Story 1.13 Phase 1b — AUTH login core (`handleAuthApprove`, both protocols)
-        // gets its ctx from `buildBundle('signing')`. The handler calls
-        // `ctx.provisioning.provisionSiteDid(origin)` (find-or-create + stamp + write +
-        // mirror, inside the adapter) which rebinds the bundle's key-slot to the
-        // per-site key; the ONE gated `crypto.sign` then signs with it. Two writers as
-        // named capabilities: `provisioning.provisionSiteDid` + `pin`.
-        const authCtx = buildBundle('signing')
-
-        handleAuthApprove(
-          {
-            protocol: pendingAuthReq.protocol,
-            origin: pendingAuthReq.origin,
-            nonce: pendingAuthReq.nonce,
-            timestamp: pendingAuthReq.timestamp,
-            audience: pendingAuthReq.audience,
-          },
-          authCtx,
-        ).then((result) => {
-          if (result.ok && result.kind === 'cw') {
-            sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.response)
-            sendResponse({ ok: true, response: result.response })
-          } else if (result.ok) {
-            const responseData = {
-              did: result.did,
-              signature: result.signature,
-              nonce: result.nonce,
-              timestamp: result.timestamp,
-              publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
-            }
-            sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } else {
-            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.error)
-            sendResponse({ ok: false, error: result.error })
+        pendingAuthRequests.take(authApproveId).then((pendingAuthReq) => {
+          if (!pendingAuthReq) {
+            sendResponse({ ok: false, error: 'No pending auth request' })
+            return
           }
+
+          const isCwAuth = pendingAuthReq.protocol === 'cw'
+          const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
+          // `selectedDid` is intentionally ignored — login uses a pairwise per-origin
+          // DID, not the identity chooser (see handler).
+          void selectedAuthDid
+
+          // Story 1.13 Phase 1b — AUTH login core (`handleAuthApprove`, both protocols)
+          // gets its ctx from `buildBundle('signing')`. The handler calls
+          // `ctx.provisioning.provisionSiteDid(origin)` (find-or-create + stamp + write +
+          // mirror, inside the adapter) which rebinds the bundle's key-slot to the
+          // per-site key; the ONE gated `crypto.sign` then signs with it. Two writers as
+          // named capabilities: `provisioning.provisionSiteDid` + `pin`.
+          const authCtx = buildBundle('signing')
+
+          return handleAuthApprove(
+            {
+              protocol: pendingAuthReq.protocol,
+              origin: pendingAuthReq.origin,
+              nonce: pendingAuthReq.nonce,
+              timestamp: pendingAuthReq.timestamp,
+              audience: pendingAuthReq.audience,
+            },
+            authCtx,
+          ).then((result) => {
+            if (result.ok && result.kind === 'cw') {
+              sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.response)
+              sendResponse({ ok: true, response: result.response })
+            } else if (result.ok) {
+              const responseData = {
+                did: result.did,
+                signature: result.signature,
+                nonce: result.nonce,
+                timestamp: result.timestamp,
+                publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+              }
+              sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
+            }
+          })
         })
         return true // async sendResponse
       }
 
       case 'AUTH_DENY':
-        authConsent.deny(message.payload?.requestId as string)
-        sendResponse({ ok: true })
-        break
+        authConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true }))
+        return true // async
 
       // ── Attestto self-attested PDF signing (ATT-364) ───────────────
 
@@ -1076,48 +1083,45 @@ export default defineBackground(() => {
       }
 
       case 'SIGN_ATTESTTO_PDF_GET_PENDING':
-        sendResponse(attesttoPdfConsent.peek(message.payload?.requestId as string))
-        break
+        attesttoPdfConsent.peek(message.payload?.requestId as string).then(sendResponse)
+        return true // async
 
       case 'SIGN_ATTESTTO_PDF_APPROVE': {
         const apdfApproveId = message.payload?.requestId as string
         const selectedApdfDid = message.payload?.selectedDid as string
-        const pendingApdf = pendingAttesttoPdfRequests.get(apdfApproveId)
-
-        if (!pendingApdf) {
-          sendResponse({ ok: false, error: 'No pending Attestto PDF sign request' })
-          break
-        }
-        pendingApdf.unregister?.()
-        pendingAttesttoPdfRequests.delete(apdfApproveId)
-
-        // Story 1.13 Phase 1b — APDF signing core (`handleSignAttesttoPdfApprove`) gets
-        // its ctx from `buildBundle('signing')`. The handler calls
-        // `ctx.provisioning.provisionEd25519()` (lazy mint + write + mirror, inside the
-        // adapter) which rebinds the bundle's key-slot to the Ed25519 key; the ONE gated
-        // `crypto.sign` signs with it. This case keeps the pending Map + transport.
-        const apdfCtx = buildBundle('signing')
-
-        handleSignAttesttoPdfApprove(
-          { payloadB64: pendingApdf.req.payloadB64, selectedDid: selectedApdfDid },
-          apdfCtx,
-        ).then((result) => {
-          if (result.ok) {
-            const responseData = { did: result.did, signature: result.signature, publicKey: result.publicKey }
-            sendAttesttoPdfResponseToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } else {
-            sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, result.error)
-            sendResponse({ ok: false, error: result.error })
+        pendingAttesttoPdfRequests.take(apdfApproveId).then((pendingApdf) => {
+          if (!pendingApdf) {
+            sendResponse({ ok: false, error: 'No pending Attestto PDF sign request' })
+            return
           }
+
+          // Story 1.13 Phase 1b — APDF signing core (`handleSignAttesttoPdfApprove`) gets
+          // its ctx from `buildBundle('signing')`. The handler calls
+          // `ctx.provisioning.provisionEd25519()` (lazy mint + write + mirror, inside the
+          // adapter) which rebinds the bundle's key-slot to the Ed25519 key; the ONE gated
+          // `crypto.sign` signs with it. This case keeps the transport.
+          const apdfCtx = buildBundle('signing')
+
+          return handleSignAttesttoPdfApprove(
+            { payloadB64: pendingApdf.req.payloadB64, selectedDid: selectedApdfDid },
+            apdfCtx,
+          ).then((result) => {
+            if (result.ok) {
+              const responseData = { did: result.did, signature: result.signature, publicKey: result.publicKey }
+              sendAttesttoPdfResponseToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
+            }
+          })
         })
-        break
+        return true // async
       }
 
       case 'SIGN_ATTESTTO_PDF_DENY':
-        attesttoPdfConsent.deny(message.payload?.requestId as string)
-        sendResponse({ ok: true })
-        break
+        attesttoPdfConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true }))
+        return true // async
 
       // ── Payment Request Handler ──
 
@@ -1132,101 +1136,96 @@ export default defineBackground(() => {
       // ── Payment Popup Handlers (DID-authenticated payment flow) ──
 
       case 'PAYMENT_GET_PENDING':
-        sendResponse(paymentConsent.peek(message.payload?.requestId as string))
-        break
+        paymentConsent.peek(message.payload?.requestId as string).then(sendResponse)
+        return true // async
 
       case 'PAYMENT_APPROVE': {
         const payApproveId = message.payload?.requestId as string
         const selectedDid = message.payload?.selectedDid as string
-        const pendingPayment = pendingPaymentRequests.get(payApproveId)
-
-        if (!pendingPayment) {
-          sendResponse({ ok: false, error: 'No pending payment request' })
-          break
-        }
-        pendingPayment.unregister?.()
-        pendingPaymentRequests.delete(payApproveId)
-
-        // Story 1.13 Phase 1b — PAYMENT signing core (`handlePaymentApprove`), the twin
-        // of SIGN_DOCUMENT: ctx from `buildBundle('signing')`, signs with the root key
-        // through the ONE gated primitive. The case keeps the pending Map + transport.
-        const paymentCtx = buildBundle('signing')
-
-        handlePaymentApprove(
-          {
-            paymentRequestUuid: pendingPayment.payReq.paymentRequestUuid,
-            amount: pendingPayment.payReq.amount,
-            selectedDid,
-          },
-          paymentCtx as never,
-        ).then((result) => {
-          if (result.ok) {
-            const responseData = {
-              did: result.did,
-              signature: result.signature,
-              publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
-            }
-            sendPaymentResponseToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } else {
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, result.error)
-            sendResponse({ ok: false, error: result.error })
+        pendingPaymentRequests.take(payApproveId).then((pendingPayment) => {
+          if (!pendingPayment) {
+            sendResponse({ ok: false, error: 'No pending payment request' })
+            return
           }
+
+          // Story 1.13 Phase 1b — PAYMENT signing core (`handlePaymentApprove`), the twin
+          // of SIGN_DOCUMENT: ctx from `buildBundle('signing')`, signs with the root key
+          // through the ONE gated primitive. The case keeps the transport.
+          const paymentCtx = buildBundle('signing')
+
+          return handlePaymentApprove(
+            {
+              paymentRequestUuid: pendingPayment.payReq.paymentRequestUuid,
+              amount: pendingPayment.payReq.amount,
+              selectedDid,
+            },
+            paymentCtx as never,
+          ).then((result) => {
+            if (result.ok) {
+              const responseData = {
+                did: result.did,
+                signature: result.signature,
+                publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+              }
+              sendPaymentResponseToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
+            }
+          })
         })
-        break
+        return true // async
       }
 
       case 'PAYMENT_DENY':
-        paymentConsent.deny(message.payload?.requestId as string)
-        sendResponse({ ok: true })
-        break
+        paymentConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true }))
+        return true // async
 
       // ── CHAPI Popup Handlers (Phantom-style approval flow) ──
 
       case 'CHAPI_GET_PENDING':
-        sendResponse(chapiConsent.peek(message.payload?.requestId as string))
-        break
+        chapiConsent.peek(message.payload?.requestId as string).then(sendResponse)
+        return true // async
 
       case 'CHAPI_APPROVE': {
         const approveReqId = message.payload?.requestId as string
-        const pending = pendingChapiRawRequests.get(approveReqId)
-        if (!pending) {
-          sendResponse({ ok: false, error: 'No pending request' })
-          break
-        }
-        pending.unregister?.()
-        pendingChapiRawRequests.delete(approveReqId)
-
-        // Story 1.13 Phase 1b — CHAPI presentation core (`handleChapiApprove`) gets its
-        // ctx from `buildBundle('signing')`; it builds the VP through the ONE gated
-        // primitive and returns it as DATA. This case owns the pending Map + transport.
-        const chapiCtx = buildBundle('signing')
-
-        handleChapiApprove(
-          {
-            challenge: pending.apiReq.challenge,
-            nonce: pending.apiReq.nonce,
-            domain: pending.apiReq.domain,
-            origin: pending.apiReq.origin,
-          },
-          chapiCtx as never,
-        ).then((result) => {
-          if (result.ok) {
-            // Send VP back to the original requesting tab (not the popup)
-            sendChapiPresentation(pending.senderTabId, pending.apiReq.requestId, result.presentation)
-            sendResponse({ ok: true, holderDid: result.holderDid })
-          } else {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, result.tabError ?? result.error)
-            sendResponse({ ok: false, error: result.error })
+        pendingChapiRawRequests.take(approveReqId).then((pending) => {
+          if (!pending) {
+            sendResponse({ ok: false, error: 'No pending request' })
+            return
           }
+
+          // Story 1.13 Phase 1b — CHAPI presentation core (`handleChapiApprove`) gets its
+          // ctx from `buildBundle('signing')`; it builds the VP through the ONE gated
+          // primitive and returns it as DATA. This case owns the transport.
+          const chapiCtx = buildBundle('signing')
+
+          return handleChapiApprove(
+            {
+              challenge: pending.apiReq.challenge,
+              nonce: pending.apiReq.nonce,
+              domain: pending.apiReq.domain,
+              origin: pending.apiReq.origin,
+            },
+            chapiCtx as never,
+          ).then((result) => {
+            if (result.ok) {
+              // Send VP back to the original requesting tab (not the popup)
+              sendChapiPresentation(pending.senderTabId, pending.apiReq.requestId, result.presentation)
+              sendResponse({ ok: true, holderDid: result.holderDid })
+            } else {
+              sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, result.tabError ?? result.error)
+              sendResponse({ ok: false, error: result.error })
+            }
+          })
         })
-        break
+        return true // async
       }
 
       case 'CHAPI_DENY':
-        chapiConsent.deny(message.payload?.requestId as string)
-        sendResponse({ ok: true })
-        break
+        chapiConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true }))
+        return true // async
 
       // ── Backend scan + report ──────────────────────────────────────────────
 

@@ -20,10 +20,15 @@ import {
   type ApprovalWindowPlatform,
 } from './approval-window'
 import { approvalParams } from '@/utils/approval-params'
+import { createPendingFlow, type PendingFlow } from './pending-flow'
+import { createPendingStore, type PendingStorage } from './pending-store'
 
 interface Row {
-  unregister?: () => void
+  id: string
 }
+
+/** Let the cleanup's promise chain settle — claiming a row is async now. */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
 /** A fake platform: no chrome, no real timers, and window closure is a function call. */
 function fakePlatform(overrides: Partial<ApprovalWindowPlatform> = {}) {
@@ -65,8 +70,32 @@ function fakePlatform(overrides: Partial<ApprovalWindowPlatform> = {}) {
   }
 }
 
-function rowMap(id: string): Map<string, Row> {
-  return new Map<string, Row>([[id, {}]])
+function memoryStorage(): PendingStorage {
+  let data: Record<string, unknown> = {}
+  return {
+    get: async (key) => (key in data ? { [key]: structuredClone(data[key]) } : {}),
+    set: async (entries) => {
+      data = { ...data, ...structuredClone(entries) }
+    },
+  }
+}
+
+/**
+ * A REAL pending flow, seeded with the given ids. Story 1.15 made the opener's
+ * view of a row `take` + `attachUnregister`; using the real flow here means the
+ * atomicity the cleanup now depends on is exercised, not restated.
+ *
+ * `put` is not awaited: every operation on a flow goes through one queue inside
+ * the store, so a later `take` cannot overtake this write.
+ */
+function rowFlow(...ids: string[]): PendingFlow<Row> & { has(id: string): Promise<boolean> } {
+  const flow = createPendingFlow<Row>(
+    createPendingStore({ flow: 'test', storage: memoryStorage(), now: () => 1_000_000 }),
+  )
+  for (const id of ids) void flow.put(id, { id })
+  return Object.assign(flow, {
+    has: async (id: string) => (await flow.peek(id)) !== null,
+  })
 }
 
 beforeEach(() => {
@@ -81,7 +110,7 @@ describe('the URL handed to approval.html', () => {
     const windows = createApprovalWindows(platform)
     const params = approvalParams.payment({ id: ID, origin: 'https://shop.cr', amount: 12, merchantName: 'Tienda' })
 
-    await windows.open({ id: ID, params, width: 380, height: 580, rows: rowMap(ID), logPrefix: '[Pay]' })
+    await windows.open({ id: ID, params, width: 380, height: 580, rows: rowFlow(ID), logPrefix: '[Pay]' })
 
     expect(created).toHaveLength(1)
     expect(created[0].url.startsWith('chrome-extension://test/approval.html?')).toBe(true)
@@ -96,7 +125,7 @@ describe('the URL handed to approval.html', () => {
       params: approvalParams.chapi({ id: ID }),
       width: 380,
       height: 520,
-      rows: rowMap(ID),
+      rows: rowFlow(ID),
       logPrefix: '[X]',
     })
     // 1000×800 window, 380×520 popup → centred.
@@ -114,7 +143,7 @@ describe('the URL handed to approval.html', () => {
       params: approvalParams.chapi({ id: ID }),
       width: 380,
       height: 520,
-      rows: rowMap(ID),
+      rows: rowFlow(ID),
       logPrefix: '[X]',
     })
     expect(created[0]).toMatchObject({ left: 100, top: 100 })
@@ -124,7 +153,7 @@ describe('the URL handed to approval.html', () => {
 describe('dismissing the approval window', () => {
   it('purges the pending row and tells the waiting page it was cancelled', async () => {
     const { platform, closeWindow, firstWindowId } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -136,17 +165,18 @@ describe('dismissing the approval window', () => {
       logPrefix: '[Sign]',
       reportCancelled: (m) => told.push(m),
     })
-    expect(rows.has(ID)).toBe(true)
+    expect(await rows.has(ID)).toBe(true)
 
     closeWindow(firstWindowId)
+    await flush()
 
-    expect(rows.has(ID)).toBe(false)
+    expect(await rows.has(ID)).toBe(false)
     expect(told).toEqual([WINDOW_CLOSED_MESSAGE])
   })
 
   it('does NOT report a cancellation once approve/deny consumed the row', async () => {
     const { platform, closeWindow, firstWindowId } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -159,16 +189,17 @@ describe('dismissing the approval window', () => {
       reportCancelled: (m) => told.push(m),
     })
 
-    // The approve path: consume the row, then close the window it opened.
-    rows.delete(ID)
+    // The approve path: claim the row, then close the window it opened.
+    await rows.take(ID)
     closeWindow(firstWindowId)
+    await flush()
 
     expect(told).toEqual([])
   })
 
-  it('is a no-op after the approve path unregistered, even if the row is somehow still present', async () => {
+  it('claiming the row IS the disarm — the two cannot be done separately', async () => {
     const { platform, closeWindow, firstWindowId } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -181,16 +212,18 @@ describe('dismissing the approval window', () => {
       reportCancelled: (m) => told.push(m),
     })
 
-    rows.get(ID)?.unregister?.()
+    // There is no way to disarm without claiming, and no way to claim twice.
+    // A second claimant — here the closing window — gets nothing to report.
+    expect(await rows.take(ID)).not.toBeNull()
     closeWindow(firstWindowId)
+    await flush()
 
     expect(told).toEqual([])
-    expect(rows.has(ID)).toBe(true)
   })
 
   it('reports exactly once when the window closes twice', async () => {
     const { platform, closeWindow, firstWindowId } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -205,13 +238,14 @@ describe('dismissing the approval window', () => {
 
     closeWindow(firstWindowId)
     closeWindow(firstWindowId)
+    await flush()
 
     expect(told).toEqual([WINDOW_CLOSED_MESSAGE])
   })
 
   it('stays silent for notification-style flows that have no page promise waiting', async () => {
     const { platform, closeWindow, firstWindowId } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
 
     // A credential offer passes no reporter — the page already got `pendingConsent: true`.
     await createApprovalWindows(platform).open({
@@ -224,14 +258,14 @@ describe('dismissing the approval window', () => {
     })
 
     expect(() => closeWindow(firstWindowId)).not.toThrow()
-    expect(rows.has(ID)).toBe(false)
+    expect(await rows.has(ID)).toBe(false)
   })
 })
 
 describe('the backstop', () => {
   it('cleans up a request whose window-closed event never arrives', async () => {
     const { platform, elapseBackstop } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -245,8 +279,9 @@ describe('the backstop', () => {
     })
 
     elapseBackstop()
+    await flush()
 
-    expect(rows.has(ID)).toBe(false)
+    expect(await rows.has(ID)).toBe(false)
     expect(told).toEqual([WINDOW_CLOSED_MESSAGE])
   })
 
@@ -257,7 +292,7 @@ describe('the backstop', () => {
       params: approvalParams.auth({ id: ID, origin: '' }),
       width: 380,
       height: 460,
-      rows: rowMap(ID),
+      rows: rowFlow(ID),
       logPrefix: '[Auth]',
     })
     expect(armedTimers().map((t) => t.ms)).toEqual([PENDING_REQUEST_BACKSTOP_MS])
@@ -266,7 +301,7 @@ describe('the backstop', () => {
 
   it('is disarmed by unregister, so an approved request cannot be cancelled later', async () => {
     const { platform, elapseBackstop } = fakePlatform()
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -279,8 +314,9 @@ describe('the backstop', () => {
       reportCancelled: (m) => told.push(m),
     })
 
-    rows.get(ID)?.unregister?.()
+    await rows.take(ID)
     elapseBackstop()
+    await flush()
 
     expect(told).toEqual([])
   })
@@ -293,7 +329,7 @@ describe('when the window cannot be opened at all', () => {
         throw new Error('no windows available')
       },
     })
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -306,7 +342,7 @@ describe('when the window cannot be opened at all', () => {
       reportCancelled: (m) => told.push(m),
     })
 
-    expect(rows.has(ID)).toBe(false)
+    expect(await rows.has(ID)).toBe(false)
     expect(told).toEqual([OPEN_FAILED_MESSAGE])
   })
 
@@ -321,7 +357,7 @@ describe('when the window cannot be opened at all', () => {
       params: approvalParams.signing({ id: ID }),
       width: 380,
       height: 580,
-      rows: rowMap(ID),
+      rows: rowFlow(ID),
       logPrefix: '[Sign]',
     })
     expect(armedTimers()).toEqual([])
@@ -329,7 +365,7 @@ describe('when the window cannot be opened at all', () => {
 
   it('still cleans up when the browser returns no window id', async () => {
     const { platform, elapseBackstop } = fakePlatform({ createWindow: async () => undefined })
-    const rows = rowMap(ID)
+    const rows = rowFlow(ID)
     const told: string[] = []
 
     await createApprovalWindows(platform).open({
@@ -344,18 +380,16 @@ describe('when the window cannot be opened at all', () => {
 
     // No id means no onRemoved correlation; only the backstop can save the page.
     elapseBackstop()
+    await flush()
     expect(told).toEqual([WINDOW_CLOSED_MESSAGE])
-    expect(rows.has(ID)).toBe(false)
+    expect(await rows.has(ID)).toBe(false)
   })
 })
 
 describe('concurrent approvals', () => {
   it('closing one window does not cancel another request', async () => {
     const { platform, closeWindow, firstWindowId } = fakePlatform()
-    const rows = new Map<string, Row>([
-      ['a', {}],
-      ['b', {}],
-    ])
+    const rows = rowFlow('a', 'b')
     const told: string[] = []
     const windows = createApprovalWindows(platform)
 
@@ -379,9 +413,10 @@ describe('concurrent approvals', () => {
     })
 
     closeWindow(firstWindowId)
+    await flush()
 
     expect(told).toEqual([`a:${WINDOW_CLOSED_MESSAGE}`])
-    expect(rows.has('b')).toBe(true)
+    expect(await rows.has('b')).toBe(true)
   })
 })
 

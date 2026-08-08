@@ -25,7 +25,11 @@ function harness(opts: { trusted?: boolean; acceptResult?: string | null } = {})
       log.push(`checked-trust:${origin}`)
       return opts.trusted ?? false
     },
-    stage: (notifId, offer, origin) => {
+    // Async since Story 1.15 (the row goes to storage), and deliberately resolved
+    // on a later tick: if the handler forgot to await it, the staged entry would
+    // land after `accepted`/`consent` and the ordering tests below would redden.
+    stage: async (notifId, offer, origin) => {
+      await Promise.resolve()
       log.push(`staged:${notifId}:${offer.format}:${origin}`)
     },
     accept: async (notifId) => {

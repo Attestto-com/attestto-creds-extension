@@ -36,8 +36,13 @@ export type CredentialOfferOutcome =
 export interface CredentialOfferCtx {
   /** Has the user previously approved this origin for silent identity sync? */
   isOriginTrusted(origin: string | null): Promise<boolean>
-  /** Put the offer in the pending map under `notifId`. Must happen before either branch. */
-  stage(notifId: string, offer: Offer, origin: string | null): void
+  /**
+   * Put the offer in the pending store under `notifId`. Must be AWAITED before
+   * either branch: since Story 1.15 the row is written to `storage.session`, and
+   * both branches below depend on it already being readable — the accept branch
+   * takes it, the consent branch opens a window whose cleanup can take it.
+   */
+  stage(notifId: string, offer: Offer, origin: string | null): Promise<void>
   /** Accept a staged offer, returning the new credential id (or null on failure). */
   accept(notifId: string): Promise<string | null>
   /** Open the approval window for a staged offer. */
@@ -52,7 +57,7 @@ export async function handleCredentialOffer(
   ctx: CredentialOfferCtx,
 ): Promise<CredentialOfferOutcome> {
   const notifId = ctx.newNotifId()
-  ctx.stage(notifId, offer, origin)
+  await ctx.stage(notifId, offer, origin)
 
   // A non-identity offer (sd-jwt, json-ld) is a one-off issuance event. It never
   // auto-accepts, no matter how trusted the origin is — trust was granted for
