@@ -10,6 +10,7 @@
  */
 
 import { STORAGE_KEYS } from '@/config/app'
+import { normalizeOrigin } from '@/utils/origin'
 
 export type SiteIdentityPrefs = Record<string, string>
 
@@ -22,20 +23,10 @@ async function writeMap(map: SiteIdentityPrefs): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.SITE_IDENTITY_PREFS]: map })
 }
 
-function normalize(origin: string | null | undefined): string | null {
-  if (!origin) return null
-  try {
-    const u = new URL(origin)
-    return `${u.protocol}//${u.host}`
-  } catch {
-    return null
-  }
-}
-
 export async function getPreferredIdentity(
   origin: string | null | undefined,
 ): Promise<string | null> {
-  const key = normalize(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return null
   const map = await readMap()
   return map[key] ?? null
@@ -45,7 +36,7 @@ export async function setPreferredIdentity(
   origin: string | null | undefined,
   did: string,
 ): Promise<void> {
-  const key = normalize(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return
   const map = await readMap()
   map[key] = did
@@ -53,7 +44,7 @@ export async function setPreferredIdentity(
 }
 
 export async function clearPreferredIdentity(origin: string): Promise<void> {
-  const key = normalize(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return
   const map = await readMap()
   delete map[key]
