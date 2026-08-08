@@ -23,7 +23,7 @@ import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
 import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
 import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
-import type { ProofAccessRequest, PreparedPresentation } from '@/types/credential'
+import type { VaultData } from '@/stores/wallet'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
@@ -61,6 +61,7 @@ import { createPendingConsent } from '@/background/consent/pending-consent'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
 import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
 import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
+import { recordProofAccessRequest, recordPreparedPresentation, linkWalletAddress } from '@/background/handlers/vault-records.handler'
 import { approvalParams } from '@/utils/approval-params'
 
 export default defineBackground(() => {
@@ -102,6 +103,22 @@ export default defineBackground(() => {
   // closed window into an explicit denial so the page never hangs — is the part
   // that had to stop being duplicated.
   const approvalWindows = createApprovalWindows(chromeApprovalWindowPlatform())
+
+  // ── Vault-record writers (Story 1.13 Phase 10) ─────────────────
+  // Proof-access requests, prepared presentations and the Solana link all append
+  // to the encrypted vault and MUST mirror to the public one (the dual-vault
+  // rule in CLAUDE.md). The write+mirror pair is applied inside the handler, so
+  // no call site can do one without the other.
+  const vaultRecordStore = {
+    read: () => readVault(),
+    write: (v: VaultData) => writeVault(v),
+    syncPublic: (v: VaultData) => syncPublicVault(v),
+  }
+  const vaultRecordCtx = {
+    store: vaultRecordStore,
+    clock: { nowIso: () => new Date().toISOString() },
+    newId: (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  }
 
   /**
    * Open the dedicated approval window for a credential offer (identity sync OR VC issuance).
@@ -661,93 +678,44 @@ export default defineBackground(() => {
       }
 
       case 'WALLET_LINK': {
-        const address = message.payload?.address as string | undefined
-        if (address) {
-          readVault().then(async (vault) => {
-            if (vault) {
-              vault.linkedSolanaAddress = address
-              await writeVault(vault)
-              await syncPublicVault(vault)
-            }
-            sendResponse({ ok: true })
-          })
-        } else {
-          sendResponse({ ok: false, error: 'No address provided' })
-        }
-        break
+        linkWalletAddress(message.payload?.address as string | undefined, { store: vaultRecordStore }).then(
+          (result) => sendResponse(result.ok ? { ok: true } : result),
+        )
+        return true // async
       }
 
       case 'PROOF_ACCESS_REQUEST': {
         const par = message.payload as ProofAccessRequestMessage['payload']
-        const proofRequest: ProofAccessRequest = {
-          id: `par-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          credentialId: par.credentialId,
-          requesterDid: par.requesterDid,
-          requesterName: par.requesterName,
-          purpose: par.purpose,
-          requestedFields: par.requestedFields,
-          approvedFields: [],
-          status: 'pending',
-          receivedAt: new Date().toISOString(),
-          decidedAt: null,
-          expiresAt: par.expiresAt,
-          transport: par.transport,
-          nonce: par.nonce,
-          audience: par.audience,
-        }
-
-        // Store in vault
-        readVault().then(async (vault) => {
-          if (vault) {
-            vault.proofRequests = [...(vault.proofRequests ?? []), proofRequest]
-            await writeVault(vault)
-            await syncPublicVault(vault)
-          }
+        recordProofAccessRequest(par, vaultRecordCtx).then(({ record }) => {
+          // Parity: the caller is told `ok` even when `stored` was false (a
+          // locked vault drops the request). The handler reports the truth; this
+          // line is the one that discards it. See SOC-145's sibling gap — the
+          // notification below has no working handler either.
+          chrome.notifications.create(record.id, {
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icon/48.png'),
+            title: 'Proof Access Request',
+            message: `${par.requesterName} is requesting access to ${par.requestedFields.length} field(s).`,
+            buttons: [{ title: 'Review' }, { title: 'Dismiss' }],
+            requireInteraction: true,
+          })
+          sendResponse({ ok: true, requestId: record.id })
         })
-
-        // Show notification
-        chrome.notifications.create(proofRequest.id, {
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icon/48.png'),
-          title: 'Proof Access Request',
-          message: `${par.requesterName} is requesting access to ${par.requestedFields.length} field(s).`,
-          buttons: [{ title: 'Review' }, { title: 'Dismiss' }],
-          requireInteraction: true,
-        })
-
-        sendResponse({ ok: true, requestId: proofRequest.id })
-        break
+        return true // async
       }
 
       case 'PUSH_PRESENTATION': {
         const push = message.payload as PushPresentationMessage['payload']
-        const prep: PreparedPresentation = {
-          id: `prep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          credentialId: push.credentialId,
-          presentation: push.presentation,
-          selectedFields: push.selectedFields,
-          createdAt: new Date().toISOString(),
-          expiresAt: push.expiresAt,
-          used: false,
-          usedAt: null,
-        }
-
-        readVault().then(async (vault) => {
-          if (vault) {
-            vault.preparedPresentations = [...(vault.preparedPresentations ?? []), prep]
-            await writeVault(vault)
-            await syncPublicVault(vault)
-          }
-          sendResponse({ ok: true, preparedId: prep.id })
+        recordPreparedPresentation(push, vaultRecordCtx).then(({ record }) => {
+          sendResponse({ ok: true, preparedId: record.id })
         })
-
         chrome.notifications.create({
           type: 'basic',
           iconUrl: chrome.runtime.getURL('icon/48.png'),
           title: 'Presentation Ready',
           message: `A prepared presentation with ${push.selectedFields.length} field(s) is ready in your vault.`,
         })
-        break
+        return true // async
       }
 
       case 'DIDCOMM_INBOUND': {
