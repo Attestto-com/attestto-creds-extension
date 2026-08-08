@@ -4,6 +4,7 @@ import { useWalletStore } from '@/stores/wallet'
 import { getPreferredIdentity, setPreferredIdentity } from '@/utils/site-identity-prefs'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { requireUserVerification, getKdfMethod } from '@/utils/webauthn'
+import { resolveApprovalMode } from '@/utils/approval-params'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 import {
   ShieldCheckIcon,
@@ -159,50 +160,45 @@ onMounted(async () => {
   window.addEventListener('pointerdown', armAutoClose)
   window.addEventListener('keydown', armAutoClose)
 
-  const params = new URLSearchParams(window.location.search)
+  // Mode detection lives in `@/utils/approval-params` (Story 1.13 Phase 4) — the
+  // ONE home for the approval-window URL contract, shared with the background
+  // openers that construct these URLs. This block only binds the result to refs.
+  const request = resolveApprovalMode(window.location.search)
 
-  // Detect mode: credential-offer, auth (login), attestto PDF, signing, payment, or CHAPI
-  const credentialOfferParam = params.get('credentialOfferId')
-  const authReqId = params.get('authRequest')
-  const signReqId = params.get('signingRequest')
-  const payReqId = params.get('paymentRequest')
-  const chapiReqId = params.get('chapiRequest')
-  const attesttoPdfReqId = params.get('attesttoPdfRequest')
-
-  if (credentialOfferParam) {
+  if (request.mode === 'credentialOffer') {
     isCredentialOffer.value = true
-    credentialOfferId.value = credentialOfferParam
-    requestId.value = credentialOfferParam
-    credentialOfferFormat.value = params.get('format') || ''
-    credentialOfferIssuer.value = params.get('issuerName') || 'A site'
-    origin.value = params.get('origin') || ''
-  } else if (authReqId) {
+    credentialOfferId.value = request.requestId
+    requestId.value = request.requestId
+    credentialOfferFormat.value = request.format
+    credentialOfferIssuer.value = request.issuerName
+    origin.value = request.origin
+  } else if (request.mode === 'auth') {
     isAuth.value = true
-    requestId.value = authReqId
-    origin.value = params.get('origin') || ''
-    siteName.value = params.get('siteName')?.trim() || null
-  } else if (attesttoPdfReqId) {
+    requestId.value = request.requestId
+    origin.value = request.origin
+    siteName.value = request.siteName
+  } else if (request.mode === 'attesttoPdf') {
     isAttesttoPdf.value = true
-    requestId.value = attesttoPdfReqId
-    origin.value = params.get('origin') || ''
-    attesttoPdfFileName.value = params.get('fileName') || 'document.pdf'
-    attesttoPdfHash.value = params.get('documentHash') || ''
-  } else if (signReqId) {
+    requestId.value = request.requestId
+    origin.value = request.origin
+    attesttoPdfFileName.value = request.fileName
+    attesttoPdfHash.value = request.documentHash
+  } else if (request.mode === 'signing') {
     isSigning.value = true
-    requestId.value = signReqId
-    origin.value = params.get('origin') || ''
-    documentTitle.value = params.get('documentTitle') || ''
-    signerName.value = params.get('signerName') || ''
-  } else if (payReqId) {
+    requestId.value = request.requestId
+    origin.value = request.origin
+    documentTitle.value = request.documentTitle
+    signerName.value = request.signerName
+  } else if (request.mode === 'payment') {
     isPayment.value = true
-    requestId.value = payReqId
-    origin.value = params.get('origin') || ''
-    paymentAmount.value = Number(params.get('amount') || '0')
-    paymentCurrency.value = params.get('currency') || 'USDC'
-    merchantName.value = params.get('merchant') || ''
-  } else if (chapiReqId) {
-    requestId.value = chapiReqId
-    origin.value = params.get('origin') || ''
+    requestId.value = request.requestId
+    origin.value = request.origin
+    paymentAmount.value = request.amount
+    paymentCurrency.value = request.currency
+    merchantName.value = request.merchant
+  } else if (request.mode === 'chapi') {
+    requestId.value = request.requestId
+    origin.value = request.origin
   }
 
   if (!requestId.value) {

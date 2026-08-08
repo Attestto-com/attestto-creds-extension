@@ -60,6 +60,8 @@ import {
   sendKeyRestoreResponse,
   sendReshareError,
 } from '@/background/transport/tab-responses'
+import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
+import { approvalParams } from '@/utils/approval-params'
 
 export default defineBackground(() => {
   // ── Toolbar trust state (ATT-727) ──────────────────
@@ -93,121 +95,37 @@ export default defineBackground(() => {
     }
   }
 
-  // ── Approval window placement ──────────────────────
-  // Position approval popups at the top-right of the focused window (Phantom/MetaMask style)
-  // instead of Chrome's default (0, 0) which lands them in the corner of the display.
-  async function computeApprovalPosition(
-    width: number,
-    height: number,
-  ): Promise<{ left: number; top: number }> {
-    try {
-      const current = await chrome.windows.getCurrent()
-      const winLeft = current.left ?? 0
-      const winTop = current.top ?? 0
-      const winWidth = current.width ?? 1280
-      const winHeight = current.height ?? 800
-      // Center the approval window over the active browser window.
-      return {
-        left: Math.max(0, Math.round(winLeft + (winWidth - width) / 2)),
-        top: Math.max(0, Math.round(winTop + (winHeight - height) / 2)),
-      }
-    } catch {
-      return { left: 100, top: 100 }
-    }
-  }
-
-  // ── Approval window lifecycle tracking ─────────────
-  // When the user dismisses an approval window without clicking approve/deny, we
-  // must send an error back to the originating page so it doesn't hang. We also
-  // run a per-request timeout backstop in case onRemoved never fires.
-  //
-  // Flow: open*Window registers a cleanup → user closes window OR backstop fires
-  // → cleanup runs (page gets error, pending map is purged). On approve/deny,
-  // the handler calls `unregister` BEFORE sending its response so the cleanup
-  // becomes a no-op.
-
-  const windowCleanups = new Map<number, () => void>()
-
-  // 5 minutes — generous backstop. The page-side TIMEOUT_MS is 30s, so the page
-  // will reject first in nearly all cases. This catches the pathological case
-  // where chrome.windows.onRemoved never fires (extension crash, page closed
-  // before popup, etc.) so pending maps don't leak forever.
-  const PENDING_REQUEST_BACKSTOP_MS = 5 * 60 * 1000
-
-  function registerApprovalWindow(
-    windowId: number | undefined,
-    cleanup: () => void,
-  ): () => void {
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    const unregister = (): void => {
-      if (windowId !== undefined) windowCleanups.delete(windowId)
-      if (timer) {
-        clearTimeout(timer)
-        timer = null
-      }
-    }
-
-    const wrapped = (): void => {
-      unregister()
-      try {
-        cleanup()
-      } catch (err) {
-        console.error('[Attestto ID] Approval window cleanup failed:', err)
-      }
-    }
-
-    if (windowId !== undefined) {
-      windowCleanups.set(windowId, wrapped)
-    }
-    timer = setTimeout(wrapped, PENDING_REQUEST_BACKSTOP_MS)
-    return unregister
-  }
-
-  chrome.windows.onRemoved.addListener((windowId) => {
-    const cleanup = windowCleanups.get(windowId)
-    if (cleanup) cleanup()
-  })
+  // ── Approval windows ───────────────────────────────
+  // Opening a consent popup, positioning it, and cleaning up after a dismissed
+  // one live in `background/consent/approval-window.ts` (Story 1.13 Phase 4).
+  // Six flows shared one algorithm in six copies; the cleanup half — turning a
+  // closed window into an explicit denial so the page never hangs — is the part
+  // that had to stop being duplicated.
+  const approvalWindows = createApprovalWindows(chromeApprovalWindowPlatform())
 
   /**
    * Open the dedicated approval window for a credential offer (identity sync OR VC issuance).
-   * Replaces the OS-notification flow which is unreliable across platforms.
+   * Notification-style: the page sent CREDENTIAL_PUSH and already got
+   * `pendingConsent: true`, so there is no promise to reject — cleanup only purges.
    */
   async function openCredentialOfferApprovalWindow(
     notifId: string,
     offer: CredentialOfferMessage['payload'],
     origin: string | null,
   ): Promise<void> {
-    const params = new URLSearchParams({
-      credentialOfferId: notifId,
-      format: offer.format,
-      issuerName: offer.issuerName,
-      origin: origin ?? '',
+    await approvalWindows.open({
+      id: notifId,
+      params: approvalParams.credentialOffer({
+        id: notifId,
+        format: offer.format,
+        issuerName: offer.issuerName,
+        origin,
+      }),
+      width: 420,
+      height: 560,
+      rows: pendingOffers,
+      logPrefix: '[Attestto ID] credential offer:',
     })
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-    try {
-      const pos = await computeApprovalPosition(420, 560)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 420,
-        height: 560,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      // Credential offers are notification-style: the page sent CREDENTIAL_PUSH
-      // and already got `pendingConsent: true`. No outstanding promise on the
-      // page side, so cleanup just purges the local pending map.
-      const unregister = registerApprovalWindow(win?.id, () => {
-        pendingOffers.delete(notifId)
-      })
-      const pending = pendingOffers.get(notifId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto ID] Failed to open credential offer approval window:', err)
-      pendingOffers.delete(notifId)
-    }
   }
 
   // ── Alarms — keep offscreen alive ──────────────────
@@ -324,40 +242,20 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     pendingSigningRequests.set(signReq.requestId, { signReq, senderTabId })
-
-    const params = new URLSearchParams({
-      signingRequest: signReq.requestId,
-      origin: signReq.origin || '',
-      documentTitle: signReq.documentTitle || '',
-      signerName: signReq.signerName || '',
+    await approvalWindows.open({
+      id: signReq.requestId,
+      params: approvalParams.signing({
+        id: signReq.requestId,
+        origin: signReq.origin,
+        documentTitle: signReq.documentTitle,
+        signerName: signReq.signerName,
+      }),
+      width: 380,
+      height: 580,
+      rows: pendingSigningRequests,
+      logPrefix: '[Attestto Sign]',
+      reportCancelled: (message) => sendSigningErrorToTab(senderTabId, signReq.requestId, message),
     })
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      const pos = await computeApprovalPosition(380, 580)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 580,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingSigningRequests.has(signReq.requestId)) {
-          pendingSigningRequests.delete(signReq.requestId)
-          sendSigningErrorToTab(senderTabId, signReq.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingSigningRequests.get(signReq.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto Sign] Failed to open signing approval window:', err)
-      pendingSigningRequests.delete(signReq.requestId)
-      sendSigningErrorToTab(senderTabId, signReq.requestId, 'Could not open approval window')
-    }
   }
 
   /**
@@ -469,41 +367,18 @@ export default defineBackground(() => {
       }
     }
 
-    const params = new URLSearchParams({
-      authRequest: requestId,
-      origin: origin || '',
+    // Aligned with other approval modes (380 wide) after the compact-header
+    // refactor — the old 420×620 was sized for the bigger hero card. Height
+    // dropped to 460 to remove the empty bottom gap visible at 620.
+    await approvalWindows.open({
+      id: requestId,
+      params: approvalParams.auth({ id: requestId, origin, siteName }),
+      width: 380,
+      height: 460,
+      rows: pendingAuthRequests,
+      logPrefix: '[Attestto ID] auth:',
+      reportCancelled: (message) => sendError(senderTabId, requestId, message),
     })
-    if (siteName) params.set('siteName', siteName)
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      // Aligned with other approval modes (380 wide) after the compact-header
-      // refactor — the old 420×620 was sized for the bigger hero card. Height
-      // dropped to 460 to remove the empty bottom gap visible at 620.
-      const pos = await computeApprovalPosition(380, 460)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 460,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingAuthRequests.has(requestId)) {
-          pendingAuthRequests.delete(requestId)
-          sendError(senderTabId, requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingAuthRequests.get(requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto ID] Failed to open auth approval window:', err)
-      pendingAuthRequests.delete(requestId)
-      sendError(senderTabId, requestId, 'Could not open approval window')
-    }
   }
 
   /**
@@ -554,40 +429,20 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     pendingAttesttoPdfRequests.set(req.requestId, { req, senderTabId })
-
-    const params = new URLSearchParams({
-      attesttoPdfRequest: req.requestId,
-      origin: req.origin || '',
-      fileName: req.fileName || '',
-      documentHash: req.documentHash || '',
+    await approvalWindows.open({
+      id: req.requestId,
+      params: approvalParams.attesttoPdf({
+        id: req.requestId,
+        origin: req.origin,
+        fileName: req.fileName,
+        documentHash: req.documentHash,
+      }),
+      width: 380,
+      height: 580,
+      rows: pendingAttesttoPdfRequests,
+      logPrefix: '[Attestto Sign] PDF:',
+      reportCancelled: (message) => sendAttesttoPdfErrorToTab(senderTabId, req.requestId, message),
     })
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      const pos = await computeApprovalPosition(380, 580)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 580,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingAttesttoPdfRequests.has(req.requestId)) {
-          pendingAttesttoPdfRequests.delete(req.requestId)
-          sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingAttesttoPdfRequests.get(req.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto Sign] Failed to open Attestto PDF approval window:', err)
-      pendingAttesttoPdfRequests.delete(req.requestId)
-      sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'Could not open approval window')
-    }
   }
 
   // Ed25519 provisioning (ATT-364) moved to `createSigningAdapters` (Story 1.13
@@ -602,41 +457,21 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     pendingPaymentRequests.set(payReq.requestId, { payReq, senderTabId })
-
-    const params = new URLSearchParams({
-      paymentRequest: payReq.requestId,
-      origin: payReq.origin || '',
-      amount: String(payReq.amount),
-      currency: payReq.currency || 'USDC',
-      merchant: payReq.merchantName || '',
+    await approvalWindows.open({
+      id: payReq.requestId,
+      params: approvalParams.payment({
+        id: payReq.requestId,
+        origin: payReq.origin,
+        amount: payReq.amount,
+        currency: payReq.currency,
+        merchantName: payReq.merchantName,
+      }),
+      width: 380,
+      height: 580,
+      rows: pendingPaymentRequests,
+      logPrefix: '[Attestto Pay]',
+      reportCancelled: (message) => sendPaymentErrorToTab(senderTabId, payReq.requestId, message),
     })
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      const pos = await computeApprovalPosition(380, 580)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 580,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingPaymentRequests.has(payReq.requestId)) {
-          pendingPaymentRequests.delete(payReq.requestId)
-          sendPaymentErrorToTab(senderTabId, payReq.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingPaymentRequests.get(payReq.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto Pay] Failed to open payment approval window:', err)
-      pendingPaymentRequests.delete(payReq.requestId)
-      sendPaymentErrorToTab(senderTabId, payReq.requestId, 'Could not open approval window')
-    }
   }
 
   /**
@@ -852,35 +687,15 @@ export default defineBackground(() => {
   ): Promise<void> {
     // Store the raw request + sender tab for the approval page to use
     pendingChapiRawRequests.set(apiReq.requestId, { apiReq, senderTabId })
-
-    const approvalUrl = chrome.runtime.getURL(
-      `approval.html?chapiRequest=${encodeURIComponent(apiReq.requestId)}&origin=${encodeURIComponent(apiReq.origin || '')}`
-    )
-
-    try {
-      const pos = await computeApprovalPosition(380, 520)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 520,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingChapiRawRequests.has(apiReq.requestId)) {
-          pendingChapiRawRequests.delete(apiReq.requestId)
-          sendChapiErrorToTab(senderTabId, apiReq.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingChapiRawRequests.get(apiReq.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto ID] Failed to open approval window:', err)
-      pendingChapiRawRequests.delete(apiReq.requestId)
-      sendChapiErrorToTab(senderTabId, apiReq.requestId, 'Could not open approval window')
-    }
+    await approvalWindows.open({
+      id: apiReq.requestId,
+      params: approvalParams.chapi({ id: apiReq.requestId, origin: apiReq.origin }),
+      width: 380,
+      height: 520,
+      rows: pendingChapiRawRequests,
+      logPrefix: '[Attestto ID] CHAPI:',
+      reportCancelled: (message) => sendChapiErrorToTab(senderTabId, apiReq.requestId, message),
+    })
   }
 
   /**
