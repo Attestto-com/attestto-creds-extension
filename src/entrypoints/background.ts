@@ -15,6 +15,7 @@ import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
+import { handleChapiApprove } from '@/background/handlers/chapi-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
@@ -2193,54 +2194,35 @@ export default defineBackground(() => {
         pending.unregister?.()
         pendingChapiRawRequests.delete(approveReqId)
 
-        readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
+        // Story 1.11 — CHAPI presentation core extracted (`handleChapiApprove`). It
+        // builds the VP through the gated primitive and returns it as DATA; this case
+        // owns the pending Map + transport (route wiring waits on the pending port).
+        const chapiCtx = {
+          store: { read: () => readVault() },
+          crypto: { sign: createGatedSign({ assertPresence: async () => {}, rawSign: rootRawSign }) },
+        }
 
-          const holderDid = vault.holderDid
-            ?? vault.did
-            ?? (vault.linkedSolanaAddress
-              ? `did:pkh:solana:${vault.linkedSolanaAddress}`
-              : null)
-
-          if (!holderDid) {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'No DID configured')
-            sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          const credentials = (vault.credentials ?? []) as StoredCredential[]
-          const vcs = credentials
-            .filter((c) => c.format === 'json-ld')
-            .map((c) => JSON.parse(c.raw) as Record<string, unknown>)
-
-          const challenge = pending.apiReq.challenge ?? pending.apiReq.nonce ?? ''
-          const domain = pending.apiReq.domain ?? pending.apiReq.origin ?? ''
-
-          try {
-            const vp = await createChapiVp({
-              credentials: vcs,
-              holderDid,
-              sign: gatedJwsSigner(vault.privateKeyJwk!),
-              challenge,
-              domain,
-              verificationMethod: vault.verificationMethod,
-            })
-
+        handleChapiApprove(
+          {
+            challenge: pending.apiReq.challenge,
+            nonce: pending.apiReq.nonce,
+            domain: pending.apiReq.domain,
+            origin: pending.apiReq.origin,
+          },
+          chapiCtx as never,
+        ).then((result) => {
+          if (result.ok) {
             // Send VP back to the original requesting tab (not the popup)
             if (pending.senderTabId) {
               notifyTab(pending.senderTabId, {
                 type: 'CREDENTIAL_API_RESPONSE',
-                payload: { requestId: pending.apiReq.requestId, presentation: vp },
+                payload: { requestId: pending.apiReq.requestId, presentation: result.presentation },
               })
             }
-            sendResponse({ ok: true, holderDid })
-          } catch {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Failed to build presentation')
-            sendResponse({ ok: false, error: 'VP build failed' })
+            sendResponse({ ok: true, holderDid: result.holderDid })
+          } else {
+            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, result.tabError ?? result.error)
+            sendResponse({ ok: false, error: result.error })
           }
         })
         break
