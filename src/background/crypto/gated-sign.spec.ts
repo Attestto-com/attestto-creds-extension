@@ -37,6 +37,22 @@ describe('createGatedSign — happy path', () => {
     await sign(payload)
     expect(rawSign).toHaveBeenCalledWith(payload)
   })
+
+  it('PAYLOAD-BOUND (WYSIWYS): the gate receives the EXACT bytes being signed', async () => {
+    // Story 1.11: a presence proof authorizes ONE operation. If the gate did not
+    // see the payload, a proof minted for req A could gate req B. Assert the gate
+    // is called with the SAME bytes handed to rawSign (not a stale/other payload).
+    const payload = new Uint8Array([4, 2, 4, 2])
+    const assertPresence: PresenceGate = vi.fn(async () => {})
+    const rawSign: RawSign = vi.fn(async () => sig(1))
+    const sign = createGatedSign({ assertPresence, rawSign })
+    await sign(payload)
+    expect(assertPresence).toHaveBeenCalledWith(payload)
+    // and it is the very bytes rawSign got — one operation, one proof
+    expect((assertPresence as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(
+      (rawSign as ReturnType<typeof vi.fn>).mock.calls[0][0],
+    )
+  })
 })
 
 describe('createGatedSign — FAIL-CLOSED (the story\'s core referent)', () => {

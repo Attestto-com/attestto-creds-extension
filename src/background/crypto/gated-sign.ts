@@ -25,11 +25,19 @@
 import type { Crypto, Signature } from '@/background/ports/ports'
 
 /**
- * Prove a fresh, present human immediately before signing. Fail-closed: MUST
- * reject when the user is absent/cancels. The bound implementation is
- * `requireUserVerification` (WebAuthn assertion, `userVerification: 'required'`).
+ * Prove a fresh, present human immediately before signing THIS payload.
+ * Fail-closed: MUST reject when the user is absent/cancels. The bound
+ * implementation is `requireUserVerification` (WebAuthn assertion,
+ * `userVerification: 'required'`), bound at the composition root (Story 1.13).
+ *
+ * PAYLOAD-BOUND (Story 1.11, WYSIWYS): the gate receives the exact bytes about to
+ * be signed, so a presence proof authorizes ONE operation — a proof minted for
+ * request A cannot gate request B. The passthrough binding used until 1.13 ignores
+ * the argument; the deferred cross-process UV-proof (see planning-artifacts) is
+ * where the payload actually gets checked. Widening `assertPresence` back to
+ * `() => Promise<void>` would silently re-open cross-request proof replay.
  */
-export type PresenceGate = () => Promise<void>
+export type PresenceGate = (payload: Uint8Array) => Promise<void>
 
 /**
  * The raw signer over already-unlocked key material. A composition-root-only
@@ -46,7 +54,7 @@ export function createGatedSign(deps: {
   rawSign: RawSign
 }): Crypto['sign'] {
   return async (payload: Uint8Array): Promise<Signature> => {
-    await deps.assertPresence() // fail-closed: a throw here means no signature
+    await deps.assertPresence(payload) // fail-closed: a throw here means no signature; bound to THESE bytes
     return deps.rawSign(payload)
   }
 }
