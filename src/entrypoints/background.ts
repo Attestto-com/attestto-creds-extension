@@ -21,15 +21,16 @@ import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createBuildBundle } from '@/background/ctx/build-bundle'
 import { createSigningAdapters, es256RawSign } from '@/background/adapters/signing-adapters'
+import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
+import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
+import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { LinkedIdentity } from '@/stores/wallet'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation, CredentialFormat } from '@/types/credential'
-import { publicJwkToDid } from '@/utils/did-jwk'
 import { extractDidLabel } from '@/utils/did-label'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
-import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
@@ -413,6 +414,25 @@ export default defineBackground(() => {
     untrusted: unwiredBundle('untrusted'),
     consent: unwiredBundle('consent'),
     keyAdmin: unwiredBundle('keyAdmin'),
+  })
+
+  /**
+   * Transitional inline KeyAdmin ctx (Story 1.13 Phase 2) for the extracted
+   * key-lifecycle cores (rotate/backup/restore): `store` = read/write/mirror via the
+   * vault utils, `keygen` = P-256 generation. A fresh object per call. Consolidated
+   * into `buildBundle('keyAdmin')` in a later phase, mirroring how signing moved in 1b.
+   */
+  const keyAdminCtx = () => ({
+    store: { read: readVault, write: writeVault, syncPublic: syncPublicVault },
+    keygen: {
+      generateP256: async () => {
+        const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+        return {
+          privateKeyJwk: await crypto.subtle.exportKey('jwk', kp.privateKey),
+          publicKeyJwk: await crypto.subtle.exportKey('jwk', kp.publicKey),
+        }
+      },
+    },
   })
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
@@ -1049,57 +1069,8 @@ export default defineBackground(() => {
   }
 
   // ── Key Rotation (Phase D) ──────────────────────────
-
-  async function handleKeyRotate(
-    rotateReq: KeyRotateMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendKeyRotateResponse(senderTabId, rotateReq.requestId, null, null, 'Vault is locked')
-      return
-    }
-
-    if (!vault.privateKeyJwk) {
-      sendKeyRotateResponse(senderTabId, rotateReq.requestId, null, null, 'No existing key to rotate')
-      return
-    }
-
-    // Capture old public key before overwriting
-    const oldPublicKeyJwk: JsonWebKey = {
-      kty: vault.privateKeyJwk.kty,
-      crv: vault.privateKeyJwk.crv,
-      x: vault.privateKeyJwk.x,
-      y: vault.privateKeyJwk.y,
-    }
-
-    // Generate fresh P-256 keypair
-    const keyPair = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['sign', 'verify'],
-    )
-
-    vault.privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
-
-    // Update self-issued did:jwk to match new key
-    const newPublicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-    vault.did = publicJwkToDid(newPublicJwk)
-
-    await writeVault(vault)
-    // Mirror the rotated did:jwk into the public vault, or hasIdentity() (auth
-    // fail-fast) and the popup keep reading a stale/empty did after rotation.
-    await syncPublicVault(vault)
-
-    const newPublicKeyJwk: JsonWebKey = {
-      kty: newPublicJwk.kty,
-      crv: newPublicJwk.crv,
-      x: newPublicJwk.x,
-      y: newPublicJwk.y,
-    }
-
-    sendKeyRotateResponse(senderTabId, rotateReq.requestId, newPublicKeyJwk, oldPublicKeyJwk, null)
-  }
+  // `handleKeyRotate` extracted to `handlers/key-rotate.handler.ts` (Story 1.13
+  // Phase 2) — a pure KeyAdmin core returning DATA; this case transports the result.
 
   function sendKeyRotateResponse(
     tabId: number | null,
@@ -1119,40 +1090,8 @@ export default defineBackground(() => {
   }
 
   // ── Key Backup / Restore (Phase E) ─────────────────
-
-  async function handleKeyBackup(
-    backupReq: KeyBackupMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendKeyBackupResponse(senderTabId, backupReq.requestId, null, 'Vault is locked')
-      return
-    }
-
-    if (!vault.privateKeyJwk) {
-      sendKeyBackupResponse(senderTabId, backupReq.requestId, null, 'No private key to back up')
-      return
-    }
-
-    // Serialize the private key JWK to bytes
-    const keyBytes = new TextEncoder().encode(JSON.stringify(vault.privateKeyJwk))
-
-    // Split into 2-of-3 Shamir shares
-    const [share1, share2, share3] = split2of3(keyBytes)
-
-    // Compute a hash of the original key for verification after reconstruction
-    const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
-    const hashArray = new Uint8Array(hashBuffer)
-    const keyHash = toBase64Url(hashArray)
-
-    sendKeyBackupResponse(senderTabId, backupReq.requestId, {
-      deviceShare: { data: toBase64Url(share1), index: 1 },
-      cloudShare: { data: toBase64Url(share2), index: 2 },
-      guardianShare: { data: toBase64Url(share3), index: 3 },
-      keyHash,
-    }, null)
-  }
+  // `handleKeyBackup` extracted to `handlers/key-backup.handler.ts` (Story 1.13
+  // Phase 2) — a read-only KeyAdmin core returning the shares as DATA.
 
   function sendKeyBackupResponse(
     tabId: number | null,
@@ -1175,59 +1114,8 @@ export default defineBackground(() => {
     })
   }
 
-  async function handleKeyRestore(
-    restoreReq: KeyRestoreMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, 'Vault is locked')
-      return
-    }
-
-    try {
-      const shareA = {
-        data: fromBase64Url(restoreReq.shareA.data),
-        index: restoreReq.shareA.index,
-      }
-      const shareB = {
-        data: fromBase64Url(restoreReq.shareB.data),
-        index: restoreReq.shareB.index,
-      }
-
-      // Reconstruct the private key bytes
-      const keyBytes = combine2of3(shareA, shareB)
-      const keyJson = new TextDecoder().decode(keyBytes)
-      const privateKeyJwk = JSON.parse(keyJson) as JsonWebKey
-
-      // Validate it's a valid P-256 private key
-      if (privateKeyJwk.kty !== 'EC' || privateKeyJwk.crv !== 'P-256' || !privateKeyJwk.d) {
-        sendKeyRestoreResponse(senderTabId, restoreReq.requestId, 'Reconstructed key is not a valid P-256 private key')
-        return
-      }
-
-      // Write restored key to vault
-      vault.privateKeyJwk = privateKeyJwk
-
-      // Regenerate did:jwk from the restored key
-      const publicJwk: JsonWebKey = {
-        kty: privateKeyJwk.kty,
-        crv: privateKeyJwk.crv,
-        x: privateKeyJwk.x,
-        y: privateKeyJwk.y,
-      }
-      vault.did = publicJwkToDid(publicJwk)
-
-      await writeVault(vault)
-      // Mirror the restored did:jwk into the public vault, or hasIdentity()
-      // (auth fail-fast) and the popup keep reading an empty did after recovery.
-      await syncPublicVault(vault)
-      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, null)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Key restoration failed'
-      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, msg)
-    }
-  }
+  // `handleKeyRestore` extracted to `handlers/key-restore.handler.ts` (Story 1.13
+  // Phase 2) — a pure KeyAdmin core (validate → write → mirror) returning DATA.
 
   function sendKeyRestoreResponse(
     tabId: number | null,
@@ -1661,7 +1549,9 @@ export default defineBackground(() => {
           break
         }
         const rotateReq = message.payload as KeyRotateMessage['payload']
-        handleKeyRotate(rotateReq, sender.tab?.id ?? null).then(() => {
+        const rotateTabId = sender.tab?.id ?? null
+        handleKeyRotate(keyAdminCtx()).then((result) => {
+          sendKeyRotateResponse(rotateTabId, rotateReq.requestId, result.newPublicKeyJwk, result.oldPublicKeyJwk, result.error)
           sendResponse({ ok: true })
         })
         break
@@ -1674,7 +1564,9 @@ export default defineBackground(() => {
           break
         }
         const backupReq = message.payload as KeyBackupMessage['payload']
-        handleKeyBackup(backupReq, sender.tab?.id ?? null).then(() => {
+        const backupTabId = sender.tab?.id ?? null
+        handleKeyBackup(keyAdminCtx()).then((result) => {
+          sendKeyBackupResponse(backupTabId, backupReq.requestId, result.shares, result.error)
           sendResponse({ ok: true })
         })
         break
@@ -1687,7 +1579,9 @@ export default defineBackground(() => {
           break
         }
         const restoreReq = message.payload as KeyRestoreMessage['payload']
-        handleKeyRestore(restoreReq, sender.tab?.id ?? null).then(() => {
+        const restoreTabId = sender.tab?.id ?? null
+        handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminCtx()).then((result) => {
+          sendKeyRestoreResponse(restoreTabId, restoreReq.requestId, result.error)
           sendResponse({ ok: true })
         })
         break
