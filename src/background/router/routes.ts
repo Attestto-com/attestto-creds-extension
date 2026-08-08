@@ -18,6 +18,7 @@
 import type { MessageType } from './message-types'
 import type { CtxBundleTag, Route } from './route'
 import { handleDidcommInbound } from '@/background/handlers/didcomm-inbound.handler'
+import { handleDidSync } from '@/background/handlers/did-sync.handler'
 
 function notImplemented(): never {
   throw new Error(
@@ -50,6 +51,22 @@ const didcommInboundRoute: Route<'DIDCOMM_INBOUND', 'untrusted'> = {
   verifyPeer: { check: 'envelope' },
 }
 
+// Story 1.10 — the second EXTRACTED route (first KeyAdmin). `handle` is the real
+// vault-mutation handler; it returns the DID_SYNC_RESPONSE data (the case
+// transports it). `verifyPeer: { check: 'vmBinding' }` declares the AD-9/10 seam
+// for the SAME missing control as counterparty validation: proof that the DID's
+// verification method controls the synced key (proof-of-control), filled in Epic 2.
+// `allowFrom` stays empty: origin authorization is dynamic (`isOriginTrusted`,
+// which a static descriptor cannot express), so the case keeps its inline gate and
+// delegates only the vault work here (parity — one axis of change).
+const didSyncRoute: Route<'DID_SYNC', 'keyAdmin'> = {
+  bundle: 'keyAdmin',
+  allowFrom: { origins: [], senders: [] },
+  validate: (raw) => raw as never,
+  handle: handleDidSync,
+  verifyPeer: { check: 'vmBinding' },
+}
+
 export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   NOTIFICATION_RECEIVED: stubRoute('untrusted'),
   SESSION_EXPIRED: stubRoute('untrusted'),
@@ -66,7 +83,7 @@ export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   CREDENTIAL_API_REQUEST: stubRoute('signing'),
   LIST_STORED_CREDENTIALS: stubRoute('signing'),
   RESHARE_STORED_VP: stubRoute('signing'),
-  DID_SYNC: stubRoute('keyAdmin'),
+  DID_SYNC: didSyncRoute,
   KEY_ROTATE: stubRoute('keyAdmin'),
   KEY_BACKUP: stubRoute('keyAdmin'),
   KEY_RESTORE: stubRoute('keyAdmin'),

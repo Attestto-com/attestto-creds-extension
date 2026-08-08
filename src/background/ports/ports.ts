@@ -18,6 +18,7 @@
  * because no such method exists.
  */
 import type { CanonicalOrigin } from '@/utils/origin'
+import type { VaultData } from '@/stores/wallet'
 
 /**
  * An opaque decrypted vault record. Deliberately NOT a raw private key handed to
@@ -131,6 +132,32 @@ export interface Origins {
 /** Message a specific tab. */
 export interface Tabs {
   sendToTab(tabId: number, message: unknown): Promise<void>
+}
+
+/**
+ * Concrete KeyAdmin vault store (Story 1.10, first KeyAdmin extraction). The
+ * abstract `Vault`/`VaultRecord` seams above stay for the confinement type-guards;
+ * a key-lifecycle handler needs the *real* record — it persists generated key
+ * material and mirrors to the public vault. `read` returns the whole `VaultData`
+ * (the opaque record AD-2 permits — there is NO `getPrivateKey()` accessor and the
+ * handler derives only the *public* key from it, never signs). `syncPublic` is the
+ * Story-1.7 strict-strip: the ONLY sanctioned path to the public mirror, so a key
+ * cannot ride to disk (keys-never-mirrored).
+ */
+export interface KeyVaultStore {
+  read(): Promise<VaultData | null>
+  write(vault: VaultData): Promise<void>
+  syncPublic(vault: VaultData): Promise<void>
+}
+
+/**
+ * P-256 keypair generation (a KeyAdmin capability, distinct from AD-11c's single
+ * `sign` primitive — generating an identity key is not signing). Returns both JWKs;
+ * the private JWK is persisted into the vault record, the public JWK is field-
+ * stripped for the response. Wraps `crypto.subtle.generateKey` + `exportKey`.
+ */
+export interface KeyGen {
+  generateP256(): Promise<{ privateKeyJwk: JsonWebKey; publicKeyJwk: JsonWebKey }>
 }
 
 /** Scheduled alarms (e.g. idle auto-lock, Story 1.14). */

@@ -24,6 +24,8 @@ import type {
   Clock,
   Notifications,
   Runtime,
+  KeyVaultStore,
+  KeyGen,
 } from '@/background/ports/ports'
 
 /**
@@ -51,8 +53,19 @@ export interface ConsentCtx {
   clock: Clock
 }
 
-/** Key-lifecycle tier — full vault (rotate/backup/restore, + Shamir import). */
+/**
+ * Key-lifecycle tier — full vault (rotate/backup/restore, + Shamir import).
+ *
+ * `vault`/`crypto` are the abstract confinement seams (the type-guards assert
+ * KeyAdmin's full-`Vault` write and the shared-`Crypto` invariant). The concrete
+ * ports — `store` (real `VaultData` read/write/public-mirror), `keygen` (identity
+ * keypair generation), `clock` (injectable `syncedAt`) — are the real surface the
+ * first extracted KeyAdmin handler (`DID_SYNC`, Story 1.10) uses.
+ */
 export interface KeyAdminCtx {
   vault: Vault
   crypto: Crypto
+  store: KeyVaultStore
+  keygen: KeyGen
+  clock: Clock
 }

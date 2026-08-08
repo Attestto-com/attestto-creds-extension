@@ -12,12 +12,14 @@
 import { signPayload } from '@/services/signing'
 import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { MESSAGE_ROUTES } from '@/background/router/routes'
-import type { UntrustedCtx } from '@/background/ctx/ctx-bundles'
+import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
+import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { LinkedIdentity } from '@/stores/wallet'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation, CredentialFormat } from '@/types/credential'
 import { publicJwkToDid } from '@/utils/did-jwk'
+import { extractDidLabel } from '@/utils/did-label'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
@@ -878,7 +880,7 @@ export default defineBackground(() => {
       ...list,
       {
         did,
-        label: extractDidLabelForSync(did),
+        label: extractDidLabel(did),
         credentials: [credential],
         syncedAt: now,
         tenantId: null,
@@ -1023,96 +1025,10 @@ export default defineBackground(() => {
 
   // ── DID Sync Handler ───────────────────────────────────
 
-  /**
-   * Handle DID sync from the platform.
-   *
-   * The platform pushes a holderDid + verificationMethod after DID assignment.
-   * We store them in the vault and return the extension's public JWK so the
-   * platform can include it in the DID Document.
-   *
-   * If the vault has no keypair yet, we generate one (same as createDid flow).
-   */
-  async function handleDidSync(
-    syncReq: DidSyncMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'Vault is locked')
-      return
-    }
-
-    // Generate keypair if none exists
-    if (!vault.privateKeyJwk) {
-      const keyPair = await crypto.subtle.generateKey(
-        { name: 'ECDSA', namedCurve: 'P-256' },
-        true,
-        ['sign', 'verify'],
-      )
-      vault.privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
-
-      // Also set the self-issued did:jwk as fallback DID if none set
-      if (!vault.did) {
-        const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-        vault.did = publicJwkToDid(publicJwk)
-      }
-    }
-
-    // Extract public key from private JWK (strip private fields)
-    const publicKeyJwk: JsonWebKey = {
-      kty: vault.privateKeyJwk.kty,
-      crv: vault.privateKeyJwk.crv,
-      x: vault.privateKeyJwk.x,
-      y: vault.privateKeyJwk.y,
-    }
-
-    // Keep legacy fields for backward compat
-    vault.holderDid = syncReq.holderDid
-    vault.verificationMethod = syncReq.verificationMethod
-
-    // Upsert into linkedIdentities[]
-    if (!vault.linkedIdentities) vault.linkedIdentities = []
-
-    const existingIdx = vault.linkedIdentities.findIndex(
-      (id) => id.did === syncReq.holderDid,
-    )
-
-    const label = extractDidLabelForSync(syncReq.holderDid)
-    const now = new Date().toISOString()
-
-    if (existingIdx >= 0) {
-      vault.linkedIdentities[existingIdx].verificationMethod = syncReq.verificationMethod
-      vault.linkedIdentities[existingIdx].syncedAt = now
-      if (syncReq.tenantId) {
-        vault.linkedIdentities[existingIdx].tenantId = syncReq.tenantId
-      }
-    } else {
-      vault.linkedIdentities.push({
-        did: syncReq.holderDid,
-        label,
-        verificationMethod: syncReq.verificationMethod,
-        credentials: [],
-        syncedAt: now,
-        tenantId: syncReq.tenantId ?? null,
-      })
-    }
-
-    await writeVault(vault)
-    await syncPublicVault(vault)
-
-    sendDidSyncResponse(senderTabId, syncReq.requestId, publicKeyJwk, syncReq.holderDid, null)
-  }
-
-  /** Extract a human-readable label from a DID. */
-  function extractDidLabelForSync(did: string): string {
-    const snsMatch = did.match(/^did:sns:(.+)$/)
-    if (snsMatch) return snsMatch[1]
-
-    const webMatch = did.match(/^did:web:(.+)$/)
-    if (webMatch) return webMatch[1].replace(/:/g, '/')
-
-    return did
-  }
+  // `handleDidSync` moved to `@/background/handlers/did-sync.handler` (Story 1.10),
+  // consumed via `MESSAGE_ROUTES.DID_SYNC.handle`. The handler returns the
+  // DID_SYNC_RESPONSE data; the case below transports it via `sendDidSyncResponse`.
+  // `extractDidLabelForSync` was hoisted to the pure `@/utils/did-label` util.
 
   function sendDidSyncResponse(
     tabId: number | null,
@@ -1688,8 +1604,39 @@ export default defineBackground(() => {
         const syncReq = message.payload as DidSyncMessage['payload']
         const senderTabId = sender.tab?.id ?? null
         const senderOrigin = getSenderOrigin(sender)
+
+        // Inline ctx adapter over the real chrome/vault surface (the composition
+        // root, Story 1.13, replaces this + the `as never` boundary cast with the
+        // router's `buildBundle`). The handler returns the DID_SYNC_RESPONSE data;
+        // this case owns transport (`sendDidSyncResponse`) and the runtime ack.
+        const didSyncCtx: Pick<KeyAdminCtx, 'store' | 'keygen' | 'clock'> = {
+          store: {
+            read: () => readVault(),
+            write: (v) => writeVault(v),
+            syncPublic: (v) => syncPublicVault(v),
+          },
+          keygen: {
+            generateP256: async () => {
+              const keyPair = await crypto.subtle.generateKey(
+                { name: 'ECDSA', namedCurve: 'P-256' },
+                true,
+                ['sign', 'verify'],
+              )
+              return {
+                privateKeyJwk: await crypto.subtle.exportKey('jwk', keyPair.privateKey),
+                publicKeyJwk: await crypto.subtle.exportKey('jwk', keyPair.publicKey),
+              }
+            },
+          },
+          clock: { now: () => Date.now() },
+        }
+
         const runSync = () =>
-          handleDidSync(syncReq, senderTabId).then(() => sendResponse({ ok: true }))
+          MESSAGE_ROUTES.DID_SYNC.handle(syncReq, didSyncCtx as never).then((data) => {
+            const r = data as DidSyncResponseData
+            sendDidSyncResponse(senderTabId, r.requestId, r.publicKeyJwk, r.holderDid, r.error)
+            sendResponse({ ok: true })
+          })
 
         if (isPlatformOrigin(senderOrigin)) {
           runSync()
