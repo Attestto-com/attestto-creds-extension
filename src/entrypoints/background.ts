@@ -60,6 +60,7 @@ import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/backgroun
 import { createPendingConsent } from '@/background/consent/pending-consent'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
 import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
+import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
 import { approvalParams } from '@/utils/approval-params'
 
 export default defineBackground(() => {
@@ -636,35 +637,27 @@ export default defineBackground(() => {
       }
 
       case 'CREDENTIAL_OFFER': {
-        console.log('[Attestto ID] CREDENTIAL_OFFER received in background', message.payload)
         const offer = message.payload as CredentialOfferMessage['payload']
+        // The origin comes from the unspoofable `sender`, NEVER from the payload.
         const senderOrigin = sender?.origin ?? sender?.url ?? null
-        const notifId = `credential-offer-${Date.now()}`
-        pendingOffers.set(notifId, { offer, origin: senderOrigin })
 
-        // Identity-format offers (attestto-id): auto-accept ONLY if the user
-        // previously approved this origin. Untrusted origins (or any non-identity
-        // format) route through the dedicated approval window — reliable across
-        // platforms, unlike OS notifications which silently fail on macOS Brave.
-        if (offer.format === 'attestto-id') {
-          isOriginTrusted(senderOrigin).then((trusted) => {
-            if (trusted) {
-              acceptCredentialOffer(notifId).then((credentialId) => {
-                console.log('[Attestto ID] Identity offer auto-accepted (trusted origin):', credentialId)
-              })
-              sendResponse({ ok: true, autoAccepted: true })
-              return
-            }
-            openCredentialOfferApprovalWindow(notifId, offer, senderOrigin)
-            sendResponse({ ok: true, pendingConsent: true })
-          })
-          return true // keep sendResponse channel open for async trust check
-        }
-
-        // Non-identity formats (sd-jwt, json-ld) — also route through approval window.
-        openCredentialOfferApprovalWindow(notifId, offer, senderOrigin)
-        sendResponse({ ok: true, pendingConsent: true })
-        break
+        // The silent-acceptance gate lives in `handlers/credential-offer.handler.ts`
+        // (Story 1.13 Phase 9): an offer skips consent only when it is the
+        // identity-sync format AND the origin was approved before.
+        handleCredentialOffer(offer, senderOrigin, {
+          isOriginTrusted,
+          stage: (notifId, staged, origin) => pendingOffers.set(notifId, { offer: staged, origin }),
+          accept: acceptCredentialOffer,
+          requestConsent: openCredentialOfferApprovalWindow,
+          newNotifId: () => `credential-offer-${Date.now()}`,
+        }).then((outcome) => {
+          sendResponse(
+            outcome.kind === 'autoAccepted'
+              ? { ok: true, autoAccepted: true }
+              : { ok: true, pendingConsent: true },
+          )
+        })
+        return true // async: the trust check and the window open are both awaited
       }
 
       case 'WALLET_LINK': {
