@@ -82,11 +82,15 @@ export const useProofRequestsStore = defineStore('proofRequests', () => {
       } else {
         // JSON-LD: import dynamically to avoid circular deps
         const { createJsonLdVp } = await import('@/services/jsonld-vp')
+        // Story 1.17 — `approvedFields` used to be RECORDED here and ignored on
+        // the way out: the stored request said the user disclosed two claims
+        // while the wire carried the whole credential. Passing them is the fix.
         presentation = await createJsonLdVp({
           credential: credential.raw,
           holderDid: walletStore.did!,
           sign,
           nonce: request.nonce,
+          selectedFields: approvedFields,
         })
       }
 

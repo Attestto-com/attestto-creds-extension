@@ -11,6 +11,7 @@
  */
 
 import { signCompactJws, type JwsSigner } from './jws'
+import { deriveDisclosedCredential } from './jsonld-disclosure'
 
 export interface JsonLdVpOptions {
   credential: string // JSON-LD VC as JSON string
@@ -21,6 +22,15 @@ export interface JsonLdVpOptions {
    */
   sign: JwsSigner
   nonce: string
+  /**
+   * Story 1.17 — the `credentialSubject` keys to disclose. Omit to present the
+   * credential whole (which is what every caller used to do unconditionally).
+   *
+   * A strict subset produces a HOLDER-attested derivation: the issuer's proof is
+   * dropped, because it no longer covers the reduced document. See
+   * `jsonld-disclosure.ts` for why keeping it would be the worse option.
+   */
+  selectedFields?: readonly string[]
 }
 
 export interface ChapiVpOptions {
@@ -43,9 +53,14 @@ export interface ChapiVpOptions {
  * This approach (JWT-wrapped VP) is compatible with most verifiers.
  */
 export async function createJsonLdVp(options: JsonLdVpOptions): Promise<string> {
-  const { credential, holderDid, sign, nonce } = options
+  const { credential, holderDid, sign, nonce, selectedFields } = options
 
-  const vc = JSON.parse(credential) as Record<string, unknown>
+  const parsed = JSON.parse(credential) as Record<string, unknown>
+  // Filter BEFORE the envelope is built, so there is no window in which the
+  // whole VC exists inside something about to be signed.
+  const vc = selectedFields
+    ? deriveDisclosedCredential(parsed, selectedFields, { holderDid }).credential
+    : parsed
 
   const vpPayload = {
     '@context': ['https://www.w3.org/2018/credentials/v1'],
