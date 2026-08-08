@@ -142,6 +142,26 @@ export function sendChapiErrorToTab(tabId: number | null, requestId: string, err
   notifyTab(tabId, { type: 'CREDENTIAL_API_RESPONSE', payload: { requestId, error } })
 }
 
+/** The approved verifiable presentation, to the tab that asked — never the active tab. */
+export function sendChapiPresentation(tabId: number | null, requestId: string, presentation: unknown): void {
+  if (!deliverable(tabId, 'CHAPI presentation', requestId)) return
+  notifyTab(tabId, { type: 'CREDENTIAL_API_RESPONSE', payload: { requestId, presentation } })
+}
+
+// ── Stored-credential reads ──────────────────────────────────────
+
+/** Credential SUMMARIES — claim key names only, never claim values (see the handler). */
+export function sendStoredCredentials(tabId: number | null, requestId: string, credentials: unknown[]): void {
+  if (!deliverable(tabId, 'LIST_STORED_CREDENTIALS_RESPONSE', requestId)) return
+  notifyTab(tabId, { type: 'LIST_STORED_CREDENTIALS_RESPONSE', payload: { requestId, credentials } })
+}
+
+/** A re-shared presentation carrying ONLY the fields the user selected. */
+export function sendResharePresentation(tabId: number | null, requestId: string, presentation: unknown): void {
+  if (!deliverable(tabId, 'RESHARE_STORED_VP_RESPONSE', requestId)) return
+  notifyTab(tabId, { type: 'RESHARE_STORED_VP_RESPONSE', payload: { requestId, presentation } })
+}
+
 // ── DID sync (DID_SYNC_RESPONSE) ─────────────────────────────────
 
 export function sendDidSyncResponse(

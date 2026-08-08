@@ -23,7 +23,7 @@ import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
 import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
 import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
-import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
+import type { ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
@@ -36,7 +36,6 @@ import { fetchCertScan, submitThreatReport } from '@/api/backend-client'
 // ONE place now (`background/transport/tab-responses.ts`), pinned to the content
 // script's bridge by a round-trip spec. The entrypoint only transports.
 import {
-  notifyTab,
   sendSigningErrorToTab,
   sendSigningResponseToTab,
   sendAuthErrorToTab,
@@ -48,6 +47,9 @@ import {
   sendPaymentErrorToTab,
   sendPaymentResponseToTab,
   sendChapiErrorToTab,
+  sendChapiPresentation,
+  sendStoredCredentials,
+  sendResharePresentation,
   sendDidSyncResponse,
   sendKeyRotateResponse,
   sendKeyBackupResponse,
@@ -57,6 +59,7 @@ import {
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
 import { createPendingConsent } from '@/background/consent/pending-consent'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
+import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
 import { approvalParams } from '@/utils/approval-params'
 
 export default defineBackground(() => {
@@ -813,25 +816,7 @@ export default defineBackground(() => {
         const listReqId = message.payload?.requestId as string
         const listSenderTabId = sender.tab?.id ?? null
         readVault().then((vault) => {
-          const creds = (vault?.credentials ?? []).map((c: StoredCredential) => ({
-            id: c.id,
-            format: c.format,
-            issuer: c.issuer,
-            issuedAt: c.issuedAt,
-            expiresAt: c.expiresAt,
-            types: c.types,
-            claimKeys: Object.keys(c.decodedClaims),
-            source: c.metadata.source,
-          }))
-
-          if (listSenderTabId) {
-            notifyTab(listSenderTabId, {
-              type: 'LIST_STORED_CREDENTIALS_RESPONSE',
-              payload: { requestId: listReqId, credentials: creds },
-            })
-          } else {
-            console.warn('[Attestto ID] Dropping LIST_STORED_CREDENTIALS_RESPONSE — no originating tabId', { requestId: listReqId })
-          }
+          sendStoredCredentials(listSenderTabId, listReqId, summarizeStoredCredentials(vault))
           sendResponse({ ok: true })
         })
         break
@@ -845,49 +830,14 @@ export default defineBackground(() => {
         }
         const reshareSenderTabId = sender.tab?.id ?? null
 
-        readVault().then(async (vault) => {
-          if (!vault) {
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'Vault locked')
+        readVault().then((vault) => {
+          const result = buildResharePresentation(vault, resharePayload)
+          if (!result.ok) {
+            sendReshareError(reshareSenderTabId, resharePayload.requestId, result.error)
             sendResponse({ ok: false })
             return
           }
-
-          const cred = (vault.credentials ?? []).find(
-            (c: StoredCredential) => c.id === resharePayload.credentialId,
-          )
-          if (!cred) {
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'Credential not found')
-            sendResponse({ ok: false })
-            return
-          }
-
-          // Build a filtered claims object for the selected fields
-          const filteredClaims: Record<string, unknown> = {}
-          for (const field of resharePayload.selectedFields) {
-            if (field in cred.decodedClaims) {
-              filteredClaims[field] = cred.decodedClaims[field]
-            }
-          }
-
-          if (reshareSenderTabId) {
-            notifyTab(reshareSenderTabId, {
-              type: 'RESHARE_STORED_VP_RESPONSE',
-              payload: {
-                requestId: resharePayload.requestId,
-                presentation: {
-                  credentialId: cred.id,
-                  format: cred.format,
-                  issuer: cred.issuer,
-                  selectedFields: resharePayload.selectedFields,
-                  claims: filteredClaims,
-                  issuedAt: cred.issuedAt,
-                  expiresAt: cred.expiresAt,
-                },
-              },
-            })
-          } else {
-            console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE — no originating tabId', { requestId: resharePayload.requestId })
-          }
+          sendResharePresentation(reshareSenderTabId, resharePayload.requestId, result.presentation)
           sendResponse({ ok: true })
         })
         break
@@ -1309,12 +1259,7 @@ export default defineBackground(() => {
         ).then((result) => {
           if (result.ok) {
             // Send VP back to the original requesting tab (not the popup)
-            if (pending.senderTabId) {
-              notifyTab(pending.senderTabId, {
-                type: 'CREDENTIAL_API_RESPONSE',
-                payload: { requestId: pending.apiReq.requestId, presentation: result.presentation },
-              })
-            }
+            sendChapiPresentation(pending.senderTabId, pending.apiReq.requestId, result.presentation)
             sendResponse({ ok: true, holderDid: result.holderDid })
           } else {
             sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, result.tabError ?? result.error)
