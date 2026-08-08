@@ -19,6 +19,8 @@ import { handleChapiApprove } from '@/background/handlers/chapi-approve.handler'
 import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestto-pdf-approve.handler'
 import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
+import { createBuildBundle } from '@/background/ctx/build-bundle'
+import { createSigningAdapters, es256RawSign } from '@/background/adapters/signing-adapters'
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
@@ -372,43 +374,46 @@ export default defineBackground(() => {
   }
 
   /**
-   * Story 1.11 — the transitional root-key raw signer for the extracted P-256
-   * signing cores (SIGN_DOCUMENT, PAYMENT). This is the ONE place `crypto.subtle.sign`
-   * runs for the root `privateKeyJwk`; each case wraps it in `createGatedSign` so
-   * every signature passes the gate (a passthrough `assertPresence` until the
-   * composition root, Story 1.13, binds the real cross-process UV proof and moves
-   * this signer to a single injected `rawSign`). Consolidating it here keeps the
-   * key import off the handlers and advances the AD-11c "sign in exactly one place"
-   * invariant ahead of 1.13.
-   */
-  async function es256RawSign(privateJwk: JsonWebKey, payload: Uint8Array): Promise<{ bytes: Uint8Array }> {
-    const privateKey = await crypto.subtle.importKey(
-      'jwk',
-      privateJwk,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['sign'],
-    )
-    const buf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, payload as BufferSource)
-    return { bytes: new Uint8Array(buf) }
-  }
-
-  async function rootRawSign(payload: Uint8Array): Promise<{ bytes: Uint8Array }> {
-    const v = await readVault()
-    return es256RawSign(v!.privateKeyJwk!, payload)
-  }
-
-  /**
    * A gated JWS signer bound to a P-256 key — the background path for `createChapiVp`
-   * so VP signing routes through the same gate as SIGN_DOCUMENT/PAYMENT (AD-11c). The
-   * key import + `crypto.subtle.sign` stay inside the gated `rawSign` (never the raw
-   * `es256KeySigner`, which would bypass the gate). `assertPresence` is a passthrough
-   * until the composition root (1.13).
+   * so VP signing routes through the same gate as the extracted APPROVE cores (AD-11c).
+   * The key import + `crypto.subtle.sign` live in the injected `es256RawSign` adapter
+   * (Story 1.13 Phase 1b); the gate wraps it here. This is the LAST `createGatedSign`
+   * left in the entrypoint — it goes when `completeChapiRequest` (the notification-flow
+   * CHAPI path, its only caller) is extracted in a later phase. `assertPresence` is a
+   * passthrough (parity) until the real WebAuthn gate is wired.
    */
   function gatedJwsSigner(privateJwk: JsonWebKey): JwsSigner {
     const sign = createGatedSign({ assertPresence: async () => {}, rawSign: (p) => es256RawSign(privateJwk, p) })
     return async (signingInput: Uint8Array) => (await sign(signingInput)).bytes
   }
+
+  /**
+   * The composition root (Story 1.13 Phase 1b, AD-3). Constructs the real signing
+   * adapters ONCE and hands `buildBundle` the injection site; every extracted signing
+   * APPROVE case gets its capability-scoped ctx from `buildBundle('signing')` — a fresh
+   * bundle per message whose ONE gated `crypto.sign` reads a per-request key-slot (AD-11c).
+   * The three non-signing tiers are unwired here (throwing) until their routes migrate —
+   * nothing calls `buildBundle('untrusted'|'consent'|'keyAdmin')` yet.
+   */
+  const unwiredBundle = <T,>(tier: string): T =>
+    new Proxy({} as object, {
+      get: () => () => {
+        throw new Error(`buildBundle('${tier}') not wired until its routes migrate (Story 1.13, later phase)`)
+      },
+    }) as T
+  const buildBundle = createBuildBundle({
+    signing: createSigningAdapters({
+      readVault,
+      writeVault,
+      syncPublicVault,
+      findOrCreateSiteDid,
+      publicJwkOf,
+      pinSite,
+    }),
+    untrusted: unwiredBundle('untrusted'),
+    consent: unwiredBundle('consent'),
+    keyAdmin: unwiredBundle('keyAdmin'),
+  })
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
 
@@ -651,58 +656,9 @@ export default defineBackground(() => {
     }
   }
 
-  /**
-   * Get or lazily create the vault's Ed25519 keypair (ATT-364).
-   *
-   * Lives alongside the legacy P-256 key — does NOT replace it. Used
-   * exclusively for Attestto self-attested PDF signing where the
-   * verifier only accepts Ed25519. Persists across sessions.
-   *
-   * Returns the unwrapped CryptoKey ready to sign + the raw 32-byte
-   * public key as base64.
-   */
-  async function getOrCreateEd25519Key(): Promise<{
-    privateKey: CryptoKey
-    publicKeyB64: string
-  } | null> {
-    const vault = await readVault()
-    if (!vault) return null
-
-    if (vault.ed25519PrivateKeyJwk && vault.ed25519PublicKeyB64) {
-      try {
-        const privateKey = await crypto.subtle.importKey(
-          'jwk',
-          vault.ed25519PrivateKeyJwk,
-          { name: 'Ed25519' },
-          false,
-          ['sign'],
-        )
-        return { privateKey, publicKeyB64: vault.ed25519PublicKeyB64 }
-      } catch (err) {
-        console.warn('[Attestto Sign] Existing Ed25519 key import failed, regenerating:', err)
-      }
-    }
-
-    // First-time generation. Web Crypto Ed25519 is supported in
-    // Chromium 113+ / Firefox 130+ / Safari 17+.
-    const keyPair = (await crypto.subtle.generateKey(
-      { name: 'Ed25519' },
-      true,
-      ['sign', 'verify'],
-    )) as CryptoKeyPair
-
-    const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
-    const rawPub = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey))
-    const publicKeyB64 = btoa(String.fromCharCode(...rawPub))
-
-    vault.ed25519PrivateKeyJwk = privateKeyJwk
-    vault.ed25519PublicKeyB64 = publicKeyB64
-    await writeVault(vault)
-    // Mirror the public Ed25519 key so the popup/consumers see it.
-    await syncPublicVault(vault)
-
-    return { privateKey: keyPair.privateKey, publicKeyB64 }
-  }
+  // Ed25519 provisioning (ATT-364) moved to `createSigningAdapters` (Story 1.13
+  // Phase 1b) — the APDF signing key is now provisioned through the composition
+  // root's `buildBundle('signing')`, not a closure here.
 
   /**
    * Open the approval popup for a payment request.
@@ -1776,23 +1732,16 @@ export default defineBackground(() => {
         pendingSigning.unregister?.()
         pendingSigningRequests.delete(signApproveId)
 
-        // Story 1.11 — the signing CORE is extracted (`handleSignDocumentApprove`),
-        // signing ONLY through the single gated primitive (AD-11c). This case still
-        // owns the pending Map + transport + window-unregister (service-worker
-        // lifecycle state, as the DID_SYNC case owns `senderTabId` — AD-14); the
-        // pending→`ctx.takePending` port and the route wiring land with the
-        // consent-sibling extraction, keeping this to ONE axis of change. `rootRawSign`
-        // is the shared transitional root-key signer (the one `crypto.subtle.sign`);
-        // `assertPresence` is a documented passthrough until the composition root (1.13).
-        const signDocumentCtx = {
-          store: { read: () => readVault() },
-          clock: { now: () => Date.now() },
-          crypto: { sign: createGatedSign({ assertPresence: async () => {}, rawSign: rootRawSign }) },
-        }
+        // Story 1.13 Phase 1b — the extracted signing CORE gets its ctx from the
+        // composition root's `buildBundle('signing')` (AD-3): a fresh bundle whose
+        // ONE gated `crypto.sign` signs with the root key (no provisioning here). The
+        // inline `createGatedSign` adapter is gone. This case still owns the pending
+        // Map + transport + window-unregister (SW lifecycle state, AD-14).
+        const signDocumentCtx = buildBundle('signing')
 
         handleSignDocumentApprove(
           { signingToken: pendingSigning.signReq.signingToken, selectedDid: selectedSignDid },
-          signDocumentCtx as never,
+          signDocumentCtx,
         ).then((result) => {
           if (result.ok) {
             const responseData = {
@@ -1878,41 +1827,13 @@ export default defineBackground(() => {
         // DID, not the identity chooser (see handler).
         void selectedAuthDid
 
-        // Story 1.11 — AUTH login core extracted (`handleAuthApprove`, both protocols).
-        // The adapter provisions the pairwise per-site DID (find-or-create + stamp +
-        // write + mirror via toPublicVault, which strips the private key) and binds the
-        // gated signer to that per-site key via the `sitePrivateKeyJwk` closure — the
-        // handler never sees key material. Two writers named as capabilities:
-        // `provisioning.provisionSiteDid` (per-site key) + `pin` (sign-in-as-trust).
-        let sitePrivateKeyJwk: JsonWebKey | null = null
-        const authCtx = {
-          crypto: {
-            sign: createGatedSign({
-              assertPresence: async () => {},
-              rawSign: async (payload: Uint8Array) => {
-                if (!sitePrivateKeyJwk) throw new Error('Site key not provisioned')
-                return es256RawSign(sitePrivateKeyJwk, payload)
-              },
-            }),
-          },
-          provisioning: {
-            provisionSiteDid: async (origin: string) => {
-              const vault = await readVault()
-              if (!vault) return null
-              const { siteDids, entry } = await findOrCreateSiteDid(vault.siteDids, origin)
-              // Stamp the visit and persist every time (create or reuse) so the popup
-              // can show created + last-used for this site.
-              entry.lastUsedAt = new Date().toISOString()
-              vault.siteDids = siteDids
-              await writeVault(vault)
-              await syncPublicVault(vault)
-              sitePrivateKeyJwk = entry.privateKeyJwk
-              return { did: entry.did, publicKeyJwk: publicJwkOf(entry) as JsonWebKey }
-            },
-          },
-          pin: { pin: async (host: string) => { await pinSite(host) } },
-          clock: { now: () => Date.now() },
-        }
+        // Story 1.13 Phase 1b — AUTH login core (`handleAuthApprove`, both protocols)
+        // gets its ctx from `buildBundle('signing')`. The handler calls
+        // `ctx.provisioning.provisionSiteDid(origin)` (find-or-create + stamp + write +
+        // mirror, inside the adapter) which rebinds the bundle's key-slot to the
+        // per-site key; the ONE gated `crypto.sign` then signs with it. Two writers as
+        // named capabilities: `provisioning.provisionSiteDid` + `pin`.
+        const authCtx = buildBundle('signing')
 
         handleAuthApprove(
           {
@@ -1922,7 +1843,7 @@ export default defineBackground(() => {
             timestamp: pendingAuthReq.timestamp,
             audience: pendingAuthReq.audience,
           },
-          authCtx as never,
+          authCtx,
         ).then((result) => {
           if (result.ok && result.kind === 'cw') {
             sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.response)
@@ -1996,38 +1917,16 @@ export default defineBackground(() => {
         pendingApdf.unregister?.()
         pendingAttesttoPdfRequests.delete(apdfApproveId)
 
-        // Story 1.11 — APDF signing core extracted (`handleSignAttesttoPdfApprove`).
-        // The narrow `provisioning` port lazily mints the Ed25519 key (write + mirror
-        // inside `getOrCreateEd25519Key`, which strips the private key via the real
-        // toPublicVault) and returns only the PUBLIC key; the gated Ed25519 signer is
-        // bound to that same key via the `edKey` closure — the handler never sees key
-        // material. This case keeps the pending Map + transport.
-        let edKey: CryptoKey | null = null
-        const apdfCtx = {
-          store: { read: () => readVault() },
-          provisioning: {
-            provisionEd25519: async () => {
-              const ed = await getOrCreateEd25519Key()
-              if (!ed) return null
-              edKey = ed.privateKey
-              return { publicKeyB64: ed.publicKeyB64 }
-            },
-          },
-          crypto: {
-            sign: createGatedSign({
-              assertPresence: async () => {},
-              rawSign: async (payload: Uint8Array) => {
-                if (!edKey) throw new Error('Ed25519 key not provisioned')
-                const buf = await crypto.subtle.sign({ name: 'Ed25519' }, edKey, payload as BufferSource)
-                return { bytes: new Uint8Array(buf) }
-              },
-            }),
-          },
-        }
+        // Story 1.13 Phase 1b — APDF signing core (`handleSignAttesttoPdfApprove`) gets
+        // its ctx from `buildBundle('signing')`. The handler calls
+        // `ctx.provisioning.provisionEd25519()` (lazy mint + write + mirror, inside the
+        // adapter) which rebinds the bundle's key-slot to the Ed25519 key; the ONE gated
+        // `crypto.sign` signs with it. This case keeps the pending Map + transport.
+        const apdfCtx = buildBundle('signing')
 
         handleSignAttesttoPdfApprove(
           { payloadB64: pendingApdf.req.payloadB64, selectedDid: selectedApdfDid },
-          apdfCtx as never,
+          apdfCtx,
         ).then((result) => {
           if (result.ok) {
             const responseData = { did: result.did, signature: result.signature, publicKey: result.publicKey }
@@ -2088,13 +1987,10 @@ export default defineBackground(() => {
         pendingPayment.unregister?.()
         pendingPaymentRequests.delete(payApproveId)
 
-        // Story 1.11 — PAYMENT signing core extracted (`handlePaymentApprove`), the
-        // twin of SIGN_DOCUMENT: signs only through the gated primitive; the case
-        // keeps the pending Map + transport (route wiring waits on the pending port).
-        const paymentCtx = {
-          store: { read: () => readVault() },
-          crypto: { sign: createGatedSign({ assertPresence: async () => {}, rawSign: rootRawSign }) },
-        }
+        // Story 1.13 Phase 1b — PAYMENT signing core (`handlePaymentApprove`), the twin
+        // of SIGN_DOCUMENT: ctx from `buildBundle('signing')`, signs with the root key
+        // through the ONE gated primitive. The case keeps the pending Map + transport.
+        const paymentCtx = buildBundle('signing')
 
         handlePaymentApprove(
           {
@@ -2155,13 +2051,10 @@ export default defineBackground(() => {
         pending.unregister?.()
         pendingChapiRawRequests.delete(approveReqId)
 
-        // Story 1.11 — CHAPI presentation core extracted (`handleChapiApprove`). It
-        // builds the VP through the gated primitive and returns it as DATA; this case
-        // owns the pending Map + transport (route wiring waits on the pending port).
-        const chapiCtx = {
-          store: { read: () => readVault() },
-          crypto: { sign: createGatedSign({ assertPresence: async () => {}, rawSign: rootRawSign }) },
-        }
+        // Story 1.13 Phase 1b — CHAPI presentation core (`handleChapiApprove`) gets its
+        // ctx from `buildBundle('signing')`; it builds the VP through the ONE gated
+        // primitive and returns it as DATA. This case owns the pending Map + transport.
+        const chapiCtx = buildBundle('signing')
 
         handleChapiApprove(
           {
