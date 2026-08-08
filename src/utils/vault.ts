@@ -84,21 +84,74 @@ export async function writeVault(data: VaultData): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.VAULT]: encrypted })
 }
 
+// ── Public projection (Story 1.7 — allowlist, not denylist; SM2 zero PII) ─────
+
 /**
- * Sync public vault from full vault data.
- * Call after any vault write to keep public data in sync.
+ * The EXACT key set a public credential carries. `raw` and `decodedClaims` are
+ * present but NEUTRALIZED (`''` / `{}`) so the popup's `CredentialCard` degrades
+ * to metadata without a code change, while carrying zero decoded PII at rest.
+ * Object.keys of a projected credential must equal this set — a new StoredCredential
+ * field cannot appear here (construct-only ⇒ defaults private, FR1).
  */
-export async function syncPublicVault(vault: VaultData): Promise<void> {
-  const pub: PublicVaultData = {
+export const PUBLIC_CREDENTIAL_KEYS = [
+  'id',
+  'format',
+  'raw',
+  'issuer',
+  'issuedAt',
+  'expiresAt',
+  'types',
+  'decodedClaims',
+  'metadata',
+] as const
+
+/**
+ * Project a stored credential to its public, PII-free form. **Construct-only —
+ * never `...spread`**: a spread is exactly how the next decoded-PII field would
+ * silently ride into the plaintext mirror. `decodedClaims` (cédula/DOB/name) and
+ * `raw` (the SD-JWT/VC token, which carries the disclosures) are dropped to
+ * empty; only non-PII card metadata survives. Applied to root credentials AND
+ * every `linkedIdentities[].credentials` (the nested path is the easy miss).
+ */
+export function toPublicCredential(c: StoredCredential): StoredCredential {
+  return {
+    id: c.id,
+    format: c.format,
+    raw: '', // token dropped — decoded/present only in the encrypted vault
+    issuer: c.issuer,
+    issuedAt: c.issuedAt,
+    expiresAt: c.expiresAt,
+    types: c.types,
+    decodedClaims: {}, // decoded PII stays encrypted; card shows claims post-unlock
+    // Only display metadata; disclosureDigests (SD-JWT hashes) are not mirrored.
+    metadata: { addedAt: c.metadata.addedAt, source: c.metadata.source },
+  }
+}
+
+/**
+ * The single allowlist source of truth: build the public mirror from full vault
+ * data. Top-level fields are enumerated (construct-only, so a newly-added
+ * VaultData field defaults to private); private keys are never named here;
+ * credentials — root and nested — pass through {@link toPublicCredential}.
+ */
+export function toPublicVault(vault: VaultData): PublicVaultData {
+  return {
     did: vault.did,
-    credentials: vault.credentials,
+    credentials: vault.credentials.map(toPublicCredential),
     linkedSolanaAddress: vault.linkedSolanaAddress,
     keyShares: vault.keyShares,
     proofRequests: vault.proofRequests,
     preparedPresentations: vault.preparedPresentations,
     verificationMethod: vault.verificationMethod,
     holderDid: vault.holderDid,
-    linkedIdentities: vault.linkedIdentities,
+    linkedIdentities: vault.linkedIdentities?.map((identity) => ({
+      did: identity.did,
+      label: identity.label,
+      verificationMethod: identity.verificationMethod,
+      credentials: identity.credentials.map(toPublicCredential),
+      syncedAt: identity.syncedAt,
+      tenantId: identity.tenantId,
+    })),
     // Public mirror carries only origin → did — the private keys stay encrypted.
     siteDids: vault.siteDids
       ? Object.fromEntries(
@@ -109,5 +162,12 @@ export async function syncPublicVault(vault: VaultData): Promise<void> {
         )
       : undefined,
   }
-  await writePublicVault(pub)
+}
+
+/**
+ * Sync public vault from full vault data. Call after any vault write to keep
+ * public data in sync. The PII-free projection is {@link toPublicVault}.
+ */
+export async function syncPublicVault(vault: VaultData): Promise<void> {
+  await writePublicVault(toPublicVault(vault))
 }
