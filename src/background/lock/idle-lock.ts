@@ -168,7 +168,7 @@ export function chromeActivityStamp(): ActivityStamp {
 export function chromeAlarms(): Alarms {
   return {
     schedule: async (name, whenMs) => {
-      chrome.alarms.create(name, { when: whenMs })
+      void chrome.alarms.create(name, { when: whenMs })
     },
   }
 }

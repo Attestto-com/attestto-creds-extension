@@ -73,7 +73,7 @@ export async function loadTlsSnapshot(): Promise<TlsSnapshotRow[]> {
         generatedAtCache = null
       }
     } catch (err) {
-      console.debug('[Attestto ID] TLS snapshot load failed:', err)
+      console.warn('[Attestto ID] TLS snapshot load failed:', err)
       snapshotCache = []
       generatedAtCache = null
     }

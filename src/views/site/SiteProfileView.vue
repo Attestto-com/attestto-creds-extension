@@ -88,7 +88,7 @@ async function runLiveScan(): Promise<void> {
     const response = await chrome.runtime.sendMessage({
       type: 'CERT_SCAN_REQUEST',
       payload: { hostname: host.value },
-    }) as CertScanResult
+    })
     if (response?.ok === false) {
       scanError.value = true
     } else {
@@ -168,7 +168,7 @@ async function runHealthAnalysis(tabId: number | null): Promise<void> {
       world: 'MAIN',
     })
     const value = results?.[0]?.result ?? null
-    healthResult.value = value as SiteHealthResult | null
+    healthResult.value = value
     if (!healthResult.value) healthError.value = true
   } catch {
     healthError.value = true
@@ -178,7 +178,7 @@ async function runHealthAnalysis(tabId: number | null): Promise<void> {
 }
 
 function goBack(): void {
-  router.push('/')
+  void router.push('/')
 }
 </script>
 

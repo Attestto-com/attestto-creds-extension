@@ -28,7 +28,7 @@ const CLOCK_ISO = new Date(CLOCK_MS).toISOString()
 function makeVault(overrides: Partial<VaultData> = {}): VaultData {
   return {
     did: 'did:jwk:existing',
-    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'OLD_X', y: 'OLD_Y', d: 'OLD_SECRET' } as JsonWebKey,
+    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'OLD_X', y: 'OLD_Y', d: 'OLD_SECRET' },
     credentials: [],
     linkedSolanaAddress: null,
     keyShares: [],

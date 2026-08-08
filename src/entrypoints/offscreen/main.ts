@@ -54,14 +54,14 @@ function connect(): void {
           const data = JSON.parse(event.data as string) as Record<string, unknown>
 
           if (data.type === 'notification') {
-            chrome.runtime.sendMessage({
+            void chrome.runtime.sendMessage({
               type: 'NOTIFICATION_RECEIVED',
               payload: (data.message as string) ?? 'New notification',
             })
           }
 
           if (data.type === 'credential_offer') {
-            chrome.runtime.sendMessage({
+            void chrome.runtime.sendMessage({
               type: 'CREDENTIAL_OFFER',
               payload: {
                 format: data.format ?? 'sd-jwt',
@@ -72,7 +72,7 @@ function connect(): void {
           }
 
           if (data.type === 'wallet_link') {
-            chrome.runtime.sendMessage({
+            void chrome.runtime.sendMessage({
               type: 'WALLET_LINK',
               payload: {
                 address: data.address ?? '',

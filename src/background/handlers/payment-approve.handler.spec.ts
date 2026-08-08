@@ -22,7 +22,7 @@ const UUID = 'pay-uuid-9'
 function makeVault(overrides: Partial<VaultData> = {}): VaultData {
   return {
     did: 'did:jwk:root',
-    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'PUB_X', y: 'PUB_Y', d: 'ROOT_SECRET' } as JsonWebKey,
+    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'PUB_X', y: 'PUB_Y', d: 'ROOT_SECRET' },
     holderDid: undefined,
     credentials: [],
     linkedSolanaAddress: null,

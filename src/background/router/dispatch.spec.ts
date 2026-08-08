@@ -66,7 +66,7 @@ function signingRoute(over: Partial<Route<'WALLET_LINK', 'signing'>> = {}): Rout
     validate: objPayload,
     async handle(_p, ctx) {
       await ctx.crypto.sign(new Uint8Array())
-      return { signed: true } as never
+      return { signed: true }
     },
     ...over,
   }
@@ -79,7 +79,7 @@ function keyAdminRoute(over: Partial<Route<'DID_SYNC', 'keyAdmin'>> = {}): Route
     validate: objPayload,
     async handle(_p, ctx) {
       await ctx.vault.write({ kind: 'rec' })
-      return { synced: true } as never
+      return { synced: true }
     },
     ...over,
   }
@@ -110,7 +110,7 @@ const msg = (type: string, payload: unknown = {}, id?: string): InboundMessage =
 describe('dispatch — happy path + wiring (mutation i)', () => {
   it('runs the WALLET_LINK handler → the signing spy fires, keyAdmin spy does not', async () => {
     const { d, s } = deps()
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: true, data: { signed: true } })
     expect(s.sign).toHaveBeenCalledTimes(1) // ← referent: identity of the handler
     expect(s.vaultWrite).not.toHaveBeenCalled()
@@ -118,7 +118,7 @@ describe('dispatch — happy path + wiring (mutation i)', () => {
 
   it('runs the DID_SYNC handler → the keyAdmin spy fires, signing spy does not', async () => {
     const { d, s } = deps()
-    const res = await dispatch(msg('DID_SYNC'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('DID_SYNC'), {}, d)
     expect(res).toEqual({ ok: true, data: { synced: true } })
     expect(s.vaultWrite).toHaveBeenCalledTimes(1)
     expect(s.sign).not.toHaveBeenCalled()
@@ -128,7 +128,7 @@ describe('dispatch — happy path + wiring (mutation i)', () => {
 describe('dispatch — stage 2 unknown type (fail-closed)', () => {
   it('rejects an unknown type before any effect', async () => {
     const { d, s, buildBundle } = deps()
-    const res = await dispatch(msg('NOT_A_TYPE'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('NOT_A_TYPE'), {}, d)
     expect(res).toEqual({ ok: false, error: 'unknown-type' })
     expect(buildBundle).not.toHaveBeenCalled()
     expect(s.sign).not.toHaveBeenCalled()
@@ -136,7 +136,7 @@ describe('dispatch — stage 2 unknown type (fail-closed)', () => {
 
   it('rejects a prototype-pollution key (__proto__) as unknown, not as a route', async () => {
     const { d } = deps()
-    const res = await dispatch(msg('__proto__'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('__proto__'), {}, d)
     expect(res).toEqual({ ok: false, error: 'unknown-type' })
   })
 })
@@ -144,7 +144,7 @@ describe('dispatch — stage 2 unknown type (fail-closed)', () => {
 describe('dispatch — stage 3 authority (mutation iii)', () => {
   it('rejects a well-formed payload from a disallowed origin, before effect', async () => {
     const { d, s, buildBundle } = deps({ resolveSender: () => ({ origin: 'https://evil.example', kind: 'web' }) })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' })
     expect(buildBundle).not.toHaveBeenCalled()
     expect(s.sign).not.toHaveBeenCalled()
@@ -152,27 +152,27 @@ describe('dispatch — stage 3 authority (mutation iii)', () => {
 
   it('POSITIVE CONTROL: the same payload from an allowed sender succeeds', async () => {
     const { d, s } = deps() // allowed sender
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: true, data: { signed: true } })
     expect(s.sign).toHaveBeenCalledTimes(1)
   })
 
   it('rejects an allowed origin but disallowed sender kind', async () => {
     const { d } = deps({ resolveSender: () => ({ origin: GOOD, kind: 'extension' }) })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'forbidden-sender' })
   })
 
   it('FAIL-OPEN GUARD: a null (unresolvable) origin is rejected, never treated as empty-match', async () => {
     const { d } = deps({ resolveSender: () => ({ origin: null, kind: 'web' }) })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' })
   })
 
   it('the fail-closed default (empty allowFrom stub) admits zero senders', async () => {
     // CREDENTIAL_OFFER keeps MESSAGE_ROUTES' empty {origins:[],senders:[]} stub.
     const { d } = deps()
-    const res = await dispatch(msg('CREDENTIAL_OFFER'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('CREDENTIAL_OFFER'), {}, d)
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' })
   })
 
@@ -180,7 +180,7 @@ describe('dispatch — stage 3 authority (mutation iii)', () => {
     const { d, s } = deps({ resolveSender: () => ({ origin: null, kind: 'web' }) })
     const res = await dispatch(
       msg('WALLET_LINK', { origin: GOOD }), // attacker-supplied good origin in payload
-      {} as chrome.runtime.MessageSender,
+      {},
       d,
     )
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' })
@@ -191,7 +191,7 @@ describe('dispatch — stage 3 authority (mutation iii)', () => {
 describe('dispatch — stage 4 shape (mutation ii)', () => {
   it('rejects a malformed payload before effect (validate threw)', async () => {
     const { d, s, buildBundle } = deps()
-    const res = await dispatch(msg('WALLET_LINK', 'not-an-object'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK', 'not-an-object'), {}, d)
     expect(res).toEqual({ ok: false, error: 'invalid-payload' })
     expect(buildBundle).not.toHaveBeenCalled() // reject BEFORE effect
     expect(s.sign).not.toHaveBeenCalled()
@@ -201,7 +201,7 @@ describe('dispatch — stage 4 shape (mutation ii)', () => {
     // Simulate the mutation: swap validate to accept anything.
     const passthrough = signingRoute({ validate: (raw) => raw as never })
     const { d, s } = deps({ routes: registry({ WALLET_LINK: passthrough }) })
-    const res = await dispatch(msg('WALLET_LINK', 'not-an-object'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK', 'not-an-object'), {}, d)
     // This documents the mutated behavior the guard test above forbids: handler fires.
     expect(res).toEqual({ ok: true, data: { signed: true } })
     expect(s.sign).toHaveBeenCalledTimes(1)
@@ -213,7 +213,7 @@ describe('dispatch — stage 6 verifyPeer seam', () => {
     const { d, s } = deps({
       routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: async () => false }) }),
     })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
     expect(s.sign).not.toHaveBeenCalled()
   })
@@ -222,7 +222,7 @@ describe('dispatch — stage 6 verifyPeer seam', () => {
     const { d } = deps({
       routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: async () => { throw new Error('x') } }) }),
     })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
   })
 
@@ -230,7 +230,7 @@ describe('dispatch — stage 6 verifyPeer seam', () => {
     const { d, s } = deps({
       routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: async () => true }) }),
     })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: true, data: { signed: true } })
     expect(s.sign).toHaveBeenCalledTimes(1)
   })
@@ -241,7 +241,7 @@ describe('dispatch — stage 7 handler error', () => {
     const { d, buildBundle } = deps({
       routes: registry({ WALLET_LINK: signingRoute({ handle: async () => { throw new Error('boom') } }) }),
     })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'handler-error' })
     expect(buildBundle).toHaveBeenCalledTimes(1) // stage 5 ran before stage 7
   })
@@ -254,7 +254,7 @@ describe('dispatch — FIXED ORDER (each adjacent boundary is a mutation target)
       routes: registry({ WALLET_LINK: throwingValidate }),
       resolveSender: () => ({ origin: 'https://evil.example', kind: 'web' }),
     })
-    const res = await dispatch(msg('WALLET_LINK', 'garbage'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK', 'garbage'), {}, d)
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' }) // NOT invalid-payload
   })
 
@@ -264,7 +264,7 @@ describe('dispatch — FIXED ORDER (each adjacent boundary is a mutation target)
       verifyPeer: async () => false,
     })
     const { d } = deps({ routes: registry({ WALLET_LINK: r }) })
-    const res = await dispatch(msg('WALLET_LINK', 'garbage'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK', 'garbage'), {}, d)
     expect(res).toEqual({ ok: false, error: 'invalid-payload' }) // NOT peer-verification-failed
   })
 
@@ -274,7 +274,7 @@ describe('dispatch — FIXED ORDER (each adjacent boundary is a mutation target)
       handle: async () => { throw new Error('should not run') },
     })
     const { d, s } = deps({ routes: registry({ WALLET_LINK: r }) })
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: false, error: 'peer-verification-failed' }) // NOT handler-error
     expect(s.sign).not.toHaveBeenCalled()
   })
@@ -296,8 +296,8 @@ describe('dispatch — stage 8 idempotency seam (mutation iv: replay)', () => {
     const pending = replayPending()
     const { d, s } = deps({ pending })
     const m = msg('WALLET_LINK', {}, 'req-1')
-    const first = await dispatch(m, {} as chrome.runtime.MessageSender, d)
-    const second = await dispatch(m, {} as chrome.runtime.MessageSender, d)
+    const first = await dispatch(m, {}, d)
+    const second = await dispatch(m, {}, d)
     expect(first).toEqual({ ok: true, data: { signed: true } })
     expect(second).toEqual({ ok: false, error: 'replayed' })
     expect(s.sign).toHaveBeenCalledTimes(1) // ← referent: NOT the return value
@@ -312,14 +312,14 @@ describe('dispatch — stage 8 idempotency seam (mutation iv: replay)', () => {
       claimForProcessing: vi.fn(async () => ({ status: 'missing' as const })),
     }
     const { d, s } = deps({ pending })
-    const res = await dispatch(msg('WALLET_LINK', {}, 'req-2'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK', {}, 'req-2'), {}, d)
     expect(res).toEqual({ ok: false, error: 'port-dropped' })
     expect(s.sign).not.toHaveBeenCalled()
   })
 
   it('no id / no pending → the replay logic is inert (handler runs normally)', async () => {
     const { d, s } = deps() // no pending injected
-    const res = await dispatch(msg('WALLET_LINK'), {} as chrome.runtime.MessageSender, d)
+    const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: true, data: { signed: true } })
     expect(s.sign).toHaveBeenCalledTimes(1)
   })

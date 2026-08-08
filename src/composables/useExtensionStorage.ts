@@ -24,7 +24,7 @@ export function useExtensionStorage<T>(
   watch(
     data,
     (newVal) => {
-      chrome.storage.local.set({ [key]: newVal })
+      void chrome.storage.local.set({ [key]: newVal })
     },
     { deep: true },
   )

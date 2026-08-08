@@ -51,8 +51,8 @@ function vaultWithPiiEverywhere(): VaultData {
   }
   return {
     did: 'did:jwk:local',
-    privateKeyJwk: { kty: 'EC', crv: 'P-256', d: PRIV_KEY, x: 'X', y: 'Y' } as JsonWebKey,
-    ed25519PrivateKeyJwk: { kty: 'OKP', crv: 'Ed25519', d: PRIV_KEY } as JsonWebKey,
+    privateKeyJwk: { kty: 'EC', crv: 'P-256', d: PRIV_KEY, x: 'X', y: 'Y' },
+    ed25519PrivateKeyJwk: { kty: 'OKP', crv: 'Ed25519', d: PRIV_KEY },
     ed25519PublicKeyB64: 'PUB',
     credentials: [rootCred],
     linkedSolanaAddress: 'SoLAddr',
@@ -65,7 +65,7 @@ function vaultWithPiiEverywhere(): VaultData {
     siteDids: {
       'https://x.example': {
         did: 'did:jwk:site',
-        privateKeyJwk: { kty: 'EC', crv: 'P-256', d: SITE_KEY } as JsonWebKey,
+        privateKeyJwk: { kty: 'EC', crv: 'P-256', d: SITE_KEY },
         createdAt: 'a',
         lastUsedAt: 'b',
       },

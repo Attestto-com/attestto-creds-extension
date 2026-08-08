@@ -192,7 +192,7 @@ async function applyToTab(tabId: number, state: TrustState): Promise<void> {
     await chrome.action.setIcon({ tabId, imageData })
   } catch (err) {
     // Tab may have closed between event and apply — non-fatal.
-    console.debug('[Attestto ID] setIcon skipped:', err)
+    console.log('[Attestto ID] setIcon skipped:', err)
     return
   }
 
@@ -259,7 +259,7 @@ async function applyGovTlsBadge(tabId: number, host: string): Promise<boolean> {
     await chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => {})
     return true
   } catch (err) {
-    console.debug('[Attestto ID] gov TLS badge skipped:', err)
+    console.log('[Attestto ID] gov TLS badge skipped:', err)
     return false
   }
 }
@@ -285,7 +285,7 @@ async function refreshTab(tabId: number, url: string | undefined): Promise<void>
   // Gov-site TLS tier badge — passive positive cue, only when the anti-phishing
   // state carries no warning badge of its own (neutral / green states).
   if (!STATE_VISUALS[state].badge) {
-    let host = ''
+    let host: string
     try {
       host = new URL(url).host.toLowerCase()
     } catch {
@@ -321,7 +321,7 @@ async function maybeNotifyRed(url: string): Promise<void> {
   if (!settings.notifyOnRed) return
 
   try {
-    await chrome.notifications.create(`red-${host}-${Date.now()}`, {
+    chrome.notifications.create(`red-${host}-${Date.now()}`, {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icon/128.png'),
       title: 'Attestto — possible impersonation',
@@ -377,19 +377,22 @@ export function initToolbarStateTracker(): void {
     void refreshTab(details.tabId, details.url)
   })
 
-  // Pin store changed — re-evaluate every tab whose URL we know about so the
-  // icon updates without the user having to navigate.
-  onPinStoreChanged(async () => {
+  /** Repaint every tab we know a URL for. Shared by the pin/blocklist listeners. */
+  const repaintKnownTabs = async (): Promise<void> => {
     for (const [tabId, url] of tabUrls.entries()) {
       await refreshTab(tabId, url)
     }
+  }
+
+  // Pin store changed — re-evaluate every tab whose URL we know about so the
+  // icon updates without the user having to navigate.
+  onPinStoreChanged(() => {
+    void repaintKnownTabs()
   })
 
   // Blocklist changed — same idea, repaint affected tabs without nav.
-  onBlocklistChanged(async () => {
-    for (const [tabId, url] of tabUrls.entries()) {
-      await refreshTab(tabId, url)
-    }
+  onBlocklistChanged(() => {
+    void repaintKnownTabs()
   })
 
   // Clean up state when a tab closes.

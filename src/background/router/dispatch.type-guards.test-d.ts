@@ -34,7 +34,7 @@ const _okSigning: Route<'WALLET_LINK', 'signing'> = {
   validate: (raw) => raw as never,
   async handle(_p, ctx) {
     await ctx.crypto.sign(new Uint8Array())
-    return { ok: true } as never
+    return { ok: true }
   },
 }
 void _okSigning
@@ -47,7 +47,7 @@ const _confinedSigning: Route<'WALLET_LINK', 'signing'> = {
   async handle(_p, ctx) {
     // @ts-expect-error — `write` does not exist on SigningCtx.vault (VaultRead).
     await ctx.vault.write({ kind: 'x' })
-    return { ok: true } as never
+    return { ok: true }
   },
 }
 void _confinedSigning

@@ -41,7 +41,7 @@ function makeVault(overrides: Partial<VaultData> = {}): VaultData {
   return {
     did: 'did:jwk:root',
     holderDid: 'did:sns:alice.attestto.sol',
-    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'X', y: 'Y', d: 'ROOT_SECRET' } as JsonWebKey,
+    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'X', y: 'Y', d: 'ROOT_SECRET' },
     verificationMethod: 'did:sns:alice.attestto.sol#key-1',
     credentials: [],
     linkedSolanaAddress: null,

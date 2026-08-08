@@ -20,7 +20,7 @@ const PRIV: JsonWebKey = { kty: 'EC', crv: 'P-256', x: 'PX', y: 'PY', d: 'PRIVAT
 function makeVault(overrides: Partial<VaultData> = {}): VaultData {
   return {
     did: 'did:jwk:existing',
-    privateKeyJwk: PRIV as JsonWebKey,
+    privateKeyJwk: PRIV,
     credentials: [],
     linkedSolanaAddress: null,
     keyShares: [],

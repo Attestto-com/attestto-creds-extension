@@ -43,7 +43,7 @@ function credential(overrides: Partial<StoredCredential> = {}): StoredCredential
     },
     metadata: { addedAt: '2026-01-01T00:00:00Z', source: 'push' },
     ...overrides,
-  } as StoredCredential
+  }
 }
 
 function vaultWith(...credentials: StoredCredential[]): VaultData {

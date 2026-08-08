@@ -58,7 +58,7 @@ export interface PendingStoreOptions {
   /** Distinguishes flows; becomes part of the storage key. */
   flow: string
   storage: PendingStorage
-  now(): number
+  now: () => number
   /** Rows older than this are absent. Defaults to the approval-window backstop. */
   maxAgeMs?: number
 }

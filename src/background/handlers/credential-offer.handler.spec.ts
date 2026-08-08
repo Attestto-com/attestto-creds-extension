@@ -16,7 +16,7 @@ type Offer = CredentialOfferMessage['payload']
 const NOTIF = 'credential-offer-fixed'
 
 const offerOf = (format: string): Offer =>
-  ({ format, issuerName: 'Issuer', raw: '{}' }) as unknown as Offer
+  ({ format, issuerName: 'Issuer', raw: '{}' })
 
 function harness(opts: { trusted?: boolean; acceptResult?: string | null } = {}) {
   const log: string[] = []

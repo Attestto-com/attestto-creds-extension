@@ -32,12 +32,12 @@ const ONBOARDING_PATH = '/onboarding'
 const UNLOCK_PATH = '/lock'
 
 function selectIdentity(did: string): void {
-  router.push({ name: 'identity-detail', params: { did: encodeURIComponent(did) } })
+  void router.push({ name: 'identity-detail', params: { did: encodeURIComponent(did) } })
 }
 
 /** Onboarding step 1 — open the full-page extension flow in a new tab. */
 function verifyIdOffline(): void {
-  chrome.runtime.openOptionsPage()
+  void chrome.runtime.openOptionsPage()
 }
 </script>
 

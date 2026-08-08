@@ -329,7 +329,7 @@ export const useWalletStore = defineStore('wallet', () => {
 
     // Clear the session key so private key can't be read without re-auth
     // Public data (did, credentials, identities) stays accessible
-    chrome.storage.session.remove(STORAGE_KEYS.SESSION_KEY)
+    void chrome.storage.session.remove(STORAGE_KEYS.SESSION_KEY)
   }
 
   /**

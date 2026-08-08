@@ -96,7 +96,7 @@ describe('DIDCOMM_INBOUND parity: WHY the case delegates to handle() directly', 
     // forces a conscious decision.
     const res = await dispatch(
       { type: 'DIDCOMM_INBOUND', payload: VALID_INBOUND },
-      {} as chrome.runtime.MessageSender,
+      {},
       { buildBundle: (() => ({})) as never, resolveSender: () => ({ origin: 'https://verifier.example', kind: 'web' }) },
     )
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' })

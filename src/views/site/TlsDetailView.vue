@@ -34,7 +34,7 @@ onMounted(async () => {
 })
 
 function goBack(): void {
-  router.push('/')
+  void router.push('/')
 }
 </script>
 

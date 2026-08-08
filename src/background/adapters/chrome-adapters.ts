@@ -79,7 +79,7 @@ export function createUntrustedAdapters(): UntrustedAdapters {
     },
     runtime: {
       sendMessage: async (message) => {
-        chrome.runtime.sendMessage(message)
+        void chrome.runtime.sendMessage(message)
       },
       getURL: (path) => chrome.runtime.getURL(path),
     },

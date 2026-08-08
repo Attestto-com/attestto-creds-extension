@@ -68,7 +68,7 @@ function isActive(tab: Tab): boolean {
 
 function go(tab: Tab): void {
   if (isActive(tab)) return
-  router.push(tab.to)
+  void router.push(tab.to)
 }
 </script>
 

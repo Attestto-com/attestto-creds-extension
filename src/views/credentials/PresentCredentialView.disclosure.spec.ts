@@ -62,7 +62,7 @@ function makeRouter() {
 
 async function mountAt() {
   const router = makeRouter()
-  router.push('/credentials/cred-1/present')
+  void router.push('/credentials/cred-1/present')
   await router.isReady()
   const wrapper = mount(PresentCredentialView, { global: { plugins: [router, makeI18n()] } })
   await flushPromises()

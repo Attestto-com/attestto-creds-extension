@@ -131,7 +131,13 @@ describe('the worker is wired to it', () => {
   const source = readFileSync(resolve(process.cwd(), 'src/entrypoints/background.ts'), 'utf8')
 
   it('the message listener consults the predicate and touches the lock', () => {
-    expect(source).toMatch(/if \(shouldCountAsActivity\(sender, message\)\) \{\s*idleLock\.touch\(\)/)
+    // Story 1.18 wrapped it: a failed activity stamp is background bookkeeping,
+    // logged and dropped, NOT something that turns a successful APPROVE into an
+    // error response. That distinction is what `fireAndForget` pins here.
+    expect(source).toMatch(
+      /if \(shouldCountAsActivity\(sender, message\)\) \{\s*fireAndForget\(idleLock\.touch\(\)/,
+    )
+    expect(source).not.toMatch(/answerOrFail\(idleLock\.touch/)
   })
 
   it('the worker re-arms on start and never touches there', () => {

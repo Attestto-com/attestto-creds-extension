@@ -60,10 +60,11 @@ watch(
   (next) => {
     if (!loaded.value) return
     if (saveDebounce) clearTimeout(saveDebounce)
-    saveDebounce = setTimeout(async () => {
-      await writeSettings(next)
-      justSaved.value = true
-      setTimeout(() => (justSaved.value = false), 1500)
+    saveDebounce = setTimeout(() => {
+      void writeSettings(next).then(() => {
+        justSaved.value = true
+        setTimeout(() => (justSaved.value = false), 1500)
+      })
     }, 200)
   },
   { deep: true },

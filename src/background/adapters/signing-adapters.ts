@@ -75,7 +75,7 @@ export function createSigningAdapters(deps: SigningAdapterDeps): SigningAdapters
       }
     }
 
-    const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair
+    const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']))
     const privateKeyJwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
     const rawPub = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
     const publicKeyB64 = btoa(String.fromCharCode(...rawPub))
@@ -99,7 +99,7 @@ export function createSigningAdapters(deps: SigningAdapterDeps): SigningAdapters
     const sitePrivateKeyJwk = entry.privateKeyJwk
     return {
       did: entry.did,
-      publicKeyJwk: deps.publicJwkOf(entry) as JsonWebKey,
+      publicKeyJwk: deps.publicJwkOf(entry),
       rawSign: (p) => es256RawSign(sitePrivateKeyJwk, p),
     }
   }

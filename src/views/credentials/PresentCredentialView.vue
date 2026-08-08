@@ -68,7 +68,7 @@ onMounted(async () => {
   const id = route.params.id as string
   const found = credentialsStore.getById(id)
   if (!found) {
-    router.replace('/credentials')
+    void router.replace('/credentials')
     return
   }
   credential.value = found

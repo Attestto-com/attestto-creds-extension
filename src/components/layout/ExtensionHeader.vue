@@ -26,7 +26,7 @@ defineEmits<{
 }>()
 
 function openSettings(): void {
-  chrome.runtime.openOptionsPage()
+  void chrome.runtime.openOptionsPage()
 }
 
 function closeWindow(): void {

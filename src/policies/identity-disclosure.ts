@@ -90,6 +90,6 @@ export function getDisclosureLabels(paths: string[]): Array<{ path: string; labe
     const field = getFieldPolicy(p)
     return field
       ? { path: p, label: field.label, tier: field.tier }
-      : { path: p, label: p, tier: 'standard' as DisclosureTier }
+      : { path: p, label: p, tier: 'standard' }
   })
 }

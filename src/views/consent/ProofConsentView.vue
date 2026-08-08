@@ -52,7 +52,7 @@ onMounted(() => {
   const requestId = route.params.id as string
   const found = proofRequestsStore.requests.find((r) => r.id === requestId)
   if (!found || found.status !== 'pending') {
-    router.replace('/credentials')
+    void router.replace('/credentials')
     return
   }
   request.value = found

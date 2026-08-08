@@ -43,7 +43,7 @@ export interface PendingConsentOptions<T> {
   /** The `error` string a `peek` miss answers with. Flow-specific, user-visible in logs. */
   notFound: string
   /** Report the denial to the originating page. Called at most once per row. */
-  reportDenied(row: T): void
+  reportDenied: (row: T) => void
 }
 
 export function createPendingConsent<T>(options: PendingConsentOptions<T>): PendingConsent<T> {

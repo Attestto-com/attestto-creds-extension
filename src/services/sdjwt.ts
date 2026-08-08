@@ -38,8 +38,8 @@ export async function parseSdJwt(compact: string): Promise<ParsedSdJwt> {
   const decoded = await decodeSdJwt(compact, sha256Hasher)
 
   return {
-    header: decoded.jwt.header as Record<string, unknown>,
-    payload: decoded.jwt.payload as Record<string, unknown>,
+    header: decoded.jwt.header,
+    payload: decoded.jwt.payload,
     disclosures: decoded.disclosures,
     keyBindingJwt: undefined,
   }
@@ -55,7 +55,7 @@ export async function getDecodedClaims(
   // then merge the issuer payload with the selectively-disclosed claims.
   const decoded = await decodeSdJwt(compact, sha256Hasher)
   const claims = await getClaims<Record<string, unknown>>(
-    decoded.jwt.payload as Record<string, unknown>,
+    decoded.jwt.payload,
     decoded.disclosures,
     sha256Hasher,
   )

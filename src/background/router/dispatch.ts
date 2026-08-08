@@ -156,7 +156,7 @@ export async function dispatch(
   // 7 — handle the validated payload with the scoped ctx
   let data: unknown
   try {
-    data = await route.handle(validated as never, ctx as never)
+    data = await route.handle(validated as never, ctx)
   } catch {
     return fail('handler-error')
   }

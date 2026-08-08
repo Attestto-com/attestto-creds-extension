@@ -28,7 +28,7 @@ const TOKEN = 'tok-123'
 function makeVault(overrides: Partial<VaultData> = {}): VaultData {
   return {
     did: 'did:jwk:root',
-    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'PUB_X', y: 'PUB_Y', d: 'ROOT_SECRET' } as JsonWebKey,
+    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'PUB_X', y: 'PUB_Y', d: 'ROOT_SECRET' },
     holderDid: undefined,
     credentials: [],
     linkedSolanaAddress: null,
@@ -147,7 +147,7 @@ describe('handleSignDocumentApprove — characterization (parity-to-legacy)', ()
   })
 
   it('publicKeyJwk defaults kty/crv when the stored JWK omits them', async () => {
-    const { ctx } = makeCtx(makeVault({ privateKeyJwk: { x: 'PUB_X', y: 'PUB_Y', d: 'S' } as JsonWebKey }))
+    const { ctx } = makeCtx(makeVault({ privateKeyJwk: { x: 'PUB_X', y: 'PUB_Y', d: 'S' } }))
     const result = await handleSignDocumentApprove({ signingToken: TOKEN, selectedDid: 'did:x' }, ctx)
     if (!result.ok) throw new Error('expected ok')
     expect(result.publicKeyJwk).toEqual({ kty: 'EC', crv: 'P-256', x: 'PUB_X', y: 'PUB_Y' })

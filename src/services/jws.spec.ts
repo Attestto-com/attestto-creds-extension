@@ -85,7 +85,7 @@ describe('es256KeySigner — CRYPTO VALIDITY (round-trip against a real P-256 ke
       { name: 'ECDSA', hash: 'SHA-256' },
       pair.publicKey,
       sig as BufferSource,
-      input as BufferSource,
+      input,
     )
     expect(ok).toBe(true)
   })
@@ -100,7 +100,7 @@ describe('es256KeySigner — CRYPTO VALIDITY (round-trip against a real P-256 ke
       { name: 'ECDSA', hash: 'SHA-256' },
       pair.publicKey,
       decodeB64urlToBytes(s) as BufferSource,
-      new TextEncoder().encode(`${h}.${p}`) as BufferSource,
+      new TextEncoder().encode(`${h}.${p}`),
     )
     expect(ok).toBe(true)
   })

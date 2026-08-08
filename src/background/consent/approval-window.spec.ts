@@ -52,10 +52,10 @@ function fakePlatform(overrides: Partial<ApprovalWindowPlatform> = {}) {
       const handle = nextTimer++
       timers.set(handle, { fn, ms })
       return handle as unknown as ReturnType<typeof setTimeout>
-    }) as ApprovalWindowPlatform['setTimeout'],
+    }),
     clearTimeout: ((handle: unknown) => {
       timers.delete(handle as number)
-    }) as ApprovalWindowPlatform['clearTimeout'],
+    }),
     ...overrides,
   }
 

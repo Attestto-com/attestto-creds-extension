@@ -79,7 +79,7 @@ async function mountView() {
       { path: '/credentials', component: { template: '<div/>' } },
     ],
   })
-  router.push('/credentials/cred-1/present')
+  void router.push('/credentials/cred-1/present')
   await router.isReady()
   const wrapper = mount(PresentCredentialView, {
     global: { plugins: [router, createI18n({ legacy: false, locale: 'en', messages: { en } })] },

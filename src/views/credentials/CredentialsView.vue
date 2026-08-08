@@ -47,7 +47,7 @@ async function unlock(): Promise<void> {
 }
 
 function handleShare(id: string): void {
-  router.push(`/credentials/${id}/present`)
+  void router.push(`/credentials/${id}/present`)
 }
 
 function handleDelete(id: string): void {

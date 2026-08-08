@@ -27,15 +27,29 @@ jobs:
       - name: Prepare WXT
         run: npx wxt prepare || true
 
-      # ESLint is not yet installed/configured in this repo (no eslint dep, no
-      # flat config) — tracked as infra debt under SOC-13. Keep the step visible
-      # but non-blocking so Test + Build gate the PR until lint is set up.
+      # Story 1.18 — every gate below is BLOCKING. `continue-on-error` used to sit
+      # on Lint because `eslint .` exited 2 with no config: a step that could
+      # neither pass nor fail, which is a green tick that means nothing.
+
+      # Type-check was missing from CI entirely, so Story 1.1's repair (the
+      # solution-style tsconfig that checked an EMPTY file set without `-b`) was
+      # never enforced on a PR.
+      - name: Type-check
+        run: npm run type-check
+
       - name: Lint
         run: npm run lint:check
-        continue-on-error: true
 
       - name: Test
         run: npm run test:run
+
+      # The gate self-test runs LAST and is the reason to believe the three above.
+      # For each of type-check / lint / test it seeds a deliberate violation,
+      # asserts the gate goes red, removes it, and asserts the gate goes green.
+      # Without it, a gate that silently stops checking looks exactly like a gate
+      # that is passing — the failure mode this repo has now shipped three times.
+      - name: Gates can fail
+        run: npm run gate-self-test
 
       - name: Build
         run: npm run build

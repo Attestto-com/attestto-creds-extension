@@ -37,11 +37,11 @@ const fetchError = ref<string | null>(null)
 const fetchSuccess = ref(false)
 
 function goBack(): void {
-  router.push({ name: 'home' })
+  void router.push({ name: 'home' })
 }
 
 function handleShare(id: string): void {
-  router.push(`/credentials/${id}/present`)
+  void router.push(`/credentials/${id}/present`)
 }
 
 async function handleFetchFromVault(): Promise<void> {

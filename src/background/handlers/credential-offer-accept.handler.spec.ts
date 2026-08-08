@@ -100,14 +100,14 @@ const identityOffer = (claims: Record<string, unknown>): Offer =>
     issuerName: 'Attestto',
     raw: 'not-json',
     claims,
-  }) as unknown as Offer
+  })
 
 const jsonLdOffer = (vc: Record<string, unknown>): Offer =>
   ({
     format: 'json-ld',
     issuerName: 'Fallback Issuer',
     raw: JSON.stringify(vc),
-  }) as unknown as Offer
+  })
 
 beforeEach(() => {
   vi.restoreAllMocks()

@@ -17,7 +17,6 @@
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
 import type { SigningCtx } from '@/background/ctx/ctx-bundles'
-import type { StoredCredential } from '@/types/credential'
 
 /** The CHAPI request fields the case reads from the pending row's `apiReq`. */
 export interface ChapiApproveInput {
@@ -51,7 +50,7 @@ export async function handleChapiApprove(
     return { ok: false, error: 'No DID configured' }
   }
 
-  const credentials = (vault.credentials ?? []) as StoredCredential[]
+  const credentials = (vault.credentials ?? [])
   const vcs = credentials
     .filter((c) => c.format === 'json-ld')
     .map((c) => JSON.parse(c.raw) as Record<string, unknown>)

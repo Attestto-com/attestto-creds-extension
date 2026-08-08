@@ -15,7 +15,7 @@ import type { SiteDidEntry } from '@/utils/site-did'
 let p256Jwk: JsonWebKey
 
 beforeAll(async () => {
-  const pair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])) as CryptoKeyPair
+  const pair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']))
   p256Jwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
 })
 

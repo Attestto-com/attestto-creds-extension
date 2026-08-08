@@ -121,7 +121,7 @@ describe('full disclosure keeps the credential verifiable', () => {
 
     expect(result.complete).toBe(true)
     expect(result.credential).toBe(source)
-    expect((result.credential as Record<string, unknown>).proof).toBeDefined()
+    expect((result.credential).proof).toBeDefined()
     expect(result.credential.type).not.toContain(DERIVED_TYPE)
   })
 

@@ -49,7 +49,7 @@ describe('isExtensionSender', () => {
 
   it('is false for undefined / empty senders', () => {
     expect(isExtensionSender(undefined as unknown as Sender)).toBe(false)
-    expect(isExtensionSender({} as Sender)).toBe(false)
+    expect(isExtensionSender({})).toBe(false)
   })
 })
 
@@ -79,8 +79,8 @@ describe('getSenderOrigin', () => {
   })
 
   it('returns null when neither origin nor a valid url is present', () => {
-    expect(getSenderOrigin({ id: 'testid', tab: { id: 1 } as chrome.tabs.Tab } as Sender)).toBeNull()
-    expect(getSenderOrigin({} as Sender)).toBeNull()
+    expect(getSenderOrigin({ id: 'testid', tab: { id: 1 } as chrome.tabs.Tab })).toBeNull()
+    expect(getSenderOrigin({})).toBeNull()
     expect(getSenderOrigin(undefined as unknown as Sender)).toBeNull()
   })
 })

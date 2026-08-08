@@ -25,7 +25,7 @@ function makeVault(overrides: Partial<VaultData> = {}): VaultData {
   return {
     did: 'did:jwk:root',
     holderDid: undefined,
-    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'X', y: 'Y', d: 'ROOT' } as JsonWebKey,
+    privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'X', y: 'Y', d: 'ROOT' },
     credentials: [],
     linkedSolanaAddress: null,
     keyShares: [],
@@ -63,7 +63,7 @@ describe('handleSignAttesttoPdfApprove — characterization (parity-to-legacy)',
   it('PAYLOAD referent — the signer receives EXACTLY atob(payloadB64) (opaque, no re-canonicalize)', async () => {
     const { ctx, rawSign } = makeCtx(makeVault())
     await handleSignAttesttoPdfApprove({ payloadB64: PAYLOAD_B64, selectedDid: 'did:x' }, ctx)
-    const signed = rawSign.mock.calls[0][0] as Uint8Array
+    const signed = rawSign.mock.calls[0][0]
     const expected = Uint8Array.from(atob(PAYLOAD_B64), (c) => c.charCodeAt(0))
     expect(Array.from(signed)).toEqual(Array.from(expected))
   })
@@ -128,9 +128,9 @@ describe('APDF keys-never-mirrored — the provisioning seam mirrors through the
     // assertion, not trivially green. This is the strip the provisioning adapter routes
     // its syncPublicVault through; the handler has no mirror capability of its own.
     const vault = makeVault({
-      ed25519PrivateKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: 'EDPUB', d: 'KNOWN_ED_SECRET' } as JsonWebKey,
+      ed25519PrivateKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: 'EDPUB', d: 'KNOWN_ED_SECRET' },
       ed25519PublicKeyB64: 'EDPUBLICKEYB64xyz',
-    } as Partial<VaultData>)
+    })
 
     const mirror = toPublicVault(vault)
 

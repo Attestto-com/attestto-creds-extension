@@ -403,6 +403,10 @@ describe('gov-host classification — single home, injected as data (Story 1.12)
   })
 
   it('SERIALIZABLE — rehydrated via new Function (no closure capture) yields the same classification', () => {
+    // Rebuilding the function from its own source IS the assertion here: it
+    // proves `analyzeSiteHealth` captures no closure state and can be shipped to
+    // another realm.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const rehydrated = new Function('return (' + analyzeSiteHealth.toString() + ')')() as typeof analyzeSiteHealth
     expect(rehydrated([...GOV_TLDS], pageWithExternalLink('hacienda.go.cr')).thirdPartyLinks.govCount).toBe(1)
   })
