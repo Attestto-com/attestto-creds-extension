@@ -154,7 +154,12 @@ export function createPendingStore(options: PendingStoreOptions): Pending {
         // concurrent APPROVE for the same id return null instead of the row.
         const rows = withoutStale(await readAll())
         const row = rows[id]
-        if (!row) {
+        // A consumed row is a tombstone: the consent was already acted on. It is
+        // NOT removed and NOT returned — otherwise a DENY, or the approval window
+        // closing after an approve, would take it and report a cancellation for a
+        // request the page already got a signature for. Two outcomes, one consent.
+        // Read-only on `consumed`, per AD-6: the router stays its single writer.
+        if (!row || row.consumed) {
           await storage.set({ [key]: rows })
           return null
         }
@@ -162,6 +167,26 @@ export function createPendingStore(options: PendingStoreOptions): Pending {
         await storage.set({ [key]: rows })
         const { createdAt: _stamp, ...pending } = row
         return pending
+      }),
+
+    claimForProcessing: (id) =>
+      serialize(async () => {
+        const rows = withoutStale(await readAll())
+        const row = rows[id]
+        if (!row) {
+          await storage.set({ [key]: rows })
+          return { status: 'missing' as const }
+        }
+        if (row.consumed) {
+          await storage.set({ [key]: rows })
+          return { status: 'alreadyConsumed' as const }
+        }
+        // Mark BEFORE returning, inside the same queued operation. A second
+        // APPROVE queued behind this one sees the tombstone, never the row.
+        rows[id] = { ...row, consumed: true }
+        await storage.set({ [key]: rows })
+        const { createdAt: _stamp, ...pending } = row
+        return { status: 'claimed' as const, row: pending }
       }),
   }
 }

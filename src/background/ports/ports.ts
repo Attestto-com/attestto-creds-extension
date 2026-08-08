@@ -88,7 +88,30 @@ export interface Pending {
    * (double-sign) — so this is `get`-and-`delete` with NO `await` between.
    */
   takePending(id: string): Promise<PendingRow | null>
+  /**
+   * ATOMIC claim for processing (Story 1.16, FR6/FR7). The APPROVE chokepoint:
+   * reads the row and marks it `consumed` in one indivisible step, so the SECOND
+   * APPROVE for an id cannot reach an effect.
+   *
+   * Distinct from `takePending`, which removes. This one leaves a TOMBSTONE —
+   * the row stays, flagged — and that is the point: a removed row is
+   * indistinguishable from one that never existed, so a replay would be reported
+   * as "missing" and a genuine double-process attempt could not be told from a
+   * stale click. The two rejections are separate outcomes here, which is what
+   * makes double-processing DETECTABLE rather than merely absent.
+   *
+   * The tombstone is garbage-collected by the same staleness prune as any row.
+   */
+  claimForProcessing(id: string): Promise<ClaimResult>
 }
+
+/** The three terminal outcomes of an APPROVE reaching the consent chokepoint. */
+export type ClaimResult =
+  | { status: 'claimed'; row: PendingRow }
+  /** No such row: never existed, already denied, or aged out. */
+  | { status: 'missing' }
+  /** The row is a tombstone — this consent was already acted on. */
+  | { status: 'alreadyConsumed' }
 
 /** OS notification surface. */
 export interface Notify {

@@ -45,7 +45,7 @@ function makeAdapters(overrides: {
       runtime: { sendMessage: vi.fn(async () => {}), getURL: vi.fn(() => 'x') },
     },
     consent: {
-      pending: { put: vi.fn(async () => {}), get: vi.fn(async () => null), markConsumed: vi.fn(async () => {}), takePending: vi.fn(async () => null) },
+      pending: { put: vi.fn(async () => {}), get: vi.fn(async () => null), markConsumed: vi.fn(async () => {}), takePending: vi.fn(async () => null), claimForProcessing: vi.fn(async () => ({ status: 'missing' as const })) },
       notify: { show: vi.fn(async () => {}) },
       clock: { now: vi.fn(() => 0) },
     },

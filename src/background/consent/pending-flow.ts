@@ -36,8 +36,40 @@ export interface PendingFlow<T> {
    * `null` if it was already claimed, never existed, or has gone stale.
    */
   take(id: string | undefined): Promise<T | null>
+  /**
+   * Story 1.16 — the APPROVE chokepoint. Claims the row and runs `effect` ONLY
+   * if the claim succeeded.
+   *
+   * `effect` is an argument rather than something the caller runs after checking
+   * a result, and that is the whole design: there is no ordering for a call site
+   * to get wrong and no way to reach the effect without the guard having passed.
+   * The five APPROVE cases previously each re-implemented "look up, bail if
+   * missing, then act" — five chances for one to drift into acting first.
+   */
+  approve<R>(id: string | undefined, effect: (row: T) => R | Promise<R>): Promise<ApproveOutcome<R>>
   /** Attach the approval window's disarm hook. Worker-local; lost on restart. */
   attachUnregister(id: string, unregister: () => void): void
+}
+
+export type ApproveOutcome<R> =
+  | { ok: true; value: R }
+  | { ok: false; reason: 'missing' | 'alreadyConsumed' }
+
+/**
+ * What the approval window is told when the guard rejected.
+ *
+ * The two reasons stay DISTINCT all the way to the caller. Collapsing them into
+ * one "no pending request" would make a replayed approval indistinguishable from
+ * a stale click, and FR7 asks for double-processing to be detected, not merely
+ * prevented. This string is what a log or a future counter keys on.
+ */
+export const ALREADY_PROCESSED_ERROR = 'This request was already processed'
+
+export function approveRejection(
+  reason: 'missing' | 'alreadyConsumed',
+  missingError: string,
+): { ok: false; error: string } {
+  return { ok: false, error: reason === 'alreadyConsumed' ? ALREADY_PROCESSED_ERROR : missingError }
 }
 
 export function createPendingFlow<T>(store: Pending): PendingFlow<T> {
@@ -72,6 +104,20 @@ export function createPendingFlow<T>(store: Pending): PendingFlow<T> {
       if (!row) return null
       disarm(id)
       return row.payload as T
+    },
+
+    async approve(id, effect) {
+      // Fail closed on a blank id: an APPROVE that names nothing approves nothing.
+      if (!id) return { ok: false, reason: 'missing' }
+
+      const claim = await store.claimForProcessing(id)
+      if (claim.status !== 'claimed') return { ok: false, reason: claim.status }
+
+      // Past the guard, so this consent is ours and nobody else's. Disarm the
+      // window before the effect runs — the effect can take seconds (a WebAuthn
+      // prompt), and the backstop must not fire a cancellation underneath it.
+      disarm(id)
+      return { ok: true, value: await effect(claim.row.payload as T) }
     },
 
     attachUnregister(id, unregister) {

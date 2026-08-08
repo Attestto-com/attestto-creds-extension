@@ -59,7 +59,7 @@ import {
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
 import { createPendingConsent } from '@/background/consent/pending-consent'
-import { createPendingFlow } from '@/background/consent/pending-flow'
+import { createPendingFlow, approveRejection } from '@/background/consent/pending-flow'
 import { createPendingStore, chromePendingStorage } from '@/background/consent/pending-store'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
 import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
@@ -941,14 +941,12 @@ export default defineBackground(() => {
       case 'SIGN_DOCUMENT_APPROVE': {
         const signApproveId = message.payload?.requestId as string
         const selectedSignDid = message.payload?.selectedDid as string
-        // Story 1.15 — ONE atomic claim replaces get + unregister + delete. The
-        // row is storage-backed now, so it also survives the worker restart this
-        // approval almost certainly outlived.
-        pendingSigningRequests.take(signApproveId).then((pendingSigning) => {
-          if (!pendingSigning) {
-            sendResponse({ ok: false, error: 'No pending signing request' })
-            return
-          }
+        // Story 1.15/1.16 — `approve` claims the row, marks it consumed, disarms
+        // the window, and only THEN runs this body. The body is an argument, not
+        // something that runs after a check, so there is no way to reach the
+        // effect without the guard having passed. A replay lands on the tombstone
+        // and is rejected as already-processed.
+        pendingSigningRequests.approve(signApproveId, (pendingSigning) => {
 
           // Story 1.13 Phase 1b — the extracted signing CORE gets its ctx from the
           // composition root's `buildBundle('signing')` (AD-3): a fresh bundle whose
@@ -975,6 +973,8 @@ export default defineBackground(() => {
               sendResponse({ ok: false, error: result.error })
             }
           })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending signing request'))
         })
         return true // async
       }
@@ -1016,11 +1016,7 @@ export default defineBackground(() => {
       case 'AUTH_APPROVE': {
         const authApproveId = message.payload?.requestId as string
         const selectedAuthDid = message.payload?.selectedDid as string | undefined
-        pendingAuthRequests.take(authApproveId).then((pendingAuthReq) => {
-          if (!pendingAuthReq) {
-            sendResponse({ ok: false, error: 'No pending auth request' })
-            return
-          }
+        pendingAuthRequests.approve(authApproveId, (pendingAuthReq) => {
 
           const isCwAuth = pendingAuthReq.protocol === 'cw'
           const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
@@ -1064,6 +1060,8 @@ export default defineBackground(() => {
               sendResponse({ ok: false, error: result.error })
             }
           })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending auth request'))
         })
         return true // async sendResponse
       }
@@ -1089,11 +1087,7 @@ export default defineBackground(() => {
       case 'SIGN_ATTESTTO_PDF_APPROVE': {
         const apdfApproveId = message.payload?.requestId as string
         const selectedApdfDid = message.payload?.selectedDid as string
-        pendingAttesttoPdfRequests.take(apdfApproveId).then((pendingApdf) => {
-          if (!pendingApdf) {
-            sendResponse({ ok: false, error: 'No pending Attestto PDF sign request' })
-            return
-          }
+        pendingAttesttoPdfRequests.approve(apdfApproveId, (pendingApdf) => {
 
           // Story 1.13 Phase 1b — APDF signing core (`handleSignAttesttoPdfApprove`) gets
           // its ctx from `buildBundle('signing')`. The handler calls
@@ -1115,6 +1109,8 @@ export default defineBackground(() => {
               sendResponse({ ok: false, error: result.error })
             }
           })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending Attestto PDF sign request'))
         })
         return true // async
       }
@@ -1142,11 +1138,7 @@ export default defineBackground(() => {
       case 'PAYMENT_APPROVE': {
         const payApproveId = message.payload?.requestId as string
         const selectedDid = message.payload?.selectedDid as string
-        pendingPaymentRequests.take(payApproveId).then((pendingPayment) => {
-          if (!pendingPayment) {
-            sendResponse({ ok: false, error: 'No pending payment request' })
-            return
-          }
+        pendingPaymentRequests.approve(payApproveId, (pendingPayment) => {
 
           // Story 1.13 Phase 1b — PAYMENT signing core (`handlePaymentApprove`), the twin
           // of SIGN_DOCUMENT: ctx from `buildBundle('signing')`, signs with the root key
@@ -1174,6 +1166,8 @@ export default defineBackground(() => {
               sendResponse({ ok: false, error: result.error })
             }
           })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending payment request'))
         })
         return true // async
       }
@@ -1190,11 +1184,7 @@ export default defineBackground(() => {
 
       case 'CHAPI_APPROVE': {
         const approveReqId = message.payload?.requestId as string
-        pendingChapiRawRequests.take(approveReqId).then((pending) => {
-          if (!pending) {
-            sendResponse({ ok: false, error: 'No pending request' })
-            return
-          }
+        pendingChapiRawRequests.approve(approveReqId, (pending) => {
 
           // Story 1.13 Phase 1b — CHAPI presentation core (`handleChapiApprove`) gets its
           // ctx from `buildBundle('signing')`; it builds the VP through the ONE gated
@@ -1219,6 +1209,8 @@ export default defineBackground(() => {
               sendResponse({ ok: false, error: result.error })
             }
           })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending request'))
         })
         return true // async
       }
