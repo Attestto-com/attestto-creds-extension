@@ -11,7 +11,8 @@
 
 import { signPayload } from '@/services/signing'
 import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
-import { parseProofRequest } from '@/services/didcomm'
+import { MESSAGE_ROUTES } from '@/background/router/routes'
+import type { UntrustedCtx } from '@/background/ctx/ctx-bundles'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { LinkedIdentity } from '@/stores/wallet'
@@ -1538,27 +1539,28 @@ export default defineBackground(() => {
       }
 
       case 'DIDCOMM_INBOUND': {
-        const didcommMsg = (message as DIDCommInboundMessage).payload
-        const parsed = parseProofRequest(didcommMsg)
-
-        if (parsed) {
-          // Convert DIDComm proof request to our internal format
-          // The popup will handle matching to a credential
-          chrome.notifications.create(`didcomm-${parsed.id}`, {
-            type: 'basic',
-            iconUrl: chrome.runtime.getURL('icon/48.png'),
-            title: 'DIDComm Proof Request',
-            message: `${parsed.from} is requesting identity verification via DIDComm v2.`,
-            buttons: [{ title: 'Review' }, { title: 'Dismiss' }],
-            requireInteraction: true,
-          })
-
-          // Forward to popup
-          chrome.runtime.sendMessage({
-            type: 'DIDCOMM_PROOF_REQUEST',
-            payload: parsed,
-          })
+        // Story 1.9 — extracted to the DIDCOMM_INBOUND route (parity-tested in
+        // didcomm-inbound.handler.spec). Delegates DIRECTLY to `handle` (not
+        // through `dispatch`, whose empty `allowFrom` would reject — the legacy
+        // case did no sender-auth). Effects fire-and-forget, response stays sync —
+        // same as before. The inline ctx is a thin chrome adapter; the real
+        // capability-scoped bundle is built by the composition root (Story 1.13),
+        // which also removes this cast.
+        const didcommCtx: Pick<UntrustedCtx, 'notifications' | 'runtime'> = {
+          notifications: {
+            create: async (id, options) => {
+              chrome.notifications.create(id, options as chrome.notifications.NotificationOptions<true>)
+            },
+          },
+          runtime: {
+            sendMessage: async (msg) => { chrome.runtime.sendMessage(msg) },
+            getURL: (path) => chrome.runtime.getURL(path),
+          },
         }
+        void MESSAGE_ROUTES.DIDCOMM_INBOUND.handle(
+          (message as DIDCommInboundMessage).payload,
+          didcommCtx as never,
+        )
         sendResponse({ ok: true })
         break
       }

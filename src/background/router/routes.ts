@@ -17,6 +17,7 @@
  */
 import type { MessageType } from './message-types'
 import type { CtxBundleTag, Route } from './route'
+import { handleDidcommInbound } from '@/background/handlers/didcomm-inbound.handler'
 
 function notImplemented(): never {
   throw new Error(
@@ -34,6 +35,21 @@ function stubRoute<K extends MessageType>(bundle: CtxBundleTag): Route<K> {
   }
 }
 
+// Story 1.9 — the first EXTRACTED route. Declared with its precise tag
+// (`Route<K, 'untrusted'>`) so the handler's ctx is `UntrustedCtx`, not the
+// heterogeneous `AnyCtx`; method-bivariance then stores it as `Route<K>` in the
+// registry below. `handle` is the real handler; `verifyPeer` declares the AD-9
+// envelope seam (filled in Epic 2). `allowFrom` stays empty: the case delegates
+// to `handle` directly (parity — no legacy sender-auth), so the empty descriptor
+// is not consulted until Epic 2 routes it through dispatch.
+const didcommInboundRoute: Route<'DIDCOMM_INBOUND', 'untrusted'> = {
+  bundle: 'untrusted',
+  allowFrom: { origins: [], senders: [] },
+  validate: (raw) => raw as never,
+  handle: handleDidcommInbound,
+  verifyPeer: { check: 'envelope' },
+}
+
 export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   NOTIFICATION_RECEIVED: stubRoute('untrusted'),
   SESSION_EXPIRED: stubRoute('untrusted'),
@@ -46,7 +62,7 @@ export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   WALLET_LINK: stubRoute('signing'),
   PROOF_ACCESS_REQUEST: stubRoute('signing'),
   PUSH_PRESENTATION: stubRoute('signing'),
-  DIDCOMM_INBOUND: stubRoute('untrusted'),
+  DIDCOMM_INBOUND: didcommInboundRoute,
   CREDENTIAL_API_REQUEST: stubRoute('signing'),
   LIST_STORED_CREDENTIALS: stubRoute('signing'),
   RESHARE_STORED_VP: stubRoute('signing'),

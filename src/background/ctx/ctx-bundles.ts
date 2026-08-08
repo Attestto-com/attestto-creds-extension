@@ -22,12 +22,20 @@ import type {
   Notify,
   Http,
   Clock,
+  Notifications,
+  Runtime,
 } from '@/background/ports/ports'
 
-/** Parse/notify tier — no key, no sign, no vault. */
+/**
+ * Parse/notify tier — no key, no sign, no vault. `notifications` + `runtime` are
+ * the real ports the first extracted untrusted handler (`DIDCOMM_INBOUND`, Story
+ * 1.9) uses: raise an OS notification and broadcast to the popup.
+ */
 export interface UntrustedCtx {
   notify: Notify
   http: Http
+  notifications: Notifications
+  runtime: Runtime
 }
 
 /** Signing tier — read key material to sign; MUST NOT mutate the vault. */

@@ -83,6 +83,36 @@ export interface Notify {
   show(message: string): Promise<void>
 }
 
+/** A single notification button. */
+export interface NotificationButton {
+  title: string
+}
+
+/** Rich OS-notification options — mirrors `chrome.notifications.create`'s option bag. */
+export interface NotificationOptions {
+  type: string
+  iconUrl: string
+  title: string
+  message: string
+  buttons?: NotificationButton[]
+  requireInteraction?: boolean
+}
+
+/** Rich notification surface (create by id). Story 1.9 gave untrusted this real port. */
+export interface Notifications {
+  create(id: string, options: NotificationOptions): Promise<void>
+}
+
+/**
+ * Extension-runtime surface a handler may touch: broadcast to the popup and
+ * resolve a packaged asset URL. Thin mirrors of `chrome.runtime.sendMessage` /
+ * `getURL` — the real adapter is the composition root (Story 1.13).
+ */
+export interface Runtime {
+  sendMessage(message: unknown): Promise<void>
+  getURL(path: string): string
+}
+
 /** Outbound HTTP. */
 export interface Http {
   fetch(url: string, init?: unknown): Promise<unknown>
