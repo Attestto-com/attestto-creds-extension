@@ -12,8 +12,9 @@
  * No multi-step onboarding tour — first install lands here directly (per
  * Eduardo's wireframes 2026-06-29).
  */
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { startActivityReporter } from '@/composables/useActivityReporter'
 import { ShieldCheckIcon, LockClosedIcon, EyeSlashIcon, ArrowDownTrayIcon } from '@heroicons/vue/24/outline'
 import OverviewView from './views/OverviewView.vue'
 import SecurityView from './views/SecurityView.vue'
@@ -47,13 +48,19 @@ function selectTab(t: Tab): void {
   window.history.pushState({}, '', url.toString())
 }
 
+let stopActivityReporter: (() => void) | null = null
+
 onMounted(async () => {
+  // Story 1.14 — settings is an extension surface; using it is user activity.
+  stopActivityReporter = startActivityReporter()
   const localePref = await chrome.storage.local.get('attestto_ext_locale')
   if (localePref['attestto_ext_locale'] === 'es') locale.value = 'es'
   window.addEventListener('popstate', () => {
     active.value = currentTab()
   })
 })
+
+onUnmounted(() => stopActivityReporter?.())
 
 // Allow children to switch tabs (e.g., Overview links into Security)
 function goto(tab: Tab): void {

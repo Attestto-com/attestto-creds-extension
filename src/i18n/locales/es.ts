@@ -325,6 +325,12 @@ export default {
       never: { label: 'Desactivar',          desc: 'Oculta la acci\u00f3n en todos lados. M\u00e1xima precauci\u00f3n.' },
       always: 'Attestto siempre pregunta antes de agregar un sitio a su lista de confianza.',
     },
+    autoLock: {
+      title: 'Bloquear la billetera cuando deje de usarla',
+      description: 'Después de este tiempo sin actividad suya, Attestto se bloquea y vuelve a pedir su llave de acceso. El tiempo con una página abierta en segundo plano no cuenta: solo cuenta lo que usted hace.',
+      minutes: '1 minuto | {count} minutos',
+      noNeverNote: 'No existe la opción "nunca". Bloquearse cuando usted se aleja es justamente el punto.',
+    },
     notifications: {
       title: 'Notificaciones',
       description: 'Las notificaciones del navegador aparecen fuera de la p\u00e1gina y un sitio web no las puede falsificar.',

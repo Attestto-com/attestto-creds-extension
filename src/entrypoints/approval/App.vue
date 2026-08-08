@@ -5,6 +5,7 @@ import { getPreferredIdentity, setPreferredIdentity } from '@/utils/site-identit
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { requireUserVerification, getKdfMethod } from '@/utils/webauthn'
 import { resolveApprovalMode } from '@/utils/approval-params'
+import { startActivityReporter } from '@/composables/useActivityReporter'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
 import {
   ShieldCheckIcon,
@@ -139,6 +140,7 @@ const siteFavicon = computed(() =>
 /** Auto-dismiss an *idle* window so it doesn't linger in the background. */
 const AUTO_CLOSE_MS = 30_000
 let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
+let stopActivityReporter: (() => void) | null = null
 
 /** (Re)start the idle countdown. Reset on interaction so active users aren't cut off. */
 function armAutoClose() {
@@ -159,6 +161,11 @@ onMounted(async () => {
   armAutoClose()
   window.addEventListener('pointerdown', armAutoClose)
   window.addEventListener('keydown', armAutoClose)
+
+  // Story 1.14 — reading a long consent screen is activity. Without this the
+  // idle lock could fire while the user is still deciding, and the approve they
+  // finally click would hit a locked vault.
+  stopActivityReporter = startActivityReporter()
 
   // Mode detection lives in `@/utils/approval-params` (Story 1.13 Phase 4) — the
   // ONE home for the approval-window URL contract, shared with the background
@@ -233,6 +240,7 @@ onUnmounted(() => {
   if (autoCloseTimer) clearTimeout(autoCloseTimer)
   window.removeEventListener('pointerdown', armAutoClose)
   window.removeEventListener('keydown', armAutoClose)
+  stopActivityReporter?.()
 })
 
 async function approve() {

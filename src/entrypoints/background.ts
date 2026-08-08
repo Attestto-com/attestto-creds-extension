@@ -64,6 +64,15 @@ import { summarizeStoredCredentials, buildResharePresentation } from '@/backgrou
 import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
 import { recordProofAccessRequest, recordPreparedPresentation, linkWalletAddress } from '@/background/handlers/vault-records.handler'
 import { approvalParams } from '@/utils/approval-params'
+import {
+  createIdleLock,
+  chromeAlarms,
+  chromeSessionLock,
+  chromeActivityStamp,
+} from '@/background/lock/idle-lock'
+import { shouldCountAsActivity } from '@/background/lock/user-gestures'
+import { readSettings, onSettingsChanged } from '@/utils/settings-config'
+import { STORAGE_KEYS } from '@/config/app'
 
 export default defineBackground(() => {
   // ── Toolbar trust state (ATT-727) ──────────────────
@@ -150,26 +159,40 @@ export default defineBackground(() => {
 
   chrome.alarms.create('keepOffscreenAlive', { periodInMinutes: 4 })
 
+  // ── Idle auto-lock (Story 1.14) ────────────────────
+  // The deadline is measured from the last USER gesture, held in
+  // `storage.session` beside the key it guards, and every decision is recomputed
+  // from it inside `background/lock/idle-lock.ts`. The entrypoint only supplies
+  // the ports and forwards three events: worker start, alarm, gesture.
+  //
+  // What this replaced: `chrome.alarms.create('autoLock', {delayInMinutes: 1})`
+  // at the top level. Because MV3 revives the worker for any message, the timer
+  // restarted whenever a background tab poked the credential API — a web page
+  // could hold the vault open, while the user's own popup activity reset nothing.
+  const idleLock = createIdleLock({
+    clock: { now: () => Date.now() },
+    alarms: chromeAlarms(),
+    session: chromeSessionLock(STORAGE_KEYS.SESSION_KEY),
+    activity: chromeActivityStamp(),
+    timeoutMs: async () => (await readSettings()).autoLockMinutes * 60_000,
+  })
+
   chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === 'keepOffscreenAlive') {
       ensureOffscreenDocument()
     }
-    if (alarm.name === 'autoLock') {
-      // Clear session key to lock the vault
-      await chrome.storage.session.remove('attestto_ext_session_key')
-      console.log('[Attestto ID] Auto-lock triggered')
-    }
+    await idleLock.onAlarm(alarm.name)
   })
 
-  // Auto-lock is fixed at 1 minute — no longer user-configurable (the timer
-  // selector was removed from settings). Kept as a function so the
-  // AUTO_LOCK_CHANGED message and initial setup share one code path.
-  const AUTO_LOCK_MINUTES = 1
-  async function resetAutoLockAlarm(): Promise<void> {
-    chrome.alarms.create('autoLock', { delayInMinutes: AUTO_LOCK_MINUTES })
-  }
+  // Re-arm against the deadline already running. NOT a touch — see above.
+  idleLock.resume()
 
-  resetAutoLockAlarm()
+  // A shorter timeout must take effect on the open session, not on the next one.
+  // Driven by the storage event rather than a message so it works no matter which
+  // surface changed it (the old `AUTO_LOCK_CHANGED` message had no sender at all).
+  onSettingsChanged(() => {
+    idleLock.resume()
+  })
 
   // ── Pending Credential Offers ─────────────────────
 
@@ -586,6 +609,13 @@ export default defineBackground(() => {
   // ── Message Router ─────────────────────────────────
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Story 1.14 — only a user gesture may move the idle deadline. The predicate
+    // (extension sender AND an allowlisted type) lives in `lock/user-gestures`;
+    // both halves are load-bearing and are proven there.
+    if (shouldCountAsActivity(sender, message)) {
+      idleLock.touch()
+    }
+
     switch (message.type) {
       case 'NOTIFICATION_RECEIVED':
         chrome.notifications.create({
@@ -602,8 +632,9 @@ export default defineBackground(() => {
         sendResponse({ ok: true })
         break
 
-      case 'AUTO_LOCK_CHANGED':
-        resetAutoLockAlarm()
+      // The touch already happened above; the case exists so the popup gets an
+      // ack and so the message is a real routed type rather than a silent drop.
+      case 'WALLET_ACTIVITY':
         sendResponse({ ok: true })
         break
 

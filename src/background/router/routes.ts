@@ -70,7 +70,7 @@ const didSyncRoute: Route<'DID_SYNC', 'keyAdmin'> = {
 export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   NOTIFICATION_RECEIVED: stubRoute('untrusted'),
   SESSION_EXPIRED: stubRoute('untrusted'),
-  AUTO_LOCK_CHANGED: stubRoute('untrusted'),
+  WALLET_ACTIVITY: stubRoute('untrusted'),
   CREDENTIAL_OFFER_GET_PENDING: stubRoute('consent'),
   CREDENTIAL_OFFER_APPROVE: stubRoute('consent'),
   CREDENTIAL_OFFER_DENY: stubRoute('consent'),

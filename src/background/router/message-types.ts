@@ -47,7 +47,7 @@ import type {
 export const MESSAGE_TYPES = [
   'NOTIFICATION_RECEIVED',
   'SESSION_EXPIRED',
-  'AUTO_LOCK_CHANGED',
+  'WALLET_ACTIVITY',
   'CREDENTIAL_OFFER_GET_PENDING',
   'CREDENTIAL_OFFER_APPROVE',
   'CREDENTIAL_OFFER_DENY',
@@ -143,7 +143,7 @@ export interface AuthApprovePayload {
 export interface MessagePayloads {
   NOTIFICATION_RECEIVED: NotificationReceivedMessage['payload']
   SESSION_EXPIRED: undefined
-  AUTO_LOCK_CHANGED: undefined
+  WALLET_ACTIVITY: undefined
   CREDENTIAL_OFFER_GET_PENDING: NotifIdPayload
   CREDENTIAL_OFFER_APPROVE: NotifIdPayload
   CREDENTIAL_OFFER_DENY: Partial<NotifIdPayload>
