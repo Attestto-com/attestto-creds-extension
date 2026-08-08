@@ -14,6 +14,7 @@ import { MESSAGE_ROUTES } from '@/background/router/routes'
 import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
+import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
@@ -364,6 +365,29 @@ export default defineBackground(() => {
         payload: { requestId, ...data },
       })
     }
+  }
+
+  /**
+   * Story 1.11 — the transitional root-key raw signer for the extracted P-256
+   * signing cores (SIGN_DOCUMENT, PAYMENT). This is the ONE place `crypto.subtle.sign`
+   * runs for the root `privateKeyJwk`; each case wraps it in `createGatedSign` so
+   * every signature passes the gate (a passthrough `assertPresence` until the
+   * composition root, Story 1.13, binds the real cross-process UV proof and moves
+   * this signer to a single injected `rawSign`). Consolidating it here keeps the
+   * key import off the handlers and advances the AD-11c "sign in exactly one place"
+   * invariant ahead of 1.13.
+   */
+  async function rootRawSign(payload: Uint8Array): Promise<{ bytes: Uint8Array }> {
+    const v = await readVault()
+    const privateKey = await crypto.subtle.importKey(
+      'jwk',
+      v!.privateKeyJwk!,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign'],
+    )
+    const buf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, payload as BufferSource)
+    return { bytes: new Uint8Array(buf) }
   }
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
@@ -1737,33 +1761,13 @@ export default defineBackground(() => {
         // owns the pending Map + transport + window-unregister (service-worker
         // lifecycle state, as the DID_SYNC case owns `senderTabId` — AD-14); the
         // pending→`ctx.takePending` port and the route wiring land with the
-        // consent-sibling extraction, keeping this to ONE axis of change.
-        //
-        // `crypto.subtle` signing lives HERE, in the injected `rawSign` closure —
-        // OUT of the handler. The composition root (1.13) binds `assertPresence` to
-        // the real cross-process UV proof and moves `rawSign` to one place; until
-        // then the popup's own `requireUserVerification` gates pre-approve and
-        // `assertPresence` is a documented passthrough.
+        // consent-sibling extraction, keeping this to ONE axis of change. `rootRawSign`
+        // is the shared transitional root-key signer (the one `crypto.subtle.sign`);
+        // `assertPresence` is a documented passthrough until the composition root (1.13).
         const signDocumentCtx = {
           store: { read: () => readVault() },
           clock: { now: () => Date.now() },
-          crypto: {
-            sign: createGatedSign({
-              assertPresence: async () => {},
-              rawSign: async (payload: Uint8Array) => {
-                const v = await readVault()
-                const privateKey = await crypto.subtle.importKey(
-                  'jwk',
-                  v!.privateKeyJwk!,
-                  { name: 'ECDSA', namedCurve: 'P-256' },
-                  false,
-                  ['sign'],
-                )
-                const buf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, payload as BufferSource)
-                return { bytes: new Uint8Array(buf) }
-              },
-            }),
-          },
+          crypto: { sign: createGatedSign({ assertPresence: async () => {}, rawSign: rootRawSign }) },
         }
 
         handleSignDocumentApprove(
@@ -2105,64 +2109,33 @@ export default defineBackground(() => {
         pendingPayment.unregister?.()
         pendingPaymentRequests.delete(payApproveId)
 
-        readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
+        // Story 1.11 — PAYMENT signing core extracted (`handlePaymentApprove`), the
+        // twin of SIGN_DOCUMENT: signs only through the gated primitive; the case
+        // keeps the pending Map + transport (route wiring waits on the pending port).
+        const paymentCtx = {
+          store: { read: () => readVault() },
+          crypto: { sign: createGatedSign({ assertPresence: async () => {}, rawSign: rootRawSign }) },
+        }
 
-          const holderDid = selectedDid
-            || vault.holderDid
-            || vault.did
-
-          if (!holderDid) {
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, 'No DID configured')
-            sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          try {
-            // Build canonical payment payload (must match backend DidPaymentResolver.buildPaymentPayload)
-            const canonicalPayload = `attestto:pay:${pendingPayment.payReq.paymentRequestUuid}:${holderDid}:${pendingPayment.payReq.amount.toFixed(2)}`
-
-            // Sign with vault's P-256 private key
-            const privateKey = await crypto.subtle.importKey(
-              'jwk',
-              vault.privateKeyJwk,
-              { name: 'ECDSA', namedCurve: 'P-256' },
-              false,
-              ['sign'],
-            )
-
-            const data = new TextEncoder().encode(canonicalPayload)
-            const signatureBuffer = await crypto.subtle.sign(
-              { name: 'ECDSA', hash: 'SHA-256' },
-              privateKey,
-              data,
-            )
-
-            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
-
-            // Public key components are already in the JWK (x, y)
-            const jwk = vault.privateKeyJwk as Record<string, string>
+        handlePaymentApprove(
+          {
+            paymentRequestUuid: pendingPayment.payReq.paymentRequestUuid,
+            amount: pendingPayment.payReq.amount,
+            selectedDid,
+          },
+          paymentCtx as never,
+        ).then((result) => {
+          if (result.ok) {
             const responseData = {
-              did: holderDid,
-              signature,
-              publicKeyJwk: {
-                kty: jwk.kty || 'EC',
-                crv: jwk.crv || 'P-256',
-                x: jwk.x,
-                y: jwk.y,
-              },
+              did: result.did,
+              signature: result.signature,
+              publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
             }
-
             sendPaymentResponseToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, responseData)
             sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Signing failed'
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
+          } else {
+            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, result.error)
+            sendResponse({ ok: false, error: result.error })
           }
         })
         break
