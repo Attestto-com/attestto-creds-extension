@@ -9,7 +9,6 @@
  * 5. Keep the offscreen document alive via alarms
  */
 
-import { signPayload } from '@/services/signing'
 import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { MESSAGE_ROUTES } from '@/background/router/routes'
 import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
@@ -1325,12 +1324,6 @@ export default defineBackground(() => {
         sendResponse({ ok: true })
         break
       }
-
-      case 'SIGN_REQUEST':
-        signPayload(message.payload).then((result) => {
-          sendResponse(result)
-        })
-        break
 
       case 'CREDENTIAL_OFFER': {
         console.log('[Attestto ID] CREDENTIAL_OFFER received in background', message.payload)

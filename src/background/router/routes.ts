@@ -74,7 +74,6 @@ export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   CREDENTIAL_OFFER_GET_PENDING: stubRoute('consent'),
   CREDENTIAL_OFFER_APPROVE: stubRoute('consent'),
   CREDENTIAL_OFFER_DENY: stubRoute('consent'),
-  SIGN_REQUEST: stubRoute('signing'),
   CREDENTIAL_OFFER: stubRoute('consent'),
   WALLET_LINK: stubRoute('signing'),
   PROOF_ACCESS_REQUEST: stubRoute('signing'),

@@ -28,7 +28,7 @@ void _notEscalatable
 
 // ── Construction-site confinement: a signing route's handler body ─────────────
 // The handler receives SigningCtx: `ctx.crypto.sign` is nameable…
-const _okSigning: Route<'SIGN_REQUEST', 'signing'> = {
+const _okSigning: Route<'WALLET_LINK', 'signing'> = {
   bundle: 'signing',
   allowFrom: { origins: [], senders: [] },
   validate: (raw) => raw as never,
@@ -40,7 +40,7 @@ const _okSigning: Route<'SIGN_REQUEST', 'signing'> = {
 void _okSigning
 
 // …but `ctx.vault.write` (a KeyAdmin-only capability) is NOT nameable on SigningCtx.
-const _confinedSigning: Route<'SIGN_REQUEST', 'signing'> = {
+const _confinedSigning: Route<'WALLET_LINK', 'signing'> = {
   bundle: 'signing',
   allowFrom: { origins: [], senders: [] },
   validate: (raw) => raw as never,

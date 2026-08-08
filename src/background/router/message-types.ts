@@ -21,7 +21,6 @@
  */
 import type {
   NotificationReceivedMessage,
-  SignRequestMessage,
   CredentialOfferMessage,
   CredentialAcceptedMessage,
   CredentialRejectedMessage,
@@ -52,7 +51,6 @@ export const MESSAGE_TYPES = [
   'CREDENTIAL_OFFER_GET_PENDING',
   'CREDENTIAL_OFFER_APPROVE',
   'CREDENTIAL_OFFER_DENY',
-  'SIGN_REQUEST',
   'CREDENTIAL_OFFER',
   'WALLET_LINK',
   'PROOF_ACCESS_REQUEST',
@@ -149,7 +147,6 @@ export interface MessagePayloads {
   CREDENTIAL_OFFER_GET_PENDING: NotifIdPayload
   CREDENTIAL_OFFER_APPROVE: NotifIdPayload
   CREDENTIAL_OFFER_DENY: Partial<NotifIdPayload>
-  SIGN_REQUEST: SignRequestMessage['payload']
   CREDENTIAL_OFFER: CredentialOfferMessage['payload']
   WALLET_LINK: WalletLinkMessage['payload']
   PROOF_ACCESS_REQUEST: ProofAccessRequestMessage['payload']

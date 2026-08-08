@@ -18,17 +18,6 @@ export interface SessionExpiredMessage {
   type: 'SESSION_EXPIRED'
 }
 
-export interface SignRequestMessage {
-  type: 'SIGN_REQUEST'
-  payload: string // base64 data to sign
-}
-
-export interface SignResponseMessage {
-  ok: boolean
-  signature?: string
-  error?: string
-}
-
 export interface CredentialOfferMessage {
   type: 'CREDENTIAL_OFFER'
   payload: {
@@ -298,7 +287,6 @@ export interface SubmitThreatReportMessage {
 export type ExtensionMessage =
   | NotificationReceivedMessage
   | SessionExpiredMessage
-  | SignRequestMessage
   | CredentialOfferMessage
   | CredentialAcceptedMessage
   | CredentialRejectedMessage
