@@ -35,6 +35,13 @@ void s.vault.read() // positive control — read allowed
 void s.vault.write({ kind: 'x' })
 void k.vault.write({ kind: 'x' }) // positive control — KeyAdmin has the full Vault
 
+// ── Story 1.11: the SIGNING tier's concrete store is READ-ONLY.
+void s.store.read() // positive control — signing reads the vault to sign
+// @ts-expect-error — SigningCtx.store has no write (a signing handler cannot mutate the vault)
+void s.store.write({ kind: 'x' })
+// @ts-expect-error — SigningCtx.store has no syncPublic (mirroring is KeyAdmin's, keys-never-mirrored)
+void s.store.syncPublic({ kind: 'x' })
+
 // ── AD-2 type-slice: the vault exposes NO raw-private-key getter.
 // @ts-expect-error — the vault never hands out a bare private key (AD-2)
 void k.vault.getPrivateKey()

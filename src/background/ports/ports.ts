@@ -151,6 +151,20 @@ export interface KeyVaultStore {
 }
 
 /**
+ * Read-only vault access for the SIGNING tier (Story 1.11). A signing handler
+ * reads key material to sign and reads `holderDid`/`did` to label the response,
+ * but MUST NOT mutate the vault — there is no `write`/`syncPublic` here (the
+ * confinement type-guard asserts their absence). Returns the whole `VaultData`
+ * (the opaque record AD-2 permits: there is NO `getPrivateKey()` accessor; the
+ * handler derives only the PUBLIC key fields from it and never calls `subtle.sign`
+ * itself — the gated `crypto.sign` primitive is the only signing path). `null`
+ * when the vault is locked.
+ */
+export interface SigningVaultStore {
+  read(): Promise<VaultData | null>
+}
+
+/**
  * P-256 keypair generation (a KeyAdmin capability, distinct from AD-11c's single
  * `sign` primitive — generating an identity key is not signing). Returns both JWKs;
  * the private JWK is persisted into the vault record, the public JWK is field-

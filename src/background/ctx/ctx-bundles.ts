@@ -26,6 +26,7 @@ import type {
   Runtime,
   KeyVaultStore,
   KeyGen,
+  SigningVaultStore,
 } from '@/background/ports/ports'
 
 /**
@@ -40,10 +41,21 @@ export interface UntrustedCtx {
   runtime: Runtime
 }
 
-/** Signing tier — read key material to sign; MUST NOT mutate the vault. */
+/**
+ * Signing tier — read key material to sign; MUST NOT mutate the vault.
+ *
+ * `crypto`/`vault` are the abstract confinement seams (the type-guards assert the
+ * read-only `VaultRead` and the shared-`Crypto` invariant). The concrete ports the
+ * first extracted signing handler (`SIGN_DOCUMENT_APPROVE`, Story 1.11) uses:
+ * `store` (real `VaultData` READ — no write/syncPublic, guarded) and `clock`
+ * (injectable signing timestamp). Every signature goes through `crypto.sign`, the
+ * single gated primitive (AD-11c); the handler never touches `subtle.sign`.
+ */
 export interface SigningCtx {
   crypto: Crypto
   vault: VaultRead
+  store: SigningVaultStore
+  clock: Clock
 }
 
 /** Consent/approval tier. */

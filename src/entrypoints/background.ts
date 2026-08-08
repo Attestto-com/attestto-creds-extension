@@ -13,6 +13,8 @@ import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { MESSAGE_ROUTES } from '@/background/router/routes'
 import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
+import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
+import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { LinkedIdentity } from '@/stores/wallet'
@@ -1730,62 +1732,56 @@ export default defineBackground(() => {
         pendingSigning.unregister?.()
         pendingSigningRequests.delete(signApproveId)
 
-        readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
-
-          const holderDid = selectedSignDid || vault.holderDid || vault.did
-
-          if (!holderDid) {
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, 'No DID configured')
-            sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          try {
-            const timestamp = String(Date.now())
-            // Canonical signing payload (must match backend verification)
-            const canonicalPayload = `attestto:sign:${pendingSigning.signReq.signingToken}:${holderDid}:${timestamp}`
-
-            const privateKey = await crypto.subtle.importKey(
-              'jwk',
-              vault.privateKeyJwk,
-              { name: 'ECDSA', namedCurve: 'P-256' },
-              false,
-              ['sign'],
-            )
-
-            const data = new TextEncoder().encode(canonicalPayload)
-            const signatureBuffer = await crypto.subtle.sign(
-              { name: 'ECDSA', hash: 'SHA-256' },
-              privateKey,
-              data,
-            )
-
-            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
-
-            const jwk = vault.privateKeyJwk as Record<string, string>
-            const responseData = {
-              did: holderDid,
-              signature,
-              timestamp,
-              publicKeyJwk: {
-                kty: jwk.kty || 'EC',
-                crv: jwk.crv || 'P-256',
-                x: jwk.x,
-                y: jwk.y,
+        // Story 1.11 — the signing CORE is extracted (`handleSignDocumentApprove`),
+        // signing ONLY through the single gated primitive (AD-11c). This case still
+        // owns the pending Map + transport + window-unregister (service-worker
+        // lifecycle state, as the DID_SYNC case owns `senderTabId` — AD-14); the
+        // pending→`ctx.takePending` port and the route wiring land with the
+        // consent-sibling extraction, keeping this to ONE axis of change.
+        //
+        // `crypto.subtle` signing lives HERE, in the injected `rawSign` closure —
+        // OUT of the handler. The composition root (1.13) binds `assertPresence` to
+        // the real cross-process UV proof and moves `rawSign` to one place; until
+        // then the popup's own `requireUserVerification` gates pre-approve and
+        // `assertPresence` is a documented passthrough.
+        const signDocumentCtx = {
+          store: { read: () => readVault() },
+          clock: { now: () => Date.now() },
+          crypto: {
+            sign: createGatedSign({
+              assertPresence: async () => {},
+              rawSign: async (payload: Uint8Array) => {
+                const v = await readVault()
+                const privateKey = await crypto.subtle.importKey(
+                  'jwk',
+                  v!.privateKeyJwk!,
+                  { name: 'ECDSA', namedCurve: 'P-256' },
+                  false,
+                  ['sign'],
+                )
+                const buf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, payload as BufferSource)
+                return { bytes: new Uint8Array(buf) }
               },
-            }
+            }),
+          },
+        }
 
+        handleSignDocumentApprove(
+          { signingToken: pendingSigning.signReq.signingToken, selectedDid: selectedSignDid },
+          signDocumentCtx as never,
+        ).then((result) => {
+          if (result.ok) {
+            const responseData = {
+              did: result.did,
+              signature: result.signature,
+              timestamp: result.timestamp,
+              publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+            }
             sendSigningResponseToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, responseData)
             sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Signing failed'
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
+          } else {
+            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, result.error)
+            sendResponse({ ok: false, error: result.error })
           }
         })
         break
