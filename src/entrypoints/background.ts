@@ -35,23 +35,31 @@ import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
 import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
-import type { WalletAuthResponse } from '@/services/did-auth'
 import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
 import { fetchCertScan, submitThreatReport } from '@/api/backend-client'
-
-/**
- * Fire-and-forget message to a page tab's content script.
- *
- * The tab may have closed or navigated between when its id was captured and
- * now — `chrome.tabs.sendMessage` then rejects with "No tab with id: N", an
- * expected race, not a failure. Swallow it so it doesn't surface as an
- * "Unchecked runtime.lastError" in the service-worker console. Callers here
- * never read the response (the page receives it via the content-script bridge).
- */
-function notifyTab(tabId: number, message: unknown): void {
-  void chrome.tabs.sendMessage(tabId, message).catch(() => {})
-}
+// Story 1.13 Phase 3 — the background → page response envelope is written in
+// ONE place now (`background/transport/tab-responses.ts`), pinned to the content
+// script's bridge by a round-trip spec. The entrypoint only transports.
+import {
+  notifyTab,
+  sendSigningErrorToTab,
+  sendSigningResponseToTab,
+  sendAuthErrorToTab,
+  sendAuthResponseToTab,
+  sendCwAuthErrorToTab,
+  sendCwAuthResponseToTab,
+  sendAttesttoPdfErrorToTab,
+  sendAttesttoPdfResponseToTab,
+  sendPaymentErrorToTab,
+  sendPaymentResponseToTab,
+  sendChapiErrorToTab,
+  sendDidSyncResponse,
+  sendKeyRotateResponse,
+  sendKeyBackupResponse,
+  sendKeyRestoreResponse,
+  sendReshareError,
+} from '@/background/transport/tab-responses'
 
 export default defineBackground(() => {
   // ── Toolbar trust state (ATT-727) ──────────────────
@@ -352,28 +360,6 @@ export default defineBackground(() => {
     }
   }
 
-  function sendSigningErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_DOCUMENT_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendSigningResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; publicKeyJwk: Record<string, string>; timestamp: string },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_DOCUMENT_RESPONSE',
-        payload: { requestId, ...data },
-      })
-    }
-  }
-
   /**
    * A gated JWS signer bound to a P-256 key — the background path for `createChapiVp`
    * so VP signing routes through the same gate as the extracted APPROVE cores (AD-11c).
@@ -558,56 +544,6 @@ export default defineBackground(() => {
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendCwAuthErrorToTab)
   }
 
-  function sendAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'AUTH_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendAuthResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; nonce: string; timestamp: string; publicKeyJwk: Record<string, string> },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'AUTH_RESPONSE',
-        payload: { requestId, ...data },
-      })
-    }
-  }
-
-  // ── credential-wallet:auth response bridge (SOC-71) ──────────────
-  // These route back through the ISOLATED content script, which posts
-  // ATTESTTO_CW_AUTH_RESPONSE to the page; the MAIN world then dispatches the
-  // `credential-wallet:auth-response` event `verifyAuth` listens for. `requestId`
-  // is the envelope nonce the site used to correlate request → response.
-
-  function sendCwAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'CW_AUTH_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendCwAuthResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    response: WalletAuthResponse,
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'CW_AUTH_RESPONSE',
-        payload: { requestId, response },
-      })
-    }
-  }
-
   // ── Attestto self-attested PDF signing (ATT-364) ─────────────────
 
   /**
@@ -651,28 +587,6 @@ export default defineBackground(() => {
       console.error('[Attestto Sign] Failed to open Attestto PDF approval window:', err)
       pendingAttesttoPdfRequests.delete(req.requestId)
       sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'Could not open approval window')
-    }
-  }
-
-  function sendAttesttoPdfErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_ATTESTTO_PDF_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendAttesttoPdfResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; publicKey: string },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_ATTESTTO_PDF_RESPONSE',
-        payload: { requestId, ...data },
-      })
     }
   }
 
@@ -722,28 +636,6 @@ export default defineBackground(() => {
       console.error('[Attestto Pay] Failed to open payment approval window:', err)
       pendingPaymentRequests.delete(payReq.requestId)
       sendPaymentErrorToTab(senderTabId, payReq.requestId, 'Could not open approval window')
-    }
-  }
-
-  function sendPaymentErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'PAYMENT_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendPaymentResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; publicKeyJwk: Record<string, string> },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'PAYMENT_RESPONSE',
-        payload: { requestId, ...data },
-      })
     }
   }
 
@@ -996,17 +888,6 @@ export default defineBackground(() => {
    * captured at request-receipt time — never the active-tab fallback (that would
    * route the error to whatever tab the user is currently looking at).
    */
-  function sendChapiErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping CHAPI error — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'CREDENTIAL_API_RESPONSE',
-      payload: { requestId, error },
-    })
-  }
-
   async function completeChapiRequest(notifId: string): Promise<void> {
     const pending = pendingChapiRequests.get(notifId)
     if (!pending) return
@@ -1051,99 +932,9 @@ export default defineBackground(() => {
   // DID_SYNC_RESPONSE data; the case below transports it via `sendDidSyncResponse`.
   // `extractDidLabelForSync` was hoisted to the pure `@/utils/did-label` util.
 
-  function sendDidSyncResponse(
-    tabId: number | null,
-    requestId: string,
-    publicKeyJwk: JsonWebKey | null,
-    holderDid: string | null,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping DID_SYNC_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'DID_SYNC_RESPONSE',
-      payload: { requestId, publicKeyJwk, holderDid, error },
-    })
-  }
-
-  // ── Key Rotation (Phase D) ──────────────────────────
-  // `handleKeyRotate` extracted to `handlers/key-rotate.handler.ts` (Story 1.13
-  // Phase 2) — a pure KeyAdmin core returning DATA; this case transports the result.
-
-  function sendKeyRotateResponse(
-    tabId: number | null,
-    requestId: string,
-    newPublicKeyJwk: JsonWebKey | null,
-    oldPublicKeyJwk: JsonWebKey | null,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping KEY_ROTATE_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'KEY_ROTATE_RESPONSE',
-      payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
-    })
-  }
-
-  // ── Key Backup / Restore (Phase E) ─────────────────
-  // `handleKeyBackup` extracted to `handlers/key-backup.handler.ts` (Story 1.13
-  // Phase 2) — a read-only KeyAdmin core returning the shares as DATA.
-
-  function sendKeyBackupResponse(
-    tabId: number | null,
-    requestId: string,
-    shares: {
-      deviceShare: { data: string; index: number }
-      cloudShare: { data: string; index: number }
-      guardianShare: { data: string; index: number }
-      keyHash: string
-    } | null,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping KEY_BACKUP_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'KEY_BACKUP_RESPONSE',
-      payload: { requestId, shares, error },
-    })
-  }
-
-  // `handleKeyRestore` extracted to `handlers/key-restore.handler.ts` (Story 1.13
-  // Phase 2) — a pure KeyAdmin core (validate → write → mirror) returning DATA.
-
-  function sendKeyRestoreResponse(
-    tabId: number | null,
-    requestId: string,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping KEY_RESTORE_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'KEY_RESTORE_RESPONSE',
-      payload: { requestId, success: error === null, error },
-    })
-  }
-
-  // ── Helpers ──────────────────────────────────────────
-
-  function sendReshareError(tabId: number | null, requestId: string, error: string): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE error — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'RESHARE_STORED_VP_RESPONSE',
-      payload: { requestId, error },
-    })
-  }
+  // Key admin (rotate / backup / restore): the handler cores live in
+  // `handlers/key-*.handler.ts` (Story 1.13 Phase 2) and their transport in
+  // `transport/tab-responses.ts` (Phase 3). Nothing left here.
 
   // ── Message Router ─────────────────────────────────
 
