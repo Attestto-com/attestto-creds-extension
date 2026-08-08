@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import * as jose from 'jose'
+import { es256KeySigner } from './jws'
 
 let testPrivateKey: JsonWebKey
 
@@ -110,7 +111,7 @@ describe('sdjwt service', () => {
       const presentation = await createSdJwtPresentation(
         compact,
         ['given_name'],
-        testPrivateKey,
+        es256KeySigner(testPrivateKey),
         'test-nonce-123',
         'https://verifier.example.com',
       )
@@ -129,7 +130,7 @@ describe('sdjwt service', () => {
       const presentation = await createSdJwtPresentation(
         compact,
         ['given_name'],
-        testPrivateKey,
+        es256KeySigner(testPrivateKey),
         'nonce-abc',
         'aud-xyz',
       )

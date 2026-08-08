@@ -10,19 +10,24 @@
  *   credential-wallet-connector's verifyPresentation()
  */
 
-import { SignJWT, importJWK } from 'jose'
+import { signCompactJws, type JwsSigner } from './jws'
 
 export interface JsonLdVpOptions {
   credential: string // JSON-LD VC as JSON string
   holderDid: string
-  holderPrivateKey: JsonWebKey
+  /**
+   * Signs the JWS signing input (AD-11c). In the background this is the gated
+   * primitive; in the popup a local key signer. The VP builder never sees the key.
+   */
+  sign: JwsSigner
   nonce: string
 }
 
 export interface ChapiVpOptions {
   credentials: Array<Record<string, unknown>>
   holderDid: string
-  holderPrivateKey: JsonWebKey
+  /** Signs the JWS signing input (AD-11c) — gated in background, local in popup. */
+  sign: JwsSigner
   /** CHAPI challenge — maps to JWT nonce claim */
   challenge: string
   /** CHAPI domain — maps to JWT audience claim */
@@ -38,7 +43,7 @@ export interface ChapiVpOptions {
  * This approach (JWT-wrapped VP) is compatible with most verifiers.
  */
 export async function createJsonLdVp(options: JsonLdVpOptions): Promise<string> {
-  const { credential, holderDid, holderPrivateKey, nonce } = options
+  const { credential, holderDid, sign, nonce } = options
 
   const vc = JSON.parse(credential) as Record<string, unknown>
 
@@ -50,15 +55,12 @@ export async function createJsonLdVp(options: JsonLdVpOptions): Promise<string> 
     nonce,
   }
 
-  const privateKey = await importJWK(holderPrivateKey, 'ES256')
-
-  const jwt = await new SignJWT({ vp: vpPayload, nonce })
-    .setProtectedHeader({ alg: 'ES256', typ: 'JWT', kid: holderDid })
-    .setIssuedAt()
-    .setIssuer(holderDid)
-    .sign(privateKey)
-
-  return jwt
+  // Same claims jose emitted: the payload + setIssuedAt (iat) + setIssuer (iss).
+  return signCompactJws(
+    { alg: 'ES256', typ: 'JWT', kid: holderDid },
+    { vp: vpPayload, nonce, iat: Math.floor(Date.now() / 1000), iss: holderDid },
+    sign,
+  )
 }
 
 /**
@@ -76,7 +78,7 @@ export async function createChapiVp(options: ChapiVpOptions): Promise<Record<str
   const {
     credentials,
     holderDid,
-    holderPrivateKey,
+    sign,
     challenge,
     domain,
     verificationMethod,
@@ -92,15 +94,13 @@ export async function createChapiVp(options: ChapiVpOptions): Promise<Record<str
     verifiableCredential: credentials,
   }
 
-  // Sign the VP as a JWT — verifiers can check this via the resolver's /1.0/verify endpoint
-  const privateKey = await importJWK(holderPrivateKey, 'ES256')
-
-  const jws = await new SignJWT({ vp: vpWithoutProof, nonce: challenge })
-    .setProtectedHeader({ alg: 'ES256', typ: 'JWT', kid })
-    .setIssuedAt()
-    .setIssuer(holderDid)
-    .setAudience(domain)
-    .sign(privateKey)
+  // Sign the VP as a JWT — verifiers can check this via the resolver's /1.0/verify
+  // endpoint. Same claims jose emitted: payload + iat + iss + aud.
+  const jws = await signCompactJws(
+    { alg: 'ES256', typ: 'JWT', kid },
+    { vp: vpWithoutProof, nonce: challenge, iat: Math.floor(Date.now() / 1000), iss: holderDid, aud: domain },
+    sign,
+  )
 
   // Return the full VP with embedded proof
   return {

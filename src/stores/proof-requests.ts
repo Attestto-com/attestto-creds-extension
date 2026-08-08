@@ -11,6 +11,7 @@ import { readVault, writeVault } from '@/utils/vault'
 import { useWalletStore } from '@/stores/wallet'
 import { useCredentialsStore } from '@/stores/credentials'
 import { createSdJwtPresentation } from '@/services/sdjwt'
+import { es256KeySigner } from '@/services/jws'
 import type { ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 
 export const useProofRequestsStore = defineStore('proofRequests', () => {
@@ -66,11 +67,15 @@ export const useProofRequestsStore = defineStore('proofRequests', () => {
     try {
       let presentation: string
 
+      // Popup-side signing (post-unlock): a local key signer. Background-side signing
+      // routes through the gated primitive; popup gating is a separate future story.
+      const sign = es256KeySigner(privateKey)
+
       if (credential.format === 'sd-jwt') {
         presentation = await createSdJwtPresentation(
           credential.raw,
           approvedFields,
-          privateKey,
+          sign,
           request.nonce,
           request.audience,
         )
@@ -80,7 +85,7 @@ export const useProofRequestsStore = defineStore('proofRequests', () => {
         presentation = await createJsonLdVp({
           credential: credential.raw,
           holderDid: walletStore.did!,
-          holderPrivateKey: privateKey,
+          sign,
           nonce: request.nonce,
         })
       }

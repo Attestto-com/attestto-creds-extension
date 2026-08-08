@@ -6,7 +6,7 @@
 
 import { decodeSdJwt, getClaims } from '@sd-jwt/decode'
 import { present } from '@sd-jwt/present'
-import { SignJWT, importJWK } from 'jose'
+import { signCompactJws, type JwsSigner } from './jws'
 import type { Disclosure } from '@sd-jwt/utils'
 
 export interface ParsedSdJwt {
@@ -78,14 +78,14 @@ export function decodeDisclosures(disclosures: Disclosure[]): DecodedDisclosure[
  *
  * @param compact - Original SD-JWT compact string
  * @param selectedClaimNames - Claim names to include in the presentation
- * @param holderPrivateKey - Holder's ECDSA P-256 private key (JWK)
+ * @param sign - Signs the KB-JWT signing input (AD-11c): gated in background, local in popup
  * @param nonce - Verifier-provided nonce for Key Binding JWT
  * @param audience - Verifier identifier (aud claim in KB-JWT)
  */
 export async function createSdJwtPresentation(
   compact: string,
   selectedClaimNames: string[],
-  holderPrivateKey: JsonWebKey,
+  sign: JwsSigner,
   nonce: string,
   audience: string,
 ): Promise<string> {
@@ -98,11 +98,13 @@ export async function createSdJwtPresentation(
   // Create the presentation (SD-JWT with only selected disclosures)
   const presentation = await present(compact, frame, sha256Hasher)
 
-  // Create and append Key Binding JWT
-  const privateKey = await importJWK(holderPrivateKey, 'ES256')
-  const kbJwt = await new SignJWT({ nonce, aud: audience, iat: Math.floor(Date.now() / 1000) })
-    .setProtectedHeader({ alg: 'ES256', typ: 'kb+jwt' })
-    .sign(privateKey)
+  // Create and append the Key Binding JWT — same claims/header jose emitted, but the
+  // signature now routes through the injected signer (AD-11c), not importJWK+SignJWT.
+  const kbJwt = await signCompactJws(
+    { alg: 'ES256', typ: 'kb+jwt' },
+    { nonce, aud: audience, iat: Math.floor(Date.now() / 1000) },
+    sign,
+  )
 
   return `${presentation}${kbJwt}`
 }

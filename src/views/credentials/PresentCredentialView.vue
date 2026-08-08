@@ -11,6 +11,7 @@ import { useCredentialsStore } from '@/stores/credentials'
 import { useWalletStore } from '@/stores/wallet'
 import { parseSdJwt, decodeDisclosures, createSdJwtPresentation } from '@/services/sdjwt'
 import { createJsonLdVp } from '@/services/jsonld-vp'
+import { es256KeySigner } from '@/services/jws'
 import { disclosureTierFor } from '@/policies/identity-disclosure'
 import type { DisclosureTier } from '@/policies/identity-disclosure'
 import type { StoredCredential } from '@/types/credential'
@@ -87,6 +88,9 @@ async function generate(): Promise<void> {
       return
     }
 
+    // Popup-side signing (post-unlock): a local key signer.
+    const sign = es256KeySigner(privateKey)
+
     if (credential.value.format === 'sd-jwt') {
       const selectedNames = disclosureItems.value
         .filter((d) => d.selected)
@@ -95,7 +99,7 @@ async function generate(): Promise<void> {
       generatedVp.value = await createSdJwtPresentation(
         credential.value.raw,
         selectedNames,
-        privateKey,
+        sign,
         nonce.value,
         audience.value || 'verifier',
       )
@@ -103,7 +107,7 @@ async function generate(): Promise<void> {
       generatedVp.value = await createJsonLdVp({
         credential: credential.value.raw,
         holderDid: walletStore.did,
-        holderPrivateKey: privateKey,
+        sign,
         nonce: nonce.value,
       })
     }

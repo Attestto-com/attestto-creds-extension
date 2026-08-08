@@ -17,6 +17,7 @@ import { handleSignDocumentApprove } from '@/background/handlers/sign-document-a
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createChapiVp } from '@/services/jsonld-vp'
+import type { JwsSigner } from '@/services/jws'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { LinkedIdentity } from '@/stores/wallet'
 import type { StoredCredential, ProofAccessRequest, PreparedPresentation, CredentialFormat } from '@/types/credential'
@@ -377,17 +378,33 @@ export default defineBackground(() => {
    * key import off the handlers and advances the AD-11c "sign in exactly one place"
    * invariant ahead of 1.13.
    */
-  async function rootRawSign(payload: Uint8Array): Promise<{ bytes: Uint8Array }> {
-    const v = await readVault()
+  async function es256RawSign(privateJwk: JsonWebKey, payload: Uint8Array): Promise<{ bytes: Uint8Array }> {
     const privateKey = await crypto.subtle.importKey(
       'jwk',
-      v!.privateKeyJwk!,
+      privateJwk,
       { name: 'ECDSA', namedCurve: 'P-256' },
       false,
       ['sign'],
     )
     const buf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, payload as BufferSource)
     return { bytes: new Uint8Array(buf) }
+  }
+
+  async function rootRawSign(payload: Uint8Array): Promise<{ bytes: Uint8Array }> {
+    const v = await readVault()
+    return es256RawSign(v!.privateKeyJwk!, payload)
+  }
+
+  /**
+   * A gated JWS signer bound to a P-256 key — the background path for `createChapiVp`
+   * so VP signing routes through the same gate as SIGN_DOCUMENT/PAYMENT (AD-11c). The
+   * key import + `crypto.subtle.sign` stay inside the gated `rawSign` (never the raw
+   * `es256KeySigner`, which would bypass the gate). `assertPresence` is a passthrough
+   * until the composition root (1.13).
+   */
+  function gatedJwsSigner(privateJwk: JsonWebKey): JwsSigner {
+    const sign = createGatedSign({ assertPresence: async () => {}, rawSign: (p) => es256RawSign(privateJwk, p) })
+    return async (signingInput: Uint8Array) => (await sign(signingInput)).bytes
   }
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
@@ -1020,7 +1037,7 @@ export default defineBackground(() => {
       const vp = await createChapiVp({
         credentials: pending.vcs,
         holderDid: pending.holderDid,
-        holderPrivateKey: pending.privateKeyJwk,
+        sign: gatedJwsSigner(pending.privateKeyJwk),
         challenge: pending.challenge,
         domain: pending.domain,
         verificationMethod: pending.verificationMethod,
@@ -2207,7 +2224,7 @@ export default defineBackground(() => {
             const vp = await createChapiVp({
               credentials: vcs,
               holderDid,
-              holderPrivateKey: vault.privateKeyJwk,
+              sign: gatedJwsSigner(vault.privateKeyJwk!),
               challenge,
               domain,
               verificationMethod: vault.verificationMethod,
