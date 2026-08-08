@@ -9,7 +9,6 @@
  * 5. Keep the offscreen document alive via alarms
  */
 
-import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
 import { MESSAGE_ROUTES } from '@/background/router/routes'
 import type { UntrustedCtx, KeyAdminCtx } from '@/background/ctx/ctx-bundles'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
@@ -27,9 +26,7 @@ import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
-import type { LinkedIdentity } from '@/stores/wallet'
-import type { StoredCredential, ProofAccessRequest, PreparedPresentation, CredentialFormat } from '@/types/credential'
-import { extractDidLabel } from '@/utils/did-label'
+import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
@@ -61,6 +58,7 @@ import {
   sendReshareError,
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
+import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
 import { approvalParams } from '@/utils/approval-params'
 
 export default defineBackground(() => {
@@ -475,165 +473,34 @@ export default defineBackground(() => {
   }
 
   /**
-   * Accept a credential offer: parse, store in vault, notify popup.
+   * Accept a credential offer the user approved: decode it, store it in both
+   * vaults, and record trust for a first-time identity sync.
+   *
+   * The decision logic (format-scoped trust-on-first-use, identity minting
+   * restricted to `attestto-id`, write-nothing-on-decode-failure) lives in
+   * `handlers/credential-offer-accept.handler.ts` (Story 1.13 Phase 5). Here we
+   * only take the pending row and inject the real vault/origin/clock adapters.
    */
-  async function acceptCredentialOffer(
-    notificationId: string,
-  ): Promise<string | null> {
+  async function acceptCredentialOffer(notificationId: string): Promise<string | null> {
     const pending = pendingOffers.get(notificationId)
     if (!pending) return null
-    const { offer, origin } = pending
     pendingOffers.delete(notificationId)
 
-    // Identity-format sync from a freshly-approved origin: remember it so the
-    // next offer from this origin can be accepted silently. Other formats
-    // (sd-jwt, json-ld) are one-off issuance events, not recurring sync — no
-    // benefit to persisting trust for them.
-    if (offer.format === 'attestto-id' && origin) {
-      await recordTrustedOrigin(origin)
-    }
-
-    try {
-      let decodedClaims: Record<string, unknown> = {}
-      let types: string[] = ['VerifiableCredential']
-      let issuer = offer.issuerName
-      let issuedAt = new Date().toISOString()
-      let expiresAt: string | null = null
-      const disclosureDigests: string[] = []
-
-      if (offer.format === 'sd-jwt') {
-        const parsed = await parseSdJwt(offer.raw)
-        decodedClaims = await getDecodedClaims(offer.raw)
-        types = (parsed.payload.vct as string[]) ?? types
-        issuer = (parsed.payload.iss as string) ?? issuer
-        issuedAt = parsed.payload.iat
-          ? new Date((parsed.payload.iat as number) * 1000).toISOString()
-          : issuedAt
-        expiresAt = parsed.payload.exp
-          ? new Date((parsed.payload.exp as number) * 1000).toISOString()
-          : null
-        parsed.disclosures.forEach((d) => {
-          // Disclosure exposes the computed digest as the cached `_digest`
-          // string (populated during decode); `digest()` is the async recompute.
-          if (d._digest) disclosureDigests.push(d._digest)
-        })
-      } else {
-        // JSON-LD or attestto-id format
-        try {
-          const vc = JSON.parse(offer.raw) as Record<string, unknown>
-          decodedClaims = (vc.credentialSubject as Record<string, unknown>) ?? vc
-          types = (vc.type as string[]) ?? types
-          issuer = (typeof vc.issuer === 'string' ? vc.issuer : (vc.issuer as Record<string, unknown>)?.id as string) ?? issuer
-          issuedAt = (vc.issuanceDate as string) ?? issuedAt
-          expiresAt = (vc.expirationDate as string) ?? null
-        } catch {
-          // Raw claims object (from attestto-id push)
-          decodedClaims = offer.claims ?? {}
-        }
-      }
-
-      const credential: StoredCredential = {
-        id: crypto.randomUUID(),
-        // Wire payload types format as `CredentialFormat | string` (accepts
-        // unknown formats); storage coerces to the known enum at this boundary.
-        format: offer.format as CredentialFormat,
-        raw: offer.raw,
-        issuer,
-        issuedAt,
-        expiresAt,
-        types: Array.isArray(types) ? types : [types],
-        decodedClaims,
-        metadata: {
-          addedAt: new Date().toISOString(),
-          source: 'push',
-          disclosureDigests: disclosureDigests.length > 0 ? disclosureDigests : undefined,
-        },
-      }
-
-      // Identity-format offers (attestto-id) carry a didUri that should populate
-      // linkedIdentities[] so the popup's IdentityListView shows the identity.
-      // The credential itself is still stored for record-keeping.
-      const identityDid = offer.format === 'attestto-id'
-        ? (decodedClaims.didUri as string | undefined)
-        : undefined
-
-      // Store in public vault (always works, no passkey needed). Create an
-      // empty public vault if the read returned null — otherwise the offer
-      // silently disappears, which is exactly the bug that "I pushed an
-      // identity and nothing showed up" was hiding.
-      const pub = (await readPublicVault()) ?? {
-        did: null,
-        credentials: [],
-        linkedSolanaAddress: null,
-        keyShares: [],
-        proofRequests: [],
-        preparedPresentations: [],
-      }
-      pub.credentials = [...(pub.credentials ?? []), credential]
-      if (identityDid) {
-        pub.linkedIdentities = upsertIdentity(
-          pub.linkedIdentities ?? [],
-          identityDid,
-          credential,
-        )
-      }
-      await writePublicVault(pub)
-
-      // Also store in encrypted vault if unlocked
-      const vault = await readVault()
-      if (vault) {
-        vault.credentials = [...(vault.credentials ?? []), credential]
-        if (identityDid) {
-          vault.linkedIdentities = upsertIdentity(
-            vault.linkedIdentities ?? [],
-            identityDid,
-            credential,
-          )
-        }
-        await writeVault(vault)
-        await syncPublicVault(vault)
-      }
-
-      return credential.id
-    } catch {
-      return null
-    }
-  }
-
-  /**
-   * Upsert an identity DID into linkedIdentities[], attaching the credential
-   * that carried it. Used by acceptCredentialOffer for `attestto-id` format.
-   */
-  function upsertIdentity(
-    list: LinkedIdentity[],
-    did: string,
-    credential: StoredCredential,
-  ): LinkedIdentity[] {
-    const now = new Date().toISOString()
-    const idx = list.findIndex((id) => id.did === did)
-    if (idx >= 0) {
-      const existing = list[idx]
-      const hasCred = existing.credentials.some((c) => c.id === credential.id)
-      return list.map((id, i) =>
-        i === idx
-          ? {
-              ...id,
-              syncedAt: now,
-              credentials: hasCred ? id.credentials : [...id.credentials, credential],
-            }
-          : id,
-      )
-    }
-    return [
-      ...list,
+    return handleCredentialOfferAccept(
+      { offer: pending.offer, origin: pending.origin },
       {
-        did,
-        label: extractDidLabel(did),
-        credentials: [credential],
-        syncedAt: now,
-        tenantId: null,
+        store: {
+          readPublic: readPublicVault,
+          writePublic: writePublicVault,
+          read: readVault,
+          write: writeVault,
+          syncPublic: syncPublicVault,
+        },
+        origins: { recordTrusted: recordTrustedOrigin },
+        clock: { nowIso: () => new Date().toISOString() },
+        newId: () => crypto.randomUUID(),
       },
-    ]
+    )
   }
 
   // ── Notification Button Handling ───────────────────
