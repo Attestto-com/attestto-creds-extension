@@ -16,6 +16,7 @@ import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
 import { handleChapiApprove } from '@/background/handlers/chapi-approve.handler'
+import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestto-pdf-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
@@ -2023,60 +2024,48 @@ export default defineBackground(() => {
         pendingApdf.unregister?.()
         pendingAttesttoPdfRequests.delete(apdfApproveId)
 
-        ;(async () => {
-          try {
-            const vault = await readVault()
-            if (!vault) {
-              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, 'Vault not ready')
-              sendResponse({ ok: false, error: 'Vault not ready' })
-              return
-            }
+        // Story 1.11 — APDF signing core extracted (`handleSignAttesttoPdfApprove`).
+        // The narrow `provisioning` port lazily mints the Ed25519 key (write + mirror
+        // inside `getOrCreateEd25519Key`, which strips the private key via the real
+        // toPublicVault) and returns only the PUBLIC key; the gated Ed25519 signer is
+        // bound to that same key via the `edKey` closure — the handler never sees key
+        // material. This case keeps the pending Map + transport.
+        let edKey: CryptoKey | null = null
+        const apdfCtx = {
+          store: { read: () => readVault() },
+          provisioning: {
+            provisionEd25519: async () => {
+              const ed = await getOrCreateEd25519Key()
+              if (!ed) return null
+              edKey = ed.privateKey
+              return { publicKeyB64: ed.publicKeyB64 }
+            },
+          },
+          crypto: {
+            sign: createGatedSign({
+              assertPresence: async () => {},
+              rawSign: async (payload: Uint8Array) => {
+                if (!edKey) throw new Error('Ed25519 key not provisioned')
+                const buf = await crypto.subtle.sign({ name: 'Ed25519' }, edKey, payload as BufferSource)
+                return { bytes: new Uint8Array(buf) }
+              },
+            }),
+          },
+        }
 
-            const ed = await getOrCreateEd25519Key()
-            if (!ed) {
-              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, 'Could not load Ed25519 key')
-              sendResponse({ ok: false, error: 'Could not load Ed25519 key' })
-              return
-            }
-
-            // Decode the canonical payload bytes the page sent. The
-            // background does NOT inspect or re-canonicalize them —
-            // the verify-side composable is the single source of
-            // truth for the canonical shape (lockstep contract).
-            const payloadBytes = Uint8Array.from(atob(pendingApdf.req.payloadB64), (c) => c.charCodeAt(0))
-
-            const sigBuf = await crypto.subtle.sign(
-              { name: 'Ed25519' },
-              ed.privateKey,
-              payloadBytes as BufferSource,
-            )
-            const sigBytes = new Uint8Array(sigBuf)
-            if (sigBytes.length !== 64) {
-              throw new Error(`Unexpected Ed25519 signature length: ${sigBytes.length}`)
-            }
-            const signatureB64 = btoa(String.fromCharCode(...sigBytes))
-
-            // Issuer DID — honestly labels what this key actually is.
-            // Not a fake did:key. The verifier doesn't resolve DIDs;
-            // it uses the embedded raw publicKey for verification.
-            const holderDid = selectedApdfDid
-              || vault.holderDid
-              || `did:key-vault:ed25519-${ed.publicKeyB64.slice(0, 12)}`
-
-            const responseData = {
-              did: holderDid,
-              signature: signatureB64,
-              publicKey: ed.publicKeyB64,
-            }
-
+        handleSignAttesttoPdfApprove(
+          { payloadB64: pendingApdf.req.payloadB64, selectedDid: selectedApdfDid },
+          apdfCtx as never,
+        ).then((result) => {
+          if (result.ok) {
+            const responseData = { did: result.did, signature: result.signature, publicKey: result.publicKey }
             sendAttesttoPdfResponseToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, responseData)
             sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Attestto PDF signing failed'
-            sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
+          } else {
+            sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, result.error)
+            sendResponse({ ok: false, error: result.error })
           }
-        })()
+        })
         break
       }
 

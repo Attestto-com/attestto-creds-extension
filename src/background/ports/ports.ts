@@ -165,6 +165,20 @@ export interface SigningVaultStore {
 }
 
 /**
+ * Narrow key-provisioning capability for the two SIGNING handlers that must mint key
+ * material as a side effect (APDF's lazy Ed25519 key; AUTH's per-site DID). Story
+ * 1.11, F1 (Vex): a signing handler that provisions a key names EXACTLY this — not a
+ * generic `vault.write`. The methods return only PUBLIC material (a `publicKeyB64` /
+ * a `did`), **never the private JWK** (AD-2): the private key stays inside the
+ * adapter, which also owns the write+mirror (so keys-never-mirrored is the adapter's
+ * `toPublicVault` strip, not the handler's concern). `null` when the vault is locked.
+ */
+export interface Provisioning {
+  /** Lazily generate/load the Ed25519 signing key; returns its public key (base64 raw). */
+  provisionEd25519(): Promise<{ publicKeyB64: string } | null>
+}
+
+/**
  * P-256 keypair generation (a KeyAdmin capability, distinct from AD-11c's single
  * `sign` primitive — generating an identity key is not signing). Returns both JWKs;
  * the private JWK is persisted into the vault record, the public JWK is field-
