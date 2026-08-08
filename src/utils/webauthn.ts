@@ -156,7 +156,6 @@ export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
         residentKey: 'required',
       },
       extensions: {
-        // @ts-expect-error PRF extension not yet in TypeScript WebAuthn types
         prf: { eval: { first: prfSalt } },
       },
     },
@@ -260,7 +259,6 @@ export async function unlockWithPasskey(passphrase?: string): Promise<string> {
       }],
       userVerification: 'required',
       extensions: {
-        // @ts-expect-error PRF extension not yet in TypeScript WebAuthn types
         prf: { eval: { first: new Uint8Array(prfSalt) } },
       },
     },

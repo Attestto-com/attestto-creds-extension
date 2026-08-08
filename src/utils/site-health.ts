@@ -282,7 +282,7 @@ export function analyzeSiteHealth(doc: Document = document): SiteHealthResult {
   const GOV_TLDS_INLINE = ['.go.cr', '.fi.cr', '.sa.cr', '.ac.cr', '.ed.cr', '.or.cr']
 
   // Walk the document tree for comment nodes
-  const commentWalker = document.createNodeIterator
+  const commentWalker = typeof doc.createNodeIterator === 'function'
     ? doc.createNodeIterator(doc, 128 /* NodeFilter.SHOW_COMMENT */)
     : null
 

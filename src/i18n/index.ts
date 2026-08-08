@@ -7,8 +7,8 @@ const i18n = createI18n({
   locale: 'en',
   fallbackLocale: 'en',
   messages: {
-    en: en as Record<string, unknown>,
-    es: es as Record<string, unknown>,
+    en,
+    es,
   },
 })
 

@@ -15,8 +15,8 @@ import { parseProofRequest } from '@/services/didcomm'
 import { createChapiVp } from '@/services/jsonld-vp'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { LinkedIdentity } from '@/stores/wallet'
-import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
-import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
+import type { StoredCredential, ProofAccessRequest, PreparedPresentation, CredentialFormat } from '@/types/credential'
+import { publicJwkToDid } from '@/utils/did-jwk'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
@@ -762,7 +762,9 @@ export default defineBackground(() => {
           ? new Date((parsed.payload.exp as number) * 1000).toISOString()
           : null
         parsed.disclosures.forEach((d) => {
-          if (d.digest) disclosureDigests.push(d.digest)
+          // Disclosure exposes the computed digest as the cached `_digest`
+          // string (populated during decode); `digest()` is the async recompute.
+          if (d._digest) disclosureDigests.push(d._digest)
         })
       } else {
         // JSON-LD or attestto-id format
@@ -781,7 +783,9 @@ export default defineBackground(() => {
 
       const credential: StoredCredential = {
         id: crypto.randomUUID(),
-        format: offer.format,
+        // Wire payload types format as `CredentialFormat | string` (accepts
+        // unknown formats); storage coerces to the known enum at this boundary.
+        format: offer.format as CredentialFormat,
         raw: offer.raw,
         issuer,
         issuedAt,

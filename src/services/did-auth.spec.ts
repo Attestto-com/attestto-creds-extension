@@ -9,7 +9,7 @@ import { publicJwkToDid, resolveDid } from '@/utils/did-jwk'
  * for a pairwise did:jwk — without any network resolution.
  */
 
-function base64urlToBytes(s: string): Uint8Array {
+function base64urlToBytes(s: string): Uint8Array<ArrayBuffer> {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/')
   const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4))
   const bin = atob(b64 + pad)

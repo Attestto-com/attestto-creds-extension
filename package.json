@@ -17,7 +17,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "type-check": "vue-tsc --noEmit",
+    "type-check": "vue-tsc -b --noEmit",
     "lint": "eslint . --fix",
     "lint:check": "eslint .",
     "postinstall": "wxt prepare"

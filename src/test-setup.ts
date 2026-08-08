@@ -7,7 +7,7 @@
 
 // defineContentScript is a WXT auto-import injected at build time.
 // In tests we provide a no-op stub so modules that call it at parse time don't throw.
-if (typeof globalThis.defineContentScript === 'undefined') {
+if (typeof (globalThis as Record<string, unknown>).defineContentScript === 'undefined') {
   // @ts-expect-error — WXT global not typed in test env
   globalThis.defineContentScript = (_opts: unknown) => ({})
 }

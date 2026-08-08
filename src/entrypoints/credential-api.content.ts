@@ -70,7 +70,7 @@ export default defineContentScript({
               origin: window.location.origin,
             },
           },
-          (response) => {
+          (_response) => {
             if (chrome.runtime.lastError) {
               window.postMessage({
                 type: 'ATTESTTO_VP_RESPONSE',

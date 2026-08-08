@@ -7,7 +7,7 @@
 import { decodeSdJwt, getClaims } from '@sd-jwt/decode'
 import { present } from '@sd-jwt/present'
 import { SignJWT, importJWK } from 'jose'
-import type { Disclosure } from '@sd-jwt/types'
+import type { Disclosure } from '@sd-jwt/utils'
 
 export interface ParsedSdJwt {
   header: Record<string, unknown>
@@ -51,10 +51,13 @@ export async function parseSdJwt(compact: string): Promise<ParsedSdJwt> {
 export async function getDecodedClaims(
   compact: string,
 ): Promise<Record<string, unknown>> {
+  // getClaims signature is (rawPayload, disclosures, hasher) — decode first,
+  // then merge the issuer payload with the selectively-disclosed claims.
+  const decoded = await decodeSdJwt(compact, sha256Hasher)
   const claims = await getClaims<Record<string, unknown>>(
-    compact,
+    decoded.jwt.payload as Record<string, unknown>,
+    decoded.disclosures,
     sha256Hasher,
-    async (data) => data,
   )
   return claims
 }

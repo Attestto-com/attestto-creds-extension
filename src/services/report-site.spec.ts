@@ -54,7 +54,7 @@ describe('report-site', () => {
     expect(result.shareError).toBeUndefined()
 
     // Verify payload shape
-    const [url, init] = fetchSpy.mock.calls[0]
+    const [url, init] = fetchSpy.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit]
     expect(String(url)).toContain('/v1/anti-phishing/reports')
     expect(init.method).toBe('POST')
     expect(init.credentials).toBe('omit')
