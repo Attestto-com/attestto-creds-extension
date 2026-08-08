@@ -176,6 +176,22 @@ export interface SigningVaultStore {
 export interface Provisioning {
   /** Lazily generate/load the Ed25519 signing key; returns its public key (base64 raw). */
   provisionEd25519(): Promise<{ publicKeyB64: string } | null>
+  /**
+   * Find-or-create the PAIRWISE per-origin DID (write + mirror inside the adapter),
+   * returning its `did` + public JWK only — never the private key. The adapter also
+   * binds the gated signer to this per-site key. `null` when the vault is locked or
+   * the origin is invalid.
+   */
+  provisionSiteDid(origin: string): Promise<{ did: string; publicKeyJwk: JsonWebKey } | null>
+}
+
+/**
+ * Pin a site (record the sign-in-as-trust decision). Story 1.11, F1: AUTH's SECOND
+ * write is a distinct capability from key provisioning — a signing handler that pins
+ * names exactly this, not a generic `vault.write`. Best-effort at the call site.
+ */
+export interface SitePin {
+  pin(host: string): Promise<void>
 }
 
 /**

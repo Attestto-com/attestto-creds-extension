@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { canonicalAuthMessage, signDidAuth, DID_AUTH_CANONICAL_VERSION } from './did-auth'
+import { es256KeySigner } from './jws'
 import { publicJwkToDid, resolveDid } from '@/utils/did-jwk'
 
 /**
@@ -28,7 +29,9 @@ async function freshPairwiseDid() {
   const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
   return {
     did: publicJwkToDid(publicJwk),
-    privateKeyJwk,
+    // signDidAuth now takes an injected signer, not a raw key. A local es256 signer
+    // reproduces the pairwise-key signing the background does through the gate.
+    sign: es256KeySigner(privateKeyJwk),
     publicKeyJwk: { kty: publicJwk.kty, crv: publicJwk.crv, x: publicJwk.x, y: publicJwk.y } as JsonWebKey,
   }
 }
@@ -81,7 +84,7 @@ describe('signDidAuth', () => {
     const id = await freshPairwiseDid()
     const res = await signDidAuth({
       did: id.did,
-      privateKeyJwk: id.privateKeyJwk,
+      sign: id.sign,
       publicKeyJwk: id.publicKeyJwk,
       nonce: CHALLENGE.nonce,
       audience: CHALLENGE.audience,

@@ -21,8 +21,10 @@
 import type { SigningCtx } from '@/background/ctx/ctx-bundles'
 import type { Provisioning } from '@/background/ports/ports'
 
-/** The APDF ctx: read-only vault + the narrow provisioning capability + the gated signer. */
-export type ApdfApproveCtx = Pick<SigningCtx, 'store' | 'crypto'> & { provisioning: Provisioning }
+/** The APDF ctx: read-only vault + ONLY the Ed25519 provisioning capability + the gated signer. */
+export type ApdfApproveCtx = Pick<SigningCtx, 'store' | 'crypto'> & {
+  provisioning: Pick<Provisioning, 'provisionEd25519'>
+}
 
 /** From the pending request (`payloadB64`) + the approve message (`selectedDid`). */
 export interface ApdfApproveInput {

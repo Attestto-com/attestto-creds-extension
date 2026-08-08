@@ -17,6 +17,7 @@ import { handleSignDocumentApprove } from '@/background/handlers/sign-document-a
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
 import { handleChapiApprove } from '@/background/handlers/chapi-approve.handler'
 import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestto-pdf-approve.handler'
+import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
 import { createGatedSign } from '@/background/crypto/gated-sign'
 import { createChapiVp } from '@/services/jsonld-vp'
 import type { JwsSigner } from '@/services/jws'
@@ -31,7 +32,7 @@ import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
 import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
-import { signDidAuth, type WalletAuthResponse } from '@/services/did-auth'
+import type { WalletAuthResponse } from '@/services/did-auth'
 import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
 import { fetchCertScan, submitThreatReport } from '@/api/backend-client'
@@ -1873,101 +1874,72 @@ export default defineBackground(() => {
 
         const isCwAuth = pendingAuthReq.protocol === 'cw'
         const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
+        // `selectedDid` is intentionally ignored — login uses a pairwise per-origin
+        // DID, not the identity chooser (see handler).
+        void selectedAuthDid
 
-        readVault().then(async (vault) => {
-          if (!vault) {
-            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
+        // Story 1.11 — AUTH login core extracted (`handleAuthApprove`, both protocols).
+        // The adapter provisions the pairwise per-site DID (find-or-create + stamp +
+        // write + mirror via toPublicVault, which strips the private key) and binds the
+        // gated signer to that per-site key via the `sitePrivateKeyJwk` closure — the
+        // handler never sees key material. Two writers named as capabilities:
+        // `provisioning.provisionSiteDid` (per-site key) + `pin` (sign-in-as-trust).
+        let sitePrivateKeyJwk: JsonWebKey | null = null
+        const authCtx = {
+          crypto: {
+            sign: createGatedSign({
+              assertPresence: async () => {},
+              rawSign: async (payload: Uint8Array) => {
+                if (!sitePrivateKeyJwk) throw new Error('Site key not provisioned')
+                return es256RawSign(sitePrivateKeyJwk, payload)
+              },
+            }),
+          },
+          provisioning: {
+            provisionSiteDid: async (origin: string) => {
+              const vault = await readVault()
+              if (!vault) return null
+              const { siteDids, entry } = await findOrCreateSiteDid(vault.siteDids, origin)
+              // Stamp the visit and persist every time (create or reuse) so the popup
+              // can show created + last-used for this site.
+              entry.lastUsedAt = new Date().toISOString()
+              vault.siteDids = siteDids
+              await writeVault(vault)
+              await syncPublicVault(vault)
+              sitePrivateKeyJwk = entry.privateKeyJwk
+              return { did: entry.did, publicKeyJwk: publicJwkOf(entry) as JsonWebKey }
+            },
+          },
+          pin: { pin: async (host: string) => { await pinSite(host) } },
+          clock: { now: () => Date.now() },
+        }
 
-          // Login uses a PAIRWISE DID per origin — find-or-create so this site
-          // can never correlate the user across the web. `selectedDid` from the
-          // popup is intentionally ignored here: identity choice is not a login
-          // concept, a site must request a VC to learn anything about the user.
-          void selectedAuthDid
-
-          try {
-            const { siteDids, entry } = await findOrCreateSiteDid(
-              vault.siteDids,
-              pendingAuthReq.origin,
-            )
-            // Stamp the visit and persist every time (create or reuse) so the
-            // popup can show created + last-used for this site.
-            entry.lastUsedAt = new Date().toISOString()
-            vault.siteDids = siteDids
-            await writeVault(vault)
-            await syncPublicVault(vault)
-
-            // Deciding to sign in IS the trust decision — pin the site so its
-            // popup grade reflects it (no separate "Trust this site" step). The
-            // per-origin phishing acknowledgment already gated this choice.
-            try {
-              const trustedHost = new URL(pendingAuthReq.origin).host.toLowerCase().replace(/^www\./, '')
-              if (trustedHost) await pinSite(trustedHost)
-            } catch {
-              // Best-effort: never block sign-in on a pin failure.
-            }
-
-            if (isCwAuth) {
-              // credential-wallet:auth (SOC-71) — sign the adapter's versioned
-              // canonical payload and return a full AuthResponse. A fresh
-              // timestamp is minted now so it lands inside the verifier's
-              // freshness window regardless of how long consent took.
-              const response = await signDidAuth({
-                did: entry.did,
-                nonce: pendingAuthReq.nonce,
-                audience: pendingAuthReq.audience || pendingAuthReq.origin,
-                origin: pendingAuthReq.origin,
-                privateKeyJwk: entry.privateKeyJwk,
-                publicKeyJwk: publicJwkOf(entry) as JsonWebKey,
-              })
-              sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, response)
-              sendResponse({ ok: true, response })
-              return
-            }
-
-            // Legacy `attestto:auth` proof-of-possession — canonical payload
-            // MUST match backend DidAuthController exactly. The page may pass an
-            // explicit `audience`; if it doesn't, we fall back to origin
-            // (matching CORTEX's `audience ?? origin`).
-            //   ${nonce}|${audience||origin}|${origin}|${timestamp}
-            const audience = pendingAuthReq.origin
-            const canonicalPayload = `${pendingAuthReq.nonce}|${audience}|${pendingAuthReq.origin}|${pendingAuthReq.timestamp}`
-
-            const privateKey = await crypto.subtle.importKey(
-              'jwk',
-              entry.privateKeyJwk,
-              { name: 'ECDSA', namedCurve: 'P-256' },
-              false,
-              ['sign'],
-            )
-
-            const data = new TextEncoder().encode(canonicalPayload)
-            const signatureBuffer = await crypto.subtle.sign(
-              { name: 'ECDSA', hash: 'SHA-256' },
-              privateKey,
-              data,
-            )
-
-            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
-
-            // Surface the public-key half so the backend can verify by
-            // stateless proof-of-possession (TOFU) — pairwise did:jwk keys are
-            // never pre-registered.
+        handleAuthApprove(
+          {
+            protocol: pendingAuthReq.protocol,
+            origin: pendingAuthReq.origin,
+            nonce: pendingAuthReq.nonce,
+            timestamp: pendingAuthReq.timestamp,
+            audience: pendingAuthReq.audience,
+          },
+          authCtx as never,
+        ).then((result) => {
+          if (result.ok && result.kind === 'cw') {
+            sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.response)
+            sendResponse({ ok: true, response: result.response })
+          } else if (result.ok) {
             const responseData = {
-              did: entry.did,
-              signature,
-              nonce: pendingAuthReq.nonce,
-              timestamp: pendingAuthReq.timestamp,
-              publicKeyJwk: publicJwkOf(entry),
+              did: result.did,
+              signature: result.signature,
+              nonce: result.nonce,
+              timestamp: result.timestamp,
+              publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
             }
             sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
             sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Auth signing failed'
-            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
+          } else {
+            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.error)
+            sendResponse({ ok: false, error: result.error })
           }
         })
         return true // async sendResponse

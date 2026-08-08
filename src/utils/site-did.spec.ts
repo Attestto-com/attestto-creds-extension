@@ -62,6 +62,34 @@ describe('findOrCreateSiteDid', () => {
     expect(Object.keys(b.siteDids)).toHaveLength(2)
   })
 
+  // ── Pairwise unlinkability by KEY MATERIAL (Story 1.11) ──────────────────────
+  // The DID-equality tests above can pass while the KEYS are shared (a mutation
+  // that reuses one key under different DID labels). Assert the private component
+  // `d` itself — that is what actually makes two sites uncorrelatable.
+  it('UNLINKABILITY — same origin twice → identical private key `d`, no re-mint', async () => {
+    const first = await findOrCreateSiteDid(undefined, 'https://bank.example.com')
+    const second = await findOrCreateSiteDid(first.siteDids, 'https://bank.example.com/other-path')
+    expect(second.created).toBe(false)
+    expect(second.entry.privateKeyJwk.d).toBe(first.entry.privateKeyJwk.d)
+    expect(Object.keys(second.siteDids)).toHaveLength(1)
+  })
+
+  it('UNLINKABILITY — different origins → DIFFERENT private key `d` (not just different DIDs)', async () => {
+    const a = await findOrCreateSiteDid(undefined, 'https://a.example.com')
+    const b = await findOrCreateSiteDid(a.siteDids, 'https://b.example.com')
+    expect(a.entry.privateKeyJwk.d).toBeTruthy()
+    expect(b.entry.privateKeyJwk.d).not.toBe(a.entry.privateKeyJwk.d)
+  })
+
+  it('UNLINKABILITY — www and apex are DISTINCT origins (normalizeOrigin does not collapse www)', async () => {
+    // Different origins under same-origin policy → different pairwise keys. (The
+    // www-strip in the AUTH handler is a PIN-store concern, not site-DID scoping.)
+    const apex = await findOrCreateSiteDid(undefined, 'https://x.example.com')
+    const www = await findOrCreateSiteDid(apex.siteDids, 'https://www.x.example.com')
+    expect(www.entry.privateKeyJwk.d).not.toBe(apex.entry.privateKeyJwk.d)
+    expect(Object.keys(www.siteDids)).toHaveLength(2)
+  })
+
   it('throws on an invalid origin', async () => {
     await expect(findOrCreateSiteDid(undefined, 'garbage')).rejects.toThrow()
   })

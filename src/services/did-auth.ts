@@ -18,6 +18,8 @@
  * needed; we only base64url the bytes.
  */
 
+import type { JwsSigner } from './jws'
+
 /** Version tag prefixed to the signed payload so signatures cannot be replayed across protocol revisions. Must match the adapter. */
 export const DID_AUTH_CANONICAL_VERSION = 'attestto-did-auth-v1'
 
@@ -44,8 +46,12 @@ export interface SignDidAuthParams {
   nonce: string
   audience: string
   origin: string
-  /** The P-256 private key that signs on behalf of `did`. */
-  privateKeyJwk: JsonWebKey
+  /**
+   * Signs the canonical message bytes on behalf of `did`, returning the raw
+   * 64-byte r‖s signature (AD-11c). In the background this is the gated primitive
+   * bound to the pairwise per-site key — `signDidAuth` never imports a key itself.
+   */
+  sign: JwsSigner
   /** The public half published for the verifier (must resolve into the DID's `authentication`). */
   publicKeyJwk: JsonWebKey
   /** ISO 8601 timestamp; defaults to now. Injectable for deterministic tests. */
@@ -108,19 +114,10 @@ export async function signDidAuth(params: SignDidAuthParams): Promise<WalletAuth
     timestamp,
   })
 
-  const privateKey = await crypto.subtle.importKey(
-    'jwk',
-    params.privateKeyJwk,
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    false,
-    ['sign'],
-  )
-
-  const sigBuffer = await crypto.subtle.sign(
-    { name: 'ECDSA', hash: 'SHA-256' },
-    privateKey,
-    new TextEncoder().encode(message),
-  )
+  // Signature routes through the injected signer (AD-11c) — no key import here.
+  // WebCrypto ECDSA already emits raw r‖s, so the signer returns exactly the 64
+  // bytes the verifier's fixed-length check expects; we only base64url them.
+  const sig = await params.sign(new TextEncoder().encode(message))
 
   return {
     approved: true,
@@ -128,7 +125,7 @@ export async function signDidAuth(params: SignDidAuthParams): Promise<WalletAuth
     nonce: params.nonce,
     audience: params.audience,
     origin: params.origin,
-    signature: bytesToBase64url(new Uint8Array(sigBuffer)),
+    signature: bytesToBase64url(sig),
     publicKeyJwk: params.publicKeyJwk,
     timestamp,
   }
