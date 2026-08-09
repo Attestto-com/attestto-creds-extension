@@ -71,8 +71,21 @@ async function confirmDelete(): Promise<void> {
       <LockClosedIcon class="size-8 text-indigo-400" />
     </div>
     <h2 class="mt-4 text-base font-semibold text-white">Credentials are locked</h2>
+    <!--
+      The copy follows the vault's ACTUAL key method, which is not always the
+      passkey. A vault set up on an authenticator without WebAuthn PRF derives
+      its key from a passphrase, and on that vault the passkey plays no part in
+      unlocking. Saying "unlock with your passkey" above a passphrase-only field
+      is simply false, and it is what the user sees first.
+    -->
     <p class="mt-1 max-w-[240px] text-xs leading-relaxed text-slate-400">
-      Your verifiable credentials are private. Unlock with your passkey to view them.
+      <template v-if="needsPass">
+        Your verifiable credentials are private. This wallet was set up with a
+        passphrase, so enter it to unlock.
+      </template>
+      <template v-else>
+        Your verifiable credentials are private. Unlock with your passkey to view them.
+      </template>
     </p>
 
     <input
