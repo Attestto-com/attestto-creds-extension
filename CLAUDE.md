@@ -19,7 +19,15 @@ There are **two storage layers** in `chrome.storage.local`. Confusing them silen
 
 ## Platform integration contract
 
-The extension is the **bootstrap surface** for identities; the canonical PWA (`attestto-app` at `app.attestto.com`) is the **issuance authority** for `did:sns` Tier 2/3 identities.
+The extension **creates and owns** the first identity (Tier 1, local). The
+canonical PWA is the **issuance authority** for `did:sns` Tier 2/3 identities,
+which are an upgrade rather than a starting point.
+
+**No UI links out to the platform** (removed 2026-08-09). `PLATFORM_URL` remains
+in `src/config/app.ts` because `src/utils/platform-origins.ts` uses it as the
+allowlist for the one origin permitted to drive `DID_SYNC` without per-origin
+approval. That is a security control, not a redirect — do not delete it while the
+sync channel exists.
 
 | Surface | Domain | Purpose |
 |---|---|---|
@@ -38,11 +46,20 @@ There is NO `/app/register` or `/app/login`. Don't invent routes.
 
 | Tier | DID method | Issued via | Use case |
 |---|---|---|---|
-| 1 — throwaway | `did:jwk` (auto-gen) | Extension, locally | NOT a strategic priority — Sybil-prone, not an SSO replacement |
+| 1 — local | `did:jwk` (auto-gen) | Extension, locally | **The first-run identity.** Every user starts here; upgrading to Tier 2/3 is optional |
 | 2 — tenant-anchored | `did:sns:user.tenant.attestto.sol` | Tenant via CORTEX subdomain allocation | KYC'd vendors (OPTISOFT, notarios) |
 | 3 — user-root | `did:sns:chongkan.attestto.sol` | User claims via `attestto-app` | Cross-site portable identity, the "Sign in with Attestto" play |
 
-**Focus is Tier 2/3.** Tier 1 exists architecturally (`createDid` generates `did:jwk` as fallback signer) but is not the user-facing flow.
+**Extension-first (confirmed 2026-08-09).** A user creates a wallet and a Tier 1
+identity in the extension, with no external service. Tier 2/3 are upgrades on top,
+not prerequisites.
+
+⚠️ This paragraph previously read "Focus is Tier 2/3 — Tier 1 is not the
+user-facing flow", which contradicted the decided path. That contradiction is the
+likely reason the popup shipped with no setup entry point at all: the only
+identity call to action linked OUT to the platform, and `LockScreenView` — the
+sole caller of `wallet.setup()` — was never routed. Found by running the
+extension, not by any test.
 
 ## Credential offer consent (identity format = per-origin trust)
 
@@ -87,7 +104,7 @@ Loading the dev build does NOT see data created by the prod build (or vice versa
 
 ## Working rules
 
-- Don't propose Tier 1 self-issued `did:jwk` as a strategic direction. It's a fallback primitive, not the product.
+- Tier 1 `did:jwk` is the first-run identity, not a fallback. The extension must be able to create a usable wallet and identity with no external service. Do not add a flow that requires the platform before a user can start.
 - Don't link to `attestto.net` from extension UI — it's gated, users see Cloudflare Access wall.
 - Don't add new content script matchers without thinking about the security surface — `credential-api.content.ts` currently runs on `https://*/*`.
 - Background SW changes require a `chrome://extensions` reload (HMR doesn't restart the service worker). Popup/Vue changes hot-reload via Vite dev server.
