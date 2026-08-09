@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { FingerPrintIcon, PlusCircleIcon, ArrowDownTrayIcon, IdentificationIcon } from '@heroicons/vue/24/outline'
+import { FingerPrintIcon, PlusCircleIcon, IdentificationIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore } from '@/stores/wallet'
 import type { LinkedIdentity } from '@/stores/wallet'
 import PopupPanel from '@/components/layout/PopupPanel.vue'
 import PanelButton from '@/components/layout/PanelButton.vue'
-import { PLATFORM_URL } from '@/config/app'
 
 const router = useRouter()
 const wallet = useWalletStore()
@@ -28,8 +27,6 @@ const identities = computed<IdentityItem[]>(() => {
   }))
 })
 
-const ONBOARDING_PATH = '/onboarding'
-const UNLOCK_PATH = '/lock'
 
 function selectIdentity(did: string): void {
   void router.push({ name: 'identity-detail', params: { did: encodeURIComponent(did) } })
@@ -96,23 +93,9 @@ function verifyIdOffline(): void {
             <IdentificationIcon class="h-4 w-4" />
             1. Verify your ID offline
           </PanelButton>
-          <PanelButton
-            variant="secondary"
-            tone="light"
-            :href="`${PLATFORM_URL}${ONBOARDING_PATH}?src=extension`"
-            target="_blank"
-          >
+          <PanelButton variant="secondary" tone="light" @click="router.push('/setup')">
             <PlusCircleIcon class="h-4 w-4" />
-            Get Started
-          </PanelButton>
-          <PanelButton
-            variant="secondary"
-            tone="light"
-            :href="`${PLATFORM_URL}${UNLOCK_PATH}?src=extension`"
-            target="_blank"
-          >
-            <ArrowDownTrayIcon class="h-4 w-4" />
-            Log in to sync
+            Set up your wallet
           </PanelButton>
         </div>
       </div>
