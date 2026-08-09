@@ -4,6 +4,7 @@ import {
   DidResolutionError,
   type DidWebFetch,
 } from './did-resolver'
+import { ResponseTooLargeError } from './did-web-fetch.adapter'
 import { publicJwkToDid } from '@/utils/did-jwk'
 
 const DID = 'did:web:id.example.org'
@@ -213,7 +214,7 @@ describe('resolve — response validation', () => {
 
   it('🔒 rejects a document describing a DIFFERENT did', async () => {
     // The resolve-then-trust bug: id.example.org answers with evil.example's keys.
-    const { http } = fakeHttp(() => ({ body: JSON.stringify(webDoc('did:web:evil.example')) }))
+    const { http } = fakeHttp(() => ({ body: JSON.stringify(webDoc('did:web:evil.example.org')) }))
     const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() })
     expect(await reasonOf(() => resolver.resolve(DID, { allowMethods: ['web'] }))).toBe(
       'id-mismatch',
@@ -240,13 +241,6 @@ describe('resolve — response validation', () => {
     expect(String((caught as Error).message)).not.toContain('CONNECTION_REFUSED')
   })
 
-  it('rejects a body over the byte cap', async () => {
-    const { http } = fakeHttp(() => ({ body: 'x'.repeat(200) }))
-    const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() }, { maxBytes: 100 })
-    expect(await reasonOf(() => resolver.resolve(DID, { allowMethods: ['web'] }))).toBe(
-      'response-too-large',
-    )
-  })
 })
 
 /**
@@ -290,8 +284,44 @@ describe('resolve — TTL cache', () => {
     expect(calls).toHaveLength(2)
   })
 
+  /**
+   * 🩸 Review finding (medium). With `expiresAt` computed from a pre-jump
+   * clock, a backwards correction put expiry unreachably far in the future and
+   * the resolver kept serving the OLD document — including after a key was
+   * revoked from the source.
+   */
+  it('🔒 a backwards clock jump does not make a cached document immortal', async () => {
+    const revoked = `${DID}#key-1`
+    let live = true
+    const { http, calls } = fakeHttp(() => ({
+      body: JSON.stringify(
+        live
+          ? webDoc()
+          : { id: DID, verificationMethod: [
+              { id: revoked, type: 'JsonWebKey2020', controller: DID, publicKeyJwk: P256_JWK },
+            ], authentication: [], assertionMethod: [] },
+      ),
+    }))
+    const clock = fakeClock()
+    const resolver = createCounterpartyDidResolver({ http, clock }, { ttlMs: 60_000 })
+
+    const first = await resolver.resolve(DID, { allowMethods: ['web'] })
+    expect(first.authentication).toEqual([revoked])
+    expect(calls).toHaveLength(1)
+
+    // The key is revoked at the source, then the clock steps back a day.
+    live = false
+    clock.advance(-86_400_000)
+    clock.advance(600_000) // ten minutes later by the new clock
+
+    const second = await resolver.resolve(DID, { allowMethods: ['web'] })
+    // It must have refetched and seen the revocation, not served the stale doc.
+    expect(calls).toHaveLength(2)
+    expect(second.authentication).toEqual([])
+  })
+
   it('caches per DID, not globally', async () => {
-    const other = 'did:web:other.example'
+    const other = 'did:web:other.example.org'
     const { http, calls } = fakeHttp((url) => ({
       body: JSON.stringify(webDoc(url.includes('other') ? other : DID)),
     }))
@@ -310,15 +340,15 @@ describe('resolve — TTL cache', () => {
       { http, clock: fakeClock() },
       { maxCacheEntries: 2 },
     )
-    await resolver.resolve('did:web:a.example', { allowMethods: ['web'] })
-    await resolver.resolve('did:web:b.example', { allowMethods: ['web'] })
-    await resolver.resolve('did:web:c.example', { allowMethods: ['web'] })
+    await resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] })
+    await resolver.resolve('did:web:b.example.org', { allowMethods: ['web'] })
+    await resolver.resolve('did:web:c.example.org', { allowMethods: ['web'] })
     expect(calls).toHaveLength(3)
 
     // `a` was evicted → refetch. `c` is still resident → no refetch.
-    await resolver.resolve('did:web:c.example', { allowMethods: ['web'] })
+    await resolver.resolve('did:web:c.example.org', { allowMethods: ['web'] })
     expect(calls).toHaveLength(3)
-    await resolver.resolve('did:web:a.example', { allowMethods: ['web'] })
+    await resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] })
     expect(calls).toHaveLength(4)
   })
 })
@@ -328,44 +358,120 @@ describe('resolve — TTL cache', () => {
  * worker into a request generator pointed wherever it likes.
  */
 describe('resolve — rate limit', () => {
-  it('stops fetching once the window budget is spent', async () => {
-    const { http, calls } = fakeHttp((url) => ({
+  /** Each DID gets its own host, and the doc echoes the host so `id` matches. */
+  function hostEcho() {
+    return fakeHttp((url) => ({
       body: JSON.stringify(webDoc(`did:web:${new URL(url).hostname}`)),
     }))
+  }
+
+  it('stops fetching once a host has spent its budget', async () => {
+    const { http, calls } = hostEcho()
     const resolver = createCounterpartyDidResolver(
       { http, clock: fakeClock() },
-      { rateLimitMax: 3, rateLimitWindowMs: 60_000, maxCacheEntries: 100 },
+      { rateLimitMax: 3, rateLimitWindowMs: 60_000, ttlMs: 0, maxCacheEntries: 100 },
     )
-
+    // ttlMs 0 → every call is a miss, so the budget is what stops it.
     for (let i = 0; i < 3; i++) {
-      await resolver.resolve(`did:web:h${i}.example`, { allowMethods: ['web'] })
+      await resolver.resolve('did:web:h.example.org', { allowMethods: ['web'] })
     }
     expect(calls).toHaveLength(3)
 
     expect(
-      await reasonOf(() => resolver.resolve('did:web:h3.example', { allowMethods: ['web'] })),
+      await reasonOf(() => resolver.resolve('did:web:h.example.org', { allowMethods: ['web'] })),
     ).toBe('rate-limited')
     expect(calls).toHaveLength(3)
   })
 
-  it('refills once the window rolls over', async () => {
-    const clock = fakeClock()
-    const { http, calls } = fakeHttp((url) => ({
-      body: JSON.stringify(webDoc(`did:web:${new URL(url).hostname}`)),
-    }))
+  /**
+   * 🩸 Review finding (medium). The budget was a single global counter, spent
+   * before the fetch and never refunded, and failures are deliberately not
+   * cached — so a page hammering one dead host locked out every honest
+   * counterparty for the rest of the window, which dispatch reports as
+   * `peer-verification-failed`.
+   */
+  it('🔒 a hostile host cannot spend an honest host budget', async () => {
+    let failing = true
+    const { http } = fakeHttp((url) => {
+      const host = new URL(url).hostname
+      if (host.startsWith('evil') && failing) return { status: 503 }
+      return { body: JSON.stringify(webDoc(`did:web:${host}`)) }
+    })
     const resolver = createCounterpartyDidResolver(
-      { http, clock },
-      { rateLimitMax: 1, rateLimitWindowMs: 60_000, maxCacheEntries: 100 },
+      { http, clock: fakeClock() },
+      { rateLimitMax: 5, globalRateLimitMax: 100, rateLimitWindowMs: 60_000, ttlMs: 0 },
     )
 
-    await resolver.resolve('did:web:a.example', { allowMethods: ['web'] })
+    // Burn the hostile host's entire budget.
+    for (let i = 0; i < 5; i++) {
+      expect(
+        await reasonOf(() => resolver.resolve('did:web:evil.example.org', { allowMethods: ['web'] })),
+      ).toBe('bad-status')
+    }
+    // It is now locked out...
     expect(
-      await reasonOf(() => resolver.resolve('did:web:b.example', { allowMethods: ['web'] })),
+      await reasonOf(() => resolver.resolve('did:web:evil.example.org', { allowMethods: ['web'] })),
+    ).toBe('rate-limited')
+
+    // ...but a host that has never been resolved still works.
+    failing = false
+    const document = await resolver.resolve('did:web:honest.example.org', {
+      allowMethods: ['web'],
+    })
+    expect(document.id).toBe('did:web:honest.example.org')
+  })
+
+  it('the global cap still backstops a page cycling through many hosts', async () => {
+    const { http, calls } = hostEcho()
+    const resolver = createCounterpartyDidResolver(
+      { http, clock: fakeClock() },
+      { rateLimitMax: 5, globalRateLimitMax: 3, rateLimitWindowMs: 60_000, maxCacheEntries: 100 },
+    )
+    for (let i = 0; i < 3; i++) {
+      await resolver.resolve(`did:web:h${i}.example.org`, { allowMethods: ['web'] })
+    }
+    expect(calls).toHaveLength(3)
+    expect(
+      await reasonOf(() => resolver.resolve('did:web:h9.example.org', { allowMethods: ['web'] })),
+    ).toBe('rate-limited')
+  })
+
+  it('refills once the window rolls over', async () => {
+    const clock = fakeClock()
+    const { http, calls } = hostEcho()
+    const resolver = createCounterpartyDidResolver(
+      { http, clock },
+      { rateLimitMax: 1, rateLimitWindowMs: 60_000, ttlMs: 0, maxCacheEntries: 100 },
+    )
+
+    await resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] })
+    expect(
+      await reasonOf(() => resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] })),
     ).toBe('rate-limited')
 
     clock.advance(60_001)
-    await resolver.resolve('did:web:b.example', { allowMethods: ['web'] })
+    await resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] })
     expect(calls).toHaveLength(2)
+  })
+
+  /**
+   * 🩸 Review finding. A backwards NTP correction left pre-correction
+   * timestamps in the window until the clock caught up, locking the host out
+   * for window + skew.
+   */
+  it('a backwards clock jump does not lock a host out', async () => {
+    const clock = fakeClock()
+    const { http } = hostEcho()
+    const resolver = createCounterpartyDidResolver(
+      { http, clock },
+      { rateLimitMax: 1, rateLimitWindowMs: 60_000, ttlMs: 0 },
+    )
+    await resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] })
+    clock.advance(-3_600_000) // NTP steps back an hour
+    clock.advance(61_000)
+    await expect(
+      resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] }),
+    ).resolves.toBeTruthy()
   })
 
   it('a cache hit does not spend budget', async () => {
@@ -391,6 +497,122 @@ describe('resolve — rate limit', () => {
     }
     // The one web budget unit is still unspent.
     await expect(resolver.resolve(DID, { allowMethods: ['web'] })).resolves.toBeTruthy()
+  })
+})
+
+/**
+ * 🩸 Review finding (medium). MV3 runs `chrome.runtime.onMessage` handlers
+ * concurrently, so N queued messages naming the same DID produced N fetches and
+ * spent N rate-limit tokens for one logical resolution.
+ */
+describe('resolve — concurrent resolutions of the same DID coalesce', () => {
+  it('issues ONE fetch for simultaneous resolves of the same DID', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((r) => (release = r))
+    const calls: string[] = []
+    const http: DidWebFetch = {
+      getJson: vi.fn(async (url: string) => {
+        calls.push(url)
+        await gate
+        return { status: 200, contentType: 'application/json', body: JSON.stringify(webDoc()) }
+      }),
+    }
+    const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() })
+
+    const both = Promise.all([
+      resolver.resolve(DID, { allowMethods: ['web'] }),
+      resolver.resolve(DID, { allowMethods: ['web'] }),
+    ])
+    release?.()
+    const [a, b] = await both
+
+    expect(calls).toHaveLength(1)
+    expect(a).toEqual(b)
+  })
+
+  it('does not spend two rate-limit tokens for one logical resolution', async () => {
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((r) => (release = r))
+    const http: DidWebFetch = {
+      getJson: vi.fn(async (url: string) => {
+        await gate
+        const host = new URL(url).hostname
+        return {
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(webDoc(`did:web:${host}`)),
+        }
+      }),
+    }
+    const resolver = createCounterpartyDidResolver(
+      { http, clock: fakeClock() },
+      { rateLimitMax: 2, globalRateLimitMax: 2, ttlMs: 0 },
+    )
+    const both = Promise.all([
+      resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] }),
+      resolver.resolve('did:web:a.example.org', { allowMethods: ['web'] }),
+    ])
+    release?.()
+    await both
+
+    // One token spent, so a different host still resolves.
+    await expect(
+      resolver.resolve('did:web:b.example.org', { allowMethods: ['web'] }),
+    ).resolves.toBeTruthy()
+  })
+
+  it('a failed in-flight resolution is not sticky', async () => {
+    let fail = true
+    const { http, calls } = fakeHttp(() => (fail ? { status: 503 } : {}))
+    const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() })
+
+    expect(await reasonOf(() => resolver.resolve(DID, { allowMethods: ['web'] }))).toBe('bad-status')
+    fail = false
+    await expect(resolver.resolve(DID, { allowMethods: ['web'] })).resolves.toBeTruthy()
+    expect(calls).toHaveLength(2)
+  })
+})
+
+/**
+ * 🩸 Review finding. `response-too-large` was UNREACHABLE: the adapter caps the
+ * stream, so a returned body can never exceed the cap, and the adapter's throw
+ * was swallowed into `fetch-failed`. The test that "proved" the branch was green
+ * only because the fake ignored the `maxBytes` contract the port documents.
+ */
+describe('resolve — the size cap is reachable from a contract-honouring adapter', () => {
+  it('maps the adapter cap error to response-too-large', async () => {
+    const http: DidWebFetch = {
+      getJson: vi.fn(async () => {
+        // What the real adapter does when the stream passes the cap.
+        throw new ResponseTooLargeError()
+      }),
+    }
+    const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() })
+    expect(await reasonOf(() => resolver.resolve(DID, { allowMethods: ['web'] }))).toBe(
+      'response-too-large',
+    )
+  })
+
+  it('counts BYTES, not UTF-16 code units, in the defensive check', async () => {
+    // 200 astral characters = 400 UTF-16 units but 800 UTF-8 bytes. A
+    // `String.length` guard at 500 would have let this through.
+    const { http } = fakeHttp(() => ({ body: '𝄞'.repeat(200) }))
+    const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() }, { maxBytes: 500 })
+    expect(await reasonOf(() => resolver.resolve(DID, { allowMethods: ['web'] }))).toBe(
+      'response-too-large',
+    )
+  })
+
+  it('still distinguishes an ordinary failure from a size failure', async () => {
+    const http: DidWebFetch = {
+      getJson: vi.fn(async () => {
+        throw new Error('connection refused')
+      }),
+    }
+    const resolver = createCounterpartyDidResolver({ http, clock: fakeClock() })
+    expect(await reasonOf(() => resolver.resolve(DID, { allowMethods: ['web'] }))).toBe(
+      'fetch-failed',
+    )
   })
 })
 

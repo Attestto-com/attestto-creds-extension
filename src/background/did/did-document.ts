@@ -43,6 +43,7 @@ export type DidDocumentReason =
   | 'no-verification-methods'
   | 'invalid-verification-method'
   | 'too-many-verification-methods'
+  | 'duplicate-verification-method-id'
 
 export type ParseDidDocumentResult =
   | { ok: true; value: DidDocument }
@@ -69,18 +70,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * legitimate, and copying it into our record would put someone else's secret in
  * our vault — reject the whole method.
  */
+/**
+ * base64url length of a 32-byte coordinate, unpadded: ceil(32 * 4 / 3) = 43.
+ *
+ * 🩸 Review finding. The first version validated only the ALPHABET, so `x: 'A'`
+ * was accepted for P-256, and `x: 'AAAAA'` (length ≡ 1 mod 4, not decodable as
+ * base64 at all) was too. That reproduced exactly the failure this function's
+ * own header claims to prevent — a key that sails through here and fails much
+ * later at signature time, where the cause is far harder to find.
+ */
+const COORD_LENGTH_32_BYTES = 43
+
 function parsePublicJwk(value: unknown): JsonWebKey | null {
   if (!isRecord(value)) return null
   if ('d' in value) return null
 
   const { kty, crv, x, y } = value
   if (typeof kty !== 'string' || typeof crv !== 'string' || typeof x !== 'string') return null
-  // base64url, no padding — the only encoding a JWK coordinate may use.
-  const isB64Url = (s: string): boolean => /^[A-Za-z0-9_-]+$/.test(s)
-  if (!isB64Url(x)) return null
+  // base64url, no padding, and the exact length the curve requires.
+  const isCoord = (s: string): boolean =>
+    /^[A-Za-z0-9_-]+$/.test(s) && s.length === COORD_LENGTH_32_BYTES
+  if (!isCoord(x)) return null
 
   if (kty === 'EC' && crv === 'P-256') {
-    if (typeof y !== 'string' || !isB64Url(y)) return null
+    if (typeof y !== 'string' || !isCoord(y)) return null
     return { kty, crv, x, y }
   }
   if (kty === 'OKP' && crv === 'Ed25519') {
@@ -117,17 +130,26 @@ function parseVerificationMethod(value: unknown, documentId: string): Verificati
  * Read a relationship array (`authentication`, `assertionMethod`), keeping only
  * string references that point at a method this document actually defines.
  *
- * The DID spec also allows an EMBEDDED method object in these arrays. We drop
- * embedded entries deliberately: an embedded key that appears in no
- * `verificationMethod` list is a key with no independent definition, and
- * supporting it would mean two code paths that can disagree about which keys a
- * document contains.
+ * Embedded method objects are also accepted: `parseDidDocument` has already
+ * promoted them into the single method list, so they are referenced here by
+ * their own id. There is still ONE list of keys — no second code path that
+ * could disagree about what the document contains.
  */
 function parseRelationship(value: unknown, knownIds: ReadonlySet<string>): readonly string[] {
   if (!Array.isArray(value)) return []
   const out: string[] = []
   for (const entry of value) {
-    if (typeof entry === 'string' && knownIds.has(entry)) out.push(entry)
+    // A string reference to a method this document defines...
+    if (typeof entry === 'string' && knownIds.has(entry)) {
+      out.push(entry)
+      continue
+    }
+    // ...or an EMBEDDED method, which `parseDidDocument` has already promoted
+    // into the single method list, so it is referenced here by its own id.
+    if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+      const id = (entry as Record<string, unknown>).id
+      if (typeof id === 'string' && knownIds.has(id)) out.push(id)
+    }
   }
   return out
 }
@@ -146,8 +168,32 @@ export function parseDidDocument(value: unknown, expectedDid: string): ParseDidD
   // function matters if this check is absent.
   if (value.id !== expectedDid) return { ok: false, reason: 'id-mismatch' }
 
-  const rawMethods = value.verificationMethod
-  if (!Array.isArray(rawMethods) || rawMethods.length === 0) {
+  /**
+   * 🩸 Review finding (interop). The spec also allows a verification method to
+   * be EMBEDDED as an object inside a relationship array, with no top-level
+   * `verificationMethod` entry. The first version ignored embedded methods
+   * entirely, which produced two wrong outcomes on documents that are perfectly
+   * valid: a document whose only key is embedded was rejected as
+   * `no-verification-methods`, and a document with both forms came back with
+   * `authentication: []` — turning "we do not read this shape" into the
+   * materially different claim "this DID has no authentication key", which
+   * `senderResolvable` then acted on.
+   *
+   * Embedded methods are collected here and treated exactly like top-level
+   * ones, so there is still ONE list of keys and no second code path that could
+   * disagree about what a document contains.
+   */
+  const rawTop = Array.isArray(value.verificationMethod) ? value.verificationMethod : []
+  const embedded: unknown[] = []
+  for (const key of ['authentication', 'assertionMethod'] as const) {
+    const arr = value[key]
+    if (Array.isArray(arr)) {
+      for (const entry of arr) if (isRecord(entry)) embedded.push(entry)
+    }
+  }
+
+  const rawMethods = [...rawTop, ...embedded]
+  if (rawMethods.length === 0) {
     return { ok: false, reason: 'no-verification-methods' }
   }
   if (rawMethods.length > MAX_VERIFICATION_METHODS) {
@@ -155,6 +201,7 @@ export function parseDidDocument(value: unknown, expectedDid: string): ParseDidD
   }
 
   const methods: VerificationMethod[] = []
+  const seenIds = new Set<string>()
   for (const raw of rawMethods) {
     const method = parseVerificationMethod(raw, expectedDid)
     // Fail the whole document rather than skipping the bad entry: a document
@@ -162,10 +209,21 @@ export function parseDidDocument(value: unknown, expectedDid: string): ParseDidD
     // silently resolving a SUBSET of the keys means a later "this key is not in
     // the document" verdict could be an artefact of our own parser.
     if (method === null) return { ok: false, reason: 'invalid-verification-method' }
+    // 🩸 Review finding. Duplicate ids carrying DIFFERENT keys were both kept,
+    // so which key a consumer got depended on document order — key-substitution
+    // ambiguity waiting for its first consumer. An id must name one key.
+    if (seenIds.has(method.id)) {
+      const first = methods.find((m) => m.id === method.id)
+      if (JSON.stringify(first?.publicKeyJwk) !== JSON.stringify(method.publicKeyJwk)) {
+        return { ok: false, reason: 'duplicate-verification-method-id' }
+      }
+      continue // an exact repeat is redundant, not ambiguous
+    }
+    seenIds.add(method.id)
     methods.push(method)
   }
 
-  const knownIds = new Set(methods.map((m) => m.id))
+  const knownIds = seenIds
 
   return {
     ok: true,

@@ -39,6 +39,7 @@ import { parseDid, type DidSyntaxReason } from './did-syntax'
 import { buildDidWebUrl, type DidWebUrlReason } from './did-web-url'
 import { parseDidDocument, type DidDocument, type DidDocumentReason } from './did-document'
 import { didToPublicJwk, didJwkVerificationMethod } from '@/utils/did-jwk'
+import { ResponseTooLargeError } from './did-web-fetch.adapter'
 import type { Clock } from '@/background/ports/ports'
 
 export type DidResolutionReason =
@@ -91,8 +92,10 @@ export interface DidWebFetch {
 export interface DidResolverOptions {
   /** How long a successfully resolved document stays fresh. Default 5 minutes. */
   ttlMs?: number
-  /** Max network resolutions per window. Default 30. */
+  /** Max network resolutions per host per window. Default 10. */
   rateLimitMax?: number
+  /** Max network resolutions across ALL hosts per window. Default 30. */
+  globalRateLimitMax?: number
   /** Rate-limit window. Default 60s. */
   rateLimitWindowMs?: number
   /** Per-request network timeout. Default 5s. */
@@ -105,7 +108,8 @@ export interface DidResolverOptions {
 
 const DEFAULTS = {
   ttlMs: 5 * 60_000,
-  rateLimitMax: 30,
+  rateLimitMax: 10,
+  globalRateLimitMax: 30,
   rateLimitWindowMs: 60_000,
   timeoutMs: 5_000,
   maxBytes: 64 * 1024,
@@ -131,7 +135,16 @@ export interface CounterpartyDidResolver {
 
 interface CacheEntry {
   document: DidDocument
+  /** When the entry was written. Kept so a BACKWARDS clock jump is detectable. */
+  cachedAt: number
   expiresAt: number
+}
+
+/** Host of a built did:web URL, used to scope the rate limit. */
+function hostOf(url: string): string {
+  const withoutScheme = url.slice('https://'.length)
+  const slash = withoutScheme.indexOf('/')
+  return slash === -1 ? withoutScheme : withoutScheme.slice(0, slash)
 }
 
 export function createCounterpartyDidResolver(
@@ -142,11 +155,25 @@ export function createCounterpartyDidResolver(
   const cache = new Map<string, CacheEntry>()
   /** Timestamps of recent network resolutions, pruned to the current window. */
   let recentFetches: number[] = []
+  /** Per-host timestamps, so one hostile host cannot spend everyone's budget. */
+  const hostFetches = new Map<string, number[]>()
+  /**
+   * Resolutions currently in flight, keyed by DID.
+   *
+   * 🩸 Review finding. Without this, two concurrent resolves of the SAME DID
+   * issued two fetches and spent two rate-limit tokens for one logical
+   * resolution. In an MV3 worker `chrome.runtime.onMessage` handlers run
+   * concurrently, so N queued messages meant N fetches.
+   */
+  const inFlight = new Map<string, Promise<DidDocument>>()
 
   function readCache(did: string, now: number): DidDocument | null {
     const entry = cache.get(did)
     if (!entry) return null
-    if (now >= entry.expiresAt) {
+    // 🩸 A backwards clock jump made `expiresAt` unreachably distant, so a
+    // revoked key kept being served for the size of the correction. Treat
+    // "written in the future" as expired rather than as fresh.
+    if (now >= entry.expiresAt || now < entry.cachedAt) {
       cache.delete(did)
       return null
     }
@@ -162,14 +189,50 @@ export function createCounterpartyDidResolver(
       const oldest = cache.keys().next()
       if (!oldest.done) cache.delete(oldest.value)
     }
-    cache.set(did, { document, expiresAt: now + cfg.ttlMs })
+    cache.set(did, { document, cachedAt: now, expiresAt: now + cfg.ttlMs })
   }
 
-  function checkRateLimit(now: number): boolean {
+  /**
+   * Per-host budget with a global backstop.
+   *
+   * 🩸 Review finding. A single global counter, spent BEFORE the fetch and never
+   * refunded on failure (failures are deliberately not cached), meant one
+   * hostile page could burn the whole budget against a dead host and every
+   * honest counterparty was refused for the rest of the window — which dispatch
+   * surfaces as `peer-verification-failed`. Demonstrated: 5 failing resolves of
+   * one host locked out a never-before-seen host.
+   *
+   * Per-host is the fix: a hostile host exhausts only its own budget. The global
+   * cap stays as a backstop against a page cycling through many hosts, but is
+   * set high enough that it is not the binding constraint in normal use.
+   *
+   * Timestamps ahead of `now` are dropped, not kept: a BACKWARDS clock
+   * correction would otherwise leave pre-correction entries in the window
+   * forever, locking the host out for window + skew.
+   */
+  function checkRateLimit(host: string, now: number): boolean {
     const windowStart = now - cfg.rateLimitWindowMs
-    recentFetches = recentFetches.filter((t) => t > windowStart)
-    if (recentFetches.length >= cfg.rateLimitMax) return false
+    const inWindow = (t: number): boolean => t > windowStart && t <= now
+
+    recentFetches = recentFetches.filter(inWindow)
+    if (recentFetches.length >= cfg.globalRateLimitMax) return false
+
+    const forHost = (hostFetches.get(host) ?? []).filter(inWindow)
+    if (forHost.length >= cfg.rateLimitMax) {
+      hostFetches.set(host, forHost)
+      return false
+    }
+
+    forHost.push(now)
+    hostFetches.set(host, forHost)
     recentFetches.push(now)
+
+    // Bound the per-host map so a page cycling hosts cannot grow it without end.
+    if (hostFetches.size > cfg.maxCacheEntries) {
+      for (const [key, times] of hostFetches) {
+        if (times.every((t) => !inWindow(t))) hostFetches.delete(key)
+      }
+    }
     return true
   }
 
@@ -209,7 +272,9 @@ export function createCounterpartyDidResolver(
     const url = buildDidWebUrl(methodSpecificId)
     if (!url.ok) throw new DidResolutionError(url.reason, did)
 
-    if (!checkRateLimit(now)) throw new DidResolutionError('rate-limited', did)
+    if (!checkRateLimit(hostOf(url.value), now)) {
+      throw new DidResolutionError('rate-limited', did)
+    }
 
     let response: { status: number; contentType: string | null; body: string }
     try {
@@ -217,15 +282,30 @@ export function createCounterpartyDidResolver(
         timeoutMs: cfg.timeoutMs,
         maxBytes: cfg.maxBytes,
       })
-    } catch {
-      // Includes the adapter's redirect refusal, timeout, and size abort. The
-      // reason is deliberately coarse: distinguishing them here would hand a
-      // calling page a probe for what is reachable from the user's network.
+    } catch (err) {
+      // 🩸 The size abort used to be swallowed into `fetch-failed`, leaving the
+      // `response-too-large` branch below UNREACHABLE — the adapter caps the
+      // stream, so a returned body can never exceed the cap. Review found the
+      // test that "proved" that branch was green only because the fake adapter
+      // ignored the `maxBytes` contract the port documents. Distinguishing the
+      // adapter's own cap error makes the reason reachable from a
+      // contract-honouring adapter.
+      if (err instanceof ResponseTooLargeError) {
+        throw new DidResolutionError('response-too-large', did)
+      }
+      // Everything else — redirect refusal, timeout, DNS, connection — stays
+      // coarse on purpose: distinguishing them hands a calling page a probe for
+      // what is reachable from the user's network.
       throw new DidResolutionError('fetch-failed', did)
     }
 
     if (response.status !== 200) throw new DidResolutionError('bad-status', did)
-    if (response.body.length > cfg.maxBytes) throw new DidResolutionError('response-too-large', did)
+    // Defence in depth against an adapter that does not honour the cap. Counted
+    // in BYTES: `String.length` is UTF-16 code units, which undercounts
+    // multi-byte UTF-8 (review: 455 units / 615 bytes passed a 500 guard).
+    if (new TextEncoder().encode(response.body).byteLength > cfg.maxBytes) {
+      throw new DidResolutionError('response-too-large', did)
+    }
 
     // A DID document is JSON. Requiring the declared type stops an HTML error
     // page or an intranet portal from being parsed as one on the off chance its
@@ -272,11 +352,27 @@ export function createCounterpartyDidResolver(
       // limited nor cached: there is nothing to spend and nothing to stale.
       if (method === 'jwk') return resolveJwk(did)
 
-      const document = await resolveWeb(did, methodSpecificId, now)
+      // Join an in-flight resolution for the same DID rather than starting a
+      // second one. Failures are removed from the map so they are not sticky —
+      // this coalesces concurrent work, it is not a negative cache.
+      const existing = inFlight.get(did)
+      if (existing) return await existing
 
-      // 7 — cache the validated document only
-      writeCache(did, document, now)
-      return document
+      const work = (async (): Promise<DidDocument> => {
+        const document = await resolveWeb(did, methodSpecificId, now)
+        // 7 — cache the validated document. The clock is re-read AFTER the
+        // network round-trip: anchoring the TTL to the pre-fetch timestamp gave
+        // a 4.5s fetch under a 5s TTL only 500ms of cache life.
+        writeCache(did, document, deps.clock.now())
+        return document
+      })()
+
+      inFlight.set(did, work)
+      try {
+        return await work
+      } finally {
+        inFlight.delete(did)
+      }
     },
   }
 }

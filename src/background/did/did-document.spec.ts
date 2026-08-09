@@ -83,14 +83,16 @@ describe('parseDidDocument — the id must match the DID that was requested', ()
     })
   })
 
-  it('never returns a value whose id differs from the requested DID', () => {
-    // The structural version of the above: whatever comes out is keyed to what
-    // was asked for, so a caller cannot be handed someone else's document.
-    for (const candidate of ['did:web:evil.example', '', null, undefined, DID]) {
-      const result = parseDidDocument(doc({ id: candidate }), DID)
-      if (result.ok) expect(result.value.id).toBe(DID)
-    }
-  })
+  /*
+   * REMOVED: "never returns a value whose id differs from the requested DID".
+   *
+   * Review proved it could not fail. `parseDidDocument` assigns `id: expectedDid`
+   * literally, so the assertion mirrored a constant; mutating the assignment to
+   * `id: value.id` reddened nothing in the whole did suite, and 4 of its 5 loop
+   * candidates asserted nothing at all because of the `if (result.ok)` guard.
+   * It was billed as the structural backstop for the `id` check and backstopped
+   * nothing. The four tests above DO bite (verified by deleting the check).
+   */
 })
 
 describe('parseDidDocument — verification methods are scoped to the subject', () => {
@@ -236,6 +238,84 @@ describe('parseDidDocument — JWK validation', () => {
   })
 })
 
+/**
+ * 🩸 Review finding. The first version checked the base64url ALPHABET but not
+ * the LENGTH, so a 1-character coordinate passed for P-256 — reproducing the
+ * exact failure the function's header claims to prevent.
+ */
+describe('parseDidDocument — coordinate length', () => {
+  function withJwk(publicKeyJwk: unknown) {
+    return parseDidDocument(
+      doc({
+        verificationMethod: [{ id: VM_ID, type: 'JsonWebKey2020', controller: DID, publicKeyJwk }],
+      }),
+      DID,
+    )
+  }
+
+  it.each([
+    ['a 1-char P-256 x', { kty: 'EC', crv: 'P-256', x: 'A', y: P256_JWK.y }],
+    ['a 1-char P-256 y', { kty: 'EC', crv: 'P-256', x: P256_JWK.x, y: 'A' }],
+    // length 5 ≡ 1 mod 4 — not decodable as base64 at all.
+    ['an undecodable length', { kty: 'EC', crv: 'P-256', x: 'AAAAA', y: P256_JWK.y }],
+    ['an over-long coordinate', { kty: 'EC', crv: 'P-256', x: `${P256_JWK.x}AAAA`, y: P256_JWK.y }],
+    ['a 1-char Ed25519 x', { kty: 'OKP', crv: 'Ed25519', x: 'A' }],
+  ])('rejects %s', (_label, jwk) => {
+    expect(withJwk(jwk)).toEqual({ ok: false, reason: 'invalid-verification-method' })
+  })
+
+  it('POSITIVE CONTROL: a correctly sized key is still accepted', () => {
+    expect(withJwk(P256_JWK).ok).toBe(true)
+    expect(
+      withJwk({ kty: 'OKP', crv: 'Ed25519', x: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo' }).ok,
+    ).toBe(true)
+  })
+})
+
+/**
+ * 🩸 Review finding. Two entries sharing an id but carrying DIFFERENT keys were
+ * both kept, so which key a consumer received depended on document order.
+ */
+describe('parseDidDocument — duplicate verification-method ids', () => {
+  const other = { ...P256_JWK, x: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' }
+
+  it('rejects the same id carrying two different keys', () => {
+    expect(
+      parseDidDocument(
+        doc({
+          verificationMethod: [
+            { id: VM_ID, type: 'JsonWebKey2020', controller: DID, publicKeyJwk: P256_JWK },
+            { id: VM_ID, type: 'JsonWebKey2020', controller: DID, publicKeyJwk: other },
+          ],
+        }),
+        DID,
+      ),
+    ).toEqual({ ok: false, reason: 'duplicate-verification-method-id' })
+  })
+
+  it('tolerates an exact repeat, which is redundant rather than ambiguous', () => {
+    const result = parseDidDocument(
+      doc({
+        verificationMethod: [
+          { id: VM_ID, type: 'JsonWebKey2020', controller: DID, publicKeyJwk: P256_JWK },
+          { id: VM_ID, type: 'JsonWebKey2020', controller: DID, publicKeyJwk: P256_JWK },
+        ],
+      }),
+      DID,
+    )
+    expect(result.ok && result.value.verificationMethod).toHaveLength(1)
+  })
+
+  it('an id never maps to more than one key in the output', () => {
+    // Structural referent: whatever survives, no id appears twice.
+    const result = parseDidDocument(doc(), DID)
+    if (result.ok) {
+      const ids = result.value.verificationMethod.map((m) => m.id)
+      expect(new Set(ids).size).toBe(ids.length)
+    }
+  })
+})
+
 describe('parseDidDocument — relationships', () => {
   it('drops references to methods the document does not define', () => {
     const result = parseDidDocument(
@@ -245,7 +325,16 @@ describe('parseDidDocument — relationships', () => {
     expect(result.ok && result.value.authentication).toEqual([VM_ID])
   })
 
-  it('drops embedded method objects rather than treating them as keys', () => {
+  /**
+   * 🩸 Review finding (interop). This previously asserted that embedded methods
+   * were DROPPED. That looked tidy and was wrong in a way that mattered: a
+   * document whose only key is embedded — which the spec permits and real
+   * did:web issuers emit — came back with `authentication: []`, and
+   * `senderResolvable` acted on that as "this DID has no authentication key".
+   * Turning "we do not read this shape" into a claim about the DID is a
+   * different and false statement.
+   */
+  it('promotes an embedded method rather than dropping it', () => {
     const result = parseDidDocument(
       doc({
         authentication: [
@@ -254,7 +343,40 @@ describe('parseDidDocument — relationships', () => {
       }),
       DID,
     )
-    expect(result.ok && result.value.authentication).toEqual([])
+    expect(result.ok && result.value.authentication).toEqual([`${DID}#embedded`])
+    expect(result.ok && result.value.verificationMethod.map((m) => m.id)).toContain(
+      `${DID}#embedded`,
+    )
+  })
+
+  it('accepts a document whose ONLY key is embedded', () => {
+    const embeddedOnly = {
+      id: DID,
+      authentication: [
+        { id: `${DID}#only`, type: 'JsonWebKey2020', controller: DID, publicKeyJwk: P256_JWK },
+      ],
+    }
+    const result = parseDidDocument(embeddedOnly, DID)
+    expect(result.ok).toBe(true)
+    expect(result.ok && result.value.authentication).toEqual([`${DID}#only`])
+  })
+
+  it('still scopes an embedded method to the subject', () => {
+    // Promotion must not become a way to smuggle another DID's key in.
+    const result = parseDidDocument(
+      doc({
+        authentication: [
+          {
+            id: 'did:web:evil.example#k',
+            type: 'JsonWebKey2020',
+            controller: 'did:web:evil.example',
+            publicKeyJwk: P256_JWK,
+          },
+        ],
+      }),
+      DID,
+    )
+    expect(result).toEqual({ ok: false, reason: 'invalid-verification-method' })
   })
 
   it('defaults a missing relationship to empty rather than to every key', () => {

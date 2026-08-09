@@ -43,9 +43,11 @@ export const ALLOWED_PEER_METHODS = ['jwk', 'web'] as const
 /**
  * Which counterparty check a route requires.
  *
- * `vmBinding` — the claimed verification method really is listed in the claimed
- *   DID's document. Stops a page asserting an arbitrary key URI for a DID whose
- *   document does not contain it. Does NOT prove the sender controls that key.
+ * `vmBinding` — the claimed verification method is one the claimed DID's
+ *   document authorises for AUTHENTICATION or ASSERTION. Stops a page asserting
+ *   an arbitrary key URI for a DID whose document does not contain it, and stops
+ *   a key the document contains but does not authorise to sign. Does NOT prove
+ *   the sender controls that key.
  *
  * `senderResolvable` — the DID in the message envelope parses, uses an allowed
  *   method, and resolves to a document with at least one authentication key.
@@ -77,9 +79,24 @@ function readString(value: unknown, key: string): string | null {
 /**
  * `vmBinding` — used by `DID_SYNC`.
  *
- * The handler writes `payload.verificationMethod` into the vault and later flows
- * read it as the signer reference. Before this check, a page could name any URI
- * it liked. Now the URI must appear in the document the DID itself publishes.
+ * The handler writes `payload.verificationMethod` into `vault.verificationMethod`
+ * and `linkedIdentities[].verificationMethod`, which SIGN_DOCUMENT, PAYMENT and
+ * SIGN_ATTESTTO_PDF later read as the SIGNER reference. So the question is not
+ * "is this key in the document" but "does the document authorise this key to
+ * sign on the subject's behalf".
+ *
+ * 🩸 The first version asked the weaker question — membership in
+ * `verificationMethod[]` — and therefore accepted a key listed only under
+ * `keyAgreement`, i.e. an X25519 encryption key that can never produce a
+ * signature, as well as a key in no relationship at all. Review caught it via an
+ * asymmetry that should have been obvious: `senderResolvable` already refused a
+ * document with no authentication key, while this check — which gates PERSISTED
+ * SIGNER MATERIAL rather than a notification — accepted one.
+ *
+ * `authentication` OR `assertionMethod`: signing a document is an assertion,
+ * authenticating to a relying party is not, and this one field backs both flows.
+ * `keyAgreement` and `capabilityInvocation` are excluded because neither
+ * authorises the signature this value will be used to produce.
  */
 const vmBinding: PeerCheck = async ({ payload, resolver }) => {
   const holderDid = readString(payload, 'holderDid')
@@ -94,10 +111,14 @@ const vmBinding: PeerCheck = async ({ payload, resolver }) => {
     return false
   }
 
-  // Exact match against a method the document actually defines. `resolve`
-  // already guaranteed every method id is scoped to `holderDid`, so this cannot
-  // be satisfied by a key belonging to another DID.
-  return document.verificationMethod.some((method) => method.id === verificationMethod)
+  // `resolve` already guaranteed every id in these arrays is defined by this
+  // document and scoped to `holderDid`, so membership here cannot be satisfied
+  // by another DID's key.
+  const authorised =
+    document.authentication.includes(verificationMethod) ||
+    document.assertionMethod.includes(verificationMethod)
+
+  return authorised
 }
 
 /**
@@ -148,7 +169,7 @@ export const PEER_CHECKS: Record<PeerCheckName, PeerCheck> = {
  * reason — the pattern already existed in the router and this file did not
  * follow it.
  */
-const PEER_CHECK_NAMES = new Set<string>(Object.keys(PEER_CHECKS))
+// (Lookup is done with `hasOwnProperty` inside `runPeerCheck`.)
 
 /**
  * Run the check a route declared.
@@ -161,14 +182,26 @@ const PEER_CHECK_NAMES = new Set<string>(Object.keys(PEER_CHECKS))
 export async function runPeerCheck(
   descriptor: VerifyPeerDescriptor,
   input: PeerCheckInput,
+  /**
+   * The registry to look the check up in. Defaults to the real one; production
+   * never passes this. It exists because review showed the `=== true`
+   * coercion below had NO test — removing it reddened nothing, since every real
+   * check already returns a boolean. A seam that lets a spec register a check
+   * returning a truthy non-boolean is the only way to exercise it.
+   */
+  checks: Readonly<Record<string, PeerCheck>> = PEER_CHECKS,
 ): Promise<boolean> {
   const name: unknown = descriptor?.check
-  if (typeof name !== 'string' || !PEER_CHECK_NAMES.has(name)) return false
+  if (typeof name !== 'string') return false
+  // Own-property lookup against the registry's own keys — never a `for..in` or a
+  // bare index, both of which reach `Object.prototype`.
+  if (!Object.prototype.hasOwnProperty.call(checks, name)) return false
 
-  const check = PEER_CHECKS[name as PeerCheckName]
+  const check = checks[name]
   if (typeof check !== 'function') return false
 
-  // Coerced, not returned raw: a check must decide true/false, and anything
-  // else (a truthy string, a Promise of an object) is not a decision.
+  // Coerced, not returned raw: a check must DECIDE, and a truthy string or an
+  // object is not a decision. This is the second half of the prototype fix —
+  // `Object.prototype.toString()` returns '[object …]', which is truthy.
   return (await check(input)) === true
 }

@@ -91,6 +91,101 @@ describe('buildDidWebUrl — SSRF host rejections', () => {
 })
 
 /**
+ * 🩸 Review finding (high). Wildcard-DNS services resolve an embedded address
+ * with no registration, in dotted or dashed form. Every one of these is a
+ * multi-label LDH name with a public suffix, so the IP-literal and suffix
+ * checks were structurally incapable of seeing them — the octal/hex work above
+ * raised the bar from "type an IP" to "type an IP with dashes".
+ */
+describe('buildDidWebUrl — wildcard-DNS IP encoders', () => {
+  it.each([
+    '169.254.169.254.nip.io',
+    '169-254-169-254.sslip.io',
+    '127-0-0-1.traefik.me',
+    '10-1-2-3.nip.io',
+    '192-168-0-1.localtest.me',
+    '127.0.0.1.xip.io',
+    '10.0.0.5.nip.io',
+  ])('rejects %s', (host) => {
+    expect(buildDidWebUrl(host)).toEqual({ ok: false, reason: 'ip-literal-host' })
+  })
+
+  it('rejects the shape, not a service blocklist', () => {
+    // A wildcard service nobody has heard of must fail the same way — the
+    // control is the dashed/dotted quad, not the domain.
+    expect(buildDidWebUrl('169-254-169-254.some-new-service.example').ok).toBe(false)
+    expect(buildDidWebUrl('10.0.0.5.whatever.test').ok).toBe(false)
+  })
+
+  it('does not reject an ordinary host that merely contains digits and dashes', () => {
+    // Positive control: without this, rejecting everything would pass the block.
+    expect(buildDidWebUrl('id-2.example.org').ok).toBe(true)
+    expect(buildDidWebUrl('web3-wallet.example.com').ok).toBe(true)
+    expect(buildDidWebUrl('a1-b2-c3.example.com').ok).toBe(true)
+  })
+})
+
+/**
+ * 🩸 Review finding (high). The old list's comment claimed RFC 6761 coverage
+ * while containing none of those names. Each of these was demonstrated
+ * reachable.
+ */
+describe('buildDidWebUrl — reserved zones the old list missed', () => {
+  it.each([
+    // The canonical in-cluster Kubernetes API server — and it listens on 443,
+    // the one port this filter permits.
+    'kubernetes.default.svc',
+    'vault.service.consul',
+    'x.test',
+    'x.invalid',
+    'x.example',
+    'x.onion',
+    'x.alt',
+    'x.arpa',
+    'host.localdomain',
+    'thing.cluster',
+    'svc.mesh',
+    'pc.workgroup',
+    'box.domain',
+    'router.dhcp',
+  ])('rejects %s', (host) => {
+    expect(buildDidWebUrl(host)).toEqual({ ok: false, reason: 'reserved-suffix-host' })
+  })
+
+  it('reserves .arpa as a whole, not only its three named sub-zones', () => {
+    expect(buildDidWebUrl('x.arpa').ok).toBe(false)
+    expect(buildDidWebUrl('1.2.3.4.in-addr.arpa').ok).toBe(false)
+    expect(buildDidWebUrl('nas.home.arpa').ok).toBe(false)
+  })
+})
+
+/**
+ * 🩸 Review finding (medium). `toLowerCase()` is Unicode-aware: U+212A KELVIN
+ * SIGN folds to ASCII 'k', so a DID containing no ASCII 'k' fetched a host that
+ * did. The host on the wire differed from the host the DID named.
+ */
+describe('buildDidWebUrl — Unicode case folding cannot change the host', () => {
+  it('rejects the KELVIN SIGN rather than folding it to k', () => {
+    // %E2%84%AA is U+212A. Previously emitted kubernetes.default.svc.
+    expect(buildDidWebUrl('%E2%84%AAubernetes.default.svc')).toEqual({
+      ok: false,
+      reason: 'invalid-host-characters',
+    })
+    expect(buildDidWebUrl('loca%E2%84%AAhost.com')).toEqual({
+      ok: false,
+      reason: 'invalid-host-characters',
+    })
+  })
+
+  it('never emits a host containing a character absent from the input', () => {
+    // The structural version: whatever comes out is ASCII from the input.
+    const result = buildDidWebUrl('%E2%84%AAubernetes.default.svc')
+    if (result.ok) expect(result.value).not.toContain('kubernetes')
+    expect(result.ok).toBe(false)
+  })
+})
+
+/**
  * A decoded path segment must not be able to climb out of the path or change
  * the authority.
  */
@@ -110,6 +205,27 @@ describe('buildDidWebUrl — path traversal', () => {
     const result = buildDidWebUrl('example.com:a%20b')
     // Decodes to `a b`, which must not appear unencoded in a URL.
     expect(result).toEqual({ ok: true, value: 'https://example.com/a%20b/did.json' })
+  })
+
+  /**
+   * 🩸 Review finding. The checks see ONE decoding round. `%252e%252e%252f`
+   * survived onto the wire as `%252e%252e%252f`, which a server or proxy that
+   * decodes twice reads as `../../`.
+   */
+  it.each([
+    'example.com:%252e%252e%252f%252e%252e%252fadmin',
+    'example.com:%252e%252e',
+    'example.com:%252f',
+    'example.com:%2525',
+  ])('rejects the double-encoded %j', (msid) => {
+    expect(buildDidWebUrl(msid)).toEqual({ ok: false, reason: 'path-traversal' })
+  })
+
+  it('never emits a residual percent sequence that could decode again', () => {
+    // Independent referent: scan the emitted URL for a double-encoded marker.
+    const result = buildDidWebUrl('example.com:%252e%252e%252fadmin')
+    if (result.ok) expect(result.value).not.toContain('%252')
+    expect(result.ok).toBe(false)
   })
 
   it('cannot be made to emit a second authority', () => {

@@ -13,7 +13,12 @@ const DID = 'did:web:peer.example'
 const VM = `${DID}#key-1`
 
 function resolverStub(
-  over: { vmIds?: string[]; authentication?: string[]; throws?: boolean } = {},
+  over: {
+    vmIds?: string[]
+    authentication?: string[]
+    assertionMethod?: string[]
+    throws?: boolean
+  } = {},
 ) {
   const calls: { did: string; allowMethods: readonly string[] }[] = []
   const resolver: CounterpartyDidResolver = {
@@ -30,7 +35,7 @@ function resolverStub(
           publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'aa', y: 'bb' },
         })),
         authentication: over.authentication ?? ids,
-        assertionMethod: ids,
+        assertionMethod: over.assertionMethod ?? ids,
       }
     }),
   }
@@ -45,7 +50,7 @@ describe('vmBinding — the claimed verification method must be in the document'
       { payload: { holderDid: DID, verificationMethod: VM }, resolver },
     )
     expect(ok).toBe(true)
-    expect(calls).toEqual([{ did: DID, allowMethods: ALLOWED_PEER_METHODS }])
+    expect(calls).toEqual([{ did: DID, allowMethods: ['jwk', 'web'] }])
   })
 
   it('🔒 rejects a method the document does NOT list', async () => {
@@ -103,6 +108,73 @@ describe('vmBinding — the claimed verification method must be in the document'
     expect(calls).toEqual([])
   })
 
+  /**
+   * Review finding (high). The first version checked membership in
+   * `verificationMethod[]` — mere PRESENCE in the document. But `did-sync`
+   * persists this value as the SIGNER reference that SIGN_DOCUMENT, PAYMENT and
+   * SIGN_ATTESTTO_PDF later read, so presence is the wrong question. A key
+   * listed only under `keyAgreement` is an encryption key and can never sign.
+   *
+   * The tell was an asymmetry: `senderResolvable` already refused a document
+   * with no authentication key, while `vmBinding` — which gates persisted
+   * signer material rather than a notification — accepted it.
+   */
+  it('🔒 rejects a key that is in the document but in NO usable relationship', async () => {
+    const { resolver } = resolverStub({ authentication: [], assertionMethod: [], vmIds: [VM] })
+    const ok = await runPeerCheck(
+      { check: 'vmBinding' },
+      { payload: { holderDid: DID, verificationMethod: VM }, resolver },
+    )
+    expect(ok).toBe(false)
+  })
+
+  it('🔒 rejects an encryption-only (keyAgreement) key as a signer reference', async () => {
+    const sig = `${DID}#sig`
+    const enc = `${DID}#enc`
+    // Both keys are in verificationMethod[]; only `sig` can authenticate/assert.
+    const { resolver } = resolverStub({ vmIds: [sig, enc], authentication: [sig], assertionMethod: [sig] })
+    expect(
+      await runPeerCheck(
+        { check: 'vmBinding' },
+        { payload: { holderDid: DID, verificationMethod: enc }, resolver },
+      ),
+    ).toBe(false)
+    // POSITIVE CONTROL: the signing key from the same document is accepted, so
+    // the rejection above is about the relationship, not a blanket refusal.
+    expect(
+      await runPeerCheck(
+        { check: 'vmBinding' },
+        { payload: { holderDid: DID, verificationMethod: sig }, resolver },
+      ),
+    ).toBe(true)
+  })
+
+  it('accepts a key listed only under assertionMethod', async () => {
+    // Signing a document is an assertion; authentication is not the only
+    // relationship that legitimately backs this field.
+    const { resolver } = resolverStub({ vmIds: [VM], authentication: [] })
+    // resolverStub puts vmIds into assertionMethod unconditionally.
+    const ok = await runPeerCheck(
+      { check: 'vmBinding' },
+      { payload: { holderDid: DID, verificationMethod: VM }, resolver },
+    )
+    expect(ok).toBe(true)
+  })
+
+  it('vmBinding is no weaker than senderResolvable on the same document', async () => {
+    // The asymmetry that exposed the defect, pinned so it cannot come back:
+    // the check gating PERSISTED SIGNER MATERIAL must not accept a document
+    // that the check gating a mere notification rejects.
+    const { resolver: r1 } = resolverStub({ authentication: [], assertionMethod: [], vmIds: [VM] })
+    const { resolver: r2 } = resolverStub({ authentication: [], assertionMethod: [], vmIds: [VM] })
+    const vm = await runPeerCheck(
+      { check: 'vmBinding' },
+      { payload: { holderDid: DID, verificationMethod: VM }, resolver: r1 },
+    )
+    const sr = await runPeerCheck({ check: 'senderResolvable' }, { payload: { from: DID }, resolver: r2 })
+    if (!sr) expect(vm).toBe(false)
+  })
+
   it('constrains the resolver to the allowed methods', async () => {
     const { resolver, calls } = resolverStub()
     await runPeerCheck(
@@ -122,7 +194,7 @@ describe('senderResolvable — the claimed sender must resolve', () => {
     expect(await runPeerCheck({ check: 'senderResolvable' }, { payload: { from: DID }, resolver })).toBe(
       true,
     )
-    expect(calls).toEqual([{ did: DID, allowMethods: ALLOWED_PEER_METHODS }])
+    expect(calls).toEqual([{ did: DID, allowMethods: ['jwk', 'web'] }])
   })
 
   it('rejects a sender that does not resolve', async () => {
@@ -199,6 +271,56 @@ describe('the check registry is total and fail-closed', () => {
       ).toBe(false)
     },
   )
+
+  /**
+   * 🩸 Review finding. Removing the `=== true` coercion reddened NOTHING —
+   * every real check returns a boolean, so the second half of the prototype fix
+   * was untested. And the prototype test below reddened for the WRONG reason
+   * when the own-key guard was removed (a TypeError, not an observed fail-open).
+   * A registry whose check returns a truthy non-boolean exercises the coercion
+   * directly.
+   */
+  it('a check returning a truthy NON-boolean is treated as a refusal', async () => {
+    const { resolver } = resolverStub()
+    const hostile = {
+      // Exactly what Object.prototype.toString() would have returned.
+      lying: (async () => '[object Undefined]') as unknown as (typeof PEER_CHECKS)['vmBinding'],
+    }
+    const result = await runPeerCheck(
+      { check: 'lying' } as unknown as VerifyPeerDescriptor,
+      { payload: { from: DID }, resolver },
+      hostile,
+    )
+    expect(result).toBe(false)
+  })
+
+  it('a check returning a genuine true is still accepted through the same path', async () => {
+    // POSITIVE CONTROL: without it, a coercion of `return false` would pass above.
+    const { resolver } = resolverStub()
+    const honest = { honest: (async () => true) as (typeof PEER_CHECKS)['vmBinding'] }
+    expect(
+      await runPeerCheck(
+        { check: 'honest' } as unknown as VerifyPeerDescriptor,
+        { payload: { from: DID }, resolver },
+        honest,
+      ),
+    ).toBe(true)
+  })
+
+  it('a prototype-polluting name misses even a registry that has no own keys', async () => {
+    const { resolver } = resolverStub()
+    // An empty registry still inherits Object.prototype members.
+    for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+      expect(
+        await runPeerCheck(
+          { check: name } as unknown as VerifyPeerDescriptor,
+          { payload: { from: DID }, resolver },
+          {},
+        ),
+        `${name} selected something`,
+      ).toBe(false)
+    }
+  })
 
   it('a prototype-polluting check name cannot select a function', async () => {
     const { resolver } = resolverStub()

@@ -324,11 +324,44 @@ describe('dispatch — stage 6 verifyPeer (executed descriptor)', () => {
  * be one `dispatch` can execute. A route declaring a check name with no
  * implementation would be inert again — the exact Epic-1 defect.
  */
+/**
+ * 🩸 The EXPECTED map is written out here, NOT derived from `MESSAGE_ROUTES`.
+ *
+ * The first version of this block computed its own subject —
+ * `keys(MESSAGE_ROUTES).filter(k => k.verifyPeer !== undefined)` — so a route
+ * that stopped declaring a check silently left the loop instead of failing it.
+ * Review demonstrated both holes against the full suite: deleting `DID_SYNC`'s
+ * `vmBinding` left 1041 tests green, and swapping it to `senderResolvable` (a
+ * check that reads `payload.from`, a field DID_SYNC does not even carry) also
+ * left 1041 green. The story's headline control could be deleted or silently
+ * downgraded to nothing.
+ *
+ * That is Epic 1's inert-declaration defect re-entering through the registry
+ * instead of through `dispatch`. A guard whose subject comes from the thing it
+ * guards is not an independent referent — the same lesson, for the third time.
+ *
+ * This table is the referent. Adding, removing, or changing a route's check
+ * must be a deliberate edit HERE.
+ */
+const EXPECTED_PEER_CHECKS: Partial<Record<MessageType, string>> = {
+  DID_SYNC: 'vmBinding',
+  DIDCOMM_INBOUND: 'senderResolvable',
+}
+
 describe('dispatch — every declared check in the real registry is executable', () => {
+  it('the registry declares exactly the checks the table pins', () => {
+    const actual: Record<string, string> = {}
+    for (const key of Object.keys(MESSAGE_ROUTES) as MessageType[]) {
+      const descriptor = MESSAGE_ROUTES[key].verifyPeer
+      if (descriptor !== undefined) actual[key] = descriptor.check
+    }
+    // Catches a DELETED check (missing key) and a SWAPPED one (wrong value),
+    // neither of which the derived version could see.
+    expect(actual).toEqual(EXPECTED_PEER_CHECKS)
+  })
+
   it('runs stage 6 for each route that declares one', async () => {
-    const declaring = (Object.keys(MESSAGE_ROUTES) as MessageType[]).filter(
-      (k) => MESSAGE_ROUTES[k].verifyPeer !== undefined,
-    )
+    const declaring = Object.keys(EXPECTED_PEER_CHECKS) as MessageType[]
     // Positive control: if this were empty the loop below would assert nothing.
     expect(declaring.length).toBeGreaterThan(0)
 
