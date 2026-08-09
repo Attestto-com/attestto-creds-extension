@@ -36,12 +36,29 @@ const OWNER_FILES = [
   'background/messaging/profile.no-hardcoding.spec.ts',
 ]
 
+/**
+ * Specs are excluded, deliberately and with a limit.
+ *
+ * A spec that verifies the profile REJECTS `fragment` has to name `fragment`;
+ * there is no way to test an exclusion without writing it down. Scanning specs
+ * would therefore make this guard fire on exactly the tests that prove the
+ * narrowings hold — punishing the right behaviour.
+ *
+ * The limit: specs do not ship. The risk this guard exists to stop is
+ * PRODUCTION code becoming a second source of the vocabulary, and that surface
+ * is still scanned in full. The "scanner can actually find a violation" block
+ * below plants its probe in a non-spec file for that reason.
+ */
+function isSpec(path: string): boolean {
+  return /\.(spec|test|test-d)\.ts$/.test(path)
+}
+
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry)
     if (statSync(full).isDirectory()) {
       walk(full, out)
-    } else if (/\.(ts|vue)$/.test(entry)) {
+    } else if (/\.(ts|vue)$/.test(entry) && !isSpec(entry)) {
       out.push(full)
     }
   }

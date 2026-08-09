@@ -54,6 +54,25 @@ export const SUPPORTED_CLIENT_ID_SCHEMES = Object.freeze(['did', 'x509_san_dns']
 
 export type SupportedClientIdScheme = (typeof SUPPORTED_CLIENT_ID_SCHEMES)[number]
 
+/**
+ * How a client_id under each scheme names a network authority.
+ *
+ * `dns` — the client_id IS the hostname (x509_san_dns asserts it in the
+ *   certificate's SAN).
+ * `did` — the client_id is a DID and the authority, if any, comes from
+ *   resolving its method.
+ *
+ * This map exists so consumers branch on the KIND rather than on the scheme
+ * NAME. The no-hardcoding guard caught `oid4vp-request.ts` writing
+ * `scheme === 'x509_san_dns'` inline, which made it a second source of the
+ * vocabulary — exactly what this module exists to prevent. Adding a scheme
+ * without classifying it here is a compile error.
+ */
+export const CLIENT_ID_AUTHORITY_KIND: Record<SupportedClientIdScheme, 'dns' | 'did'> = {
+  did: 'did',
+  x509_san_dns: 'dns',
+}
+
 export interface MessagingProfile {
   readonly protocol: 'oid4vp'
   readonly transport: 'rest'
