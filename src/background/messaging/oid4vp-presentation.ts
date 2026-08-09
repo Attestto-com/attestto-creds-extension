@@ -26,15 +26,17 @@
  * any other verifier. `signCompactJws` signs the exact bytes it emits, so what
  * is signed is provably what is sent.
  *
- * ── The issuer proof, on partial disclosure ────────────────────────────────
+ * ── Partial disclosure on JSON-LD is REFUSED ───────────────────────────────
  *
- * JSON-LD has no cryptographic selective disclosure, so removing a claim
- * invalidates the issuer's signature over the credential. `deriveDisclosedCredential`
- * therefore drops the proof and marks the result derived. That is a real
- * tradeoff recorded in Story 1.17 and still open: most verifiers will reject a
- * credential with no issuer proof. The alternative — refusing partial
- * disclosure on this format — is a two-line change. It is asserted by a test
- * here so it stays a KNOWN property rather than something a verifier discovers.
+ * JSON-LD has no cryptographic selective disclosure: removing a claim
+ * invalidates the issuer's signature. Until 2026-08-09 this emitted a
+ * proof-stripped `DerivedCredential`, which was private but unverifiable — the
+ * user consented, then the verifier rejected it after the fact. We now refuse,
+ * so the failure lands at consent time where the user can still choose.
+ *
+ * The cost is stated rather than hidden: staying verifiable on this format now
+ * means disclosing everything. The resolution is SD-JWT, which has real
+ * selective disclosure and is already in the profile. Phase 2.
  */
 import { signCompactJws, type JwsSigner } from '@/services/jws'
 import { deriveDisclosedCredential } from '@/services/jsonld-disclosure'
@@ -45,6 +47,7 @@ export type PresentationReason =
   | 'no-approved-claims'
   | 'approved-claim-not-requested'
   | 'unsupported-claim-path'
+  | 'partial-disclosure-unsupported'
   | 'signing-failed'
 
 export interface PresentationSubmission {
@@ -116,6 +119,14 @@ export async function buildPresentationResponse(
 
   // Disclosure is driven ONLY by the approved set.
   const derived = deriveDisclosedCredential(credential, fields, { holderDid })
+  if (!derived.ok) {
+    // JSON-LD cannot disclose a subset and stay issuer-verifiable, and as of
+    // 2026-08-09 we refuse rather than emit an unverifiable derivation. The
+    // consent screen must surface this BEFORE the user approves — reaching here
+    // means they already chose, which is the outcome the refusal exists to
+    // prevent them from discovering too late.
+    return { ok: false, reason: 'partial-disclosure-unsupported' }
+  }
 
   const vp = {
     '@context': ['https://www.w3.org/2018/credentials/v1'],

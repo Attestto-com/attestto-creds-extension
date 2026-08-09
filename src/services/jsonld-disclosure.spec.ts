@@ -1,11 +1,18 @@
 /**
- * Story 1.17 — JSON-LD selective disclosure.
+ * JSON-LD disclosure — REWRITTEN 2026-08-09 when partial disclosure became a
+ * refusal rather than a proof-stripped derivation.
  *
- * Every leak assertion is made against the SERIALIZED credential, not against
- * `Object.keys(credentialSubject)`. A key-list check passes for a value that
- * leaked by nesting — an unselected claim copied into a metadata blob, an
- * `evidence` array, a `credentialStatus` object — and those are exactly the
- * places a whole-VC over-share hides. Sentinel values make the check total.
+ * The old suite asserted that a partial disclosure emitted a `DerivedCredential`
+ * with the issuer proof removed. Those tests were correct for the code as it
+ * stood; they are deleted rather than adapted, because the behaviour they pinned
+ * is the behaviour that was decided against. Keeping them "passing" by loosening
+ * assertions would leave a suite that no longer describes the product.
+ *
+ * What survives unchanged is the discipline: every leak assertion runs against
+ * the SERIALIZED credential, not `Object.keys(credentialSubject)`. A key-list
+ * check passes for a value that leaked by nesting — into a metadata blob, an
+ * `evidence` array, a `credentialStatus` object — and those are exactly where a
+ * whole-VC over-share hides. Sentinel values make the check total.
  */
 import { describe, it, expect } from 'vitest'
 import { deriveDisclosedCredential, DERIVED_TYPE } from './jsonld-disclosure'
@@ -32,178 +39,168 @@ function vc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   }
 }
 
-const wire = (c: Record<string, unknown>): string => JSON.stringify(c)
+const ALL_CLAIMS = ['fullName', 'dateOfBirth', 'nationalId', 'address']
 
-describe('only the selected claims are emitted', () => {
-  it('one selected claim: nothing else reaches the wire', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
-
-    expect(wire(credential)).not.toContain('LEAK-DOB')
-    expect(wire(credential)).not.toContain('LEAK-CEDULA')
-    expect(wire(credential)).not.toContain('LEAK-STREET')
-    expect(wire(credential)).not.toContain('LEAK-CITY')
+/**
+ * 🛑 The decision. JSON-LD cannot disclose a subset and stay issuer-verifiable,
+ * so a subset request is refused instead of downgraded.
+ */
+describe('partial disclosure is refused, not downgraded', () => {
+  it('refuses when any claim would be withheld', () => {
+    const result = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.reason).toBe('partial-disclosure-unsupported')
   })
 
-  it('the selected claim IS emitted, with its value', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
-    expect((credential.credentialSubject as Record<string, unknown>).fullName).toBe('LEAK-NAME')
+  it('🔒 the refusal carries NO credential to reach for', () => {
+    // The shape is the control. The old return gave callers a usable
+    // `credential` alongside `complete: false`, and a caller could — and did —
+    // ignore the flag. There is no such field on this branch now.
+    const result = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
+    expect(result).not.toHaveProperty('credential')
+    expect(JSON.stringify(result)).not.toContain('LEAK-NAME')
+    expect(JSON.stringify(result)).not.toContain('issuer-signature')
   })
 
-  it('a nested object is withheld whole, not shallow-copied', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['nationalId'], { holderDid: HOLDER })
-    expect(wire(credential)).not.toContain('LEAK-STREET')
-    expect(wire(credential)).toContain('LEAK-CEDULA')
+  it('names what would have been withheld, for an explanatory message', () => {
+    const result = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
+    expect(result.ok === false && [...result.withheld].sort()).toEqual([
+      'address',
+      'dateOfBirth',
+      'nationalId',
+    ])
   })
 
-  it('reports exactly what it withheld', () => {
-    const { withheld } = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
-    expect(withheld.sort()).toEqual(['address', 'dateOfBirth', 'nationalId'])
+  it('refuses even when only ONE claim is withheld', () => {
+    const result = deriveDisclosedCredential(
+      vc(),
+      ['fullName', 'dateOfBirth', 'nationalId'],
+      { holderDid: HOLDER },
+    )
+    expect(result.ok).toBe(false)
   })
 
-  it('selecting nothing emits no subject claims at all', () => {
-    const { credential } = deriveDisclosedCredential(vc(), [], { holderDid: HOLDER })
-    expect(Object.keys(credential.credentialSubject as object)).toEqual(['id'])
-    expect(wire(credential)).not.toContain('LEAK-')
+  it('refuses when nothing is selected', () => {
+    expect(deriveDisclosedCredential(vc(), [], { holderDid: HOLDER }).ok).toBe(false)
   })
 
-  it('a name that is not in the credential adds nothing', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName', 'salary'], { holderDid: HOLDER })
-    expect(Object.keys(credential.credentialSubject as object).sort()).toEqual(['fullName', 'id'])
+  it('🩸 never emits a proof-stripped derivation', () => {
+    // The behaviour removed on 2026-08-09: privacy-correct but unverifiable, so
+    // the user consented and the verifier rejected after the fact.
+    const result = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
+    expect(JSON.stringify(result)).not.toContain(DERIVED_TYPE)
   })
 })
 
-describe('a partial disclosure is holder-attested, not issuer-attested', () => {
-  it('drops the issuer proof — it no longer covers the document', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
-
-    expect(credential.proof).toBeUndefined()
-    // The worst outcome would be keeping a signature that cannot verify: a lazy
-    // verifier, or a human reading the JSON, would take it as issuer-attested.
-    expect(wire(credential)).not.toContain('issuer-signature')
-  })
-
-  it('marks itself as derived so the downgrade is visible in the document', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
-    expect(credential.type).toEqual(['VerifiableCredential', 'IdentityCredential', DERIVED_TYPE])
-  })
-
-  it('does not stack the derived marker if it is somehow already there', () => {
-    const already = vc({ type: ['VerifiableCredential', DERIVED_TYPE] })
-    const { credential } = deriveDisclosedCredential(already, ['fullName'], { holderDid: HOLDER })
-    expect(credential.type).toEqual(['VerifiableCredential', DERIVED_TYPE])
-  })
-
-  it('keeps issuer, dates and context — a verifier still needs to know who said it', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName'], { holderDid: HOLDER })
-    expect(credential).toMatchObject({
-      issuer: 'did:web:gob.cr',
-      issuanceDate: '2026-01-01T00:00:00Z',
-      '@context': ['https://www.w3.org/2018/credentials/v1'],
+/**
+ * The common case is untouched: selecting everything keeps the document and its
+ * issuer proof exactly as issued.
+ */
+describe('full disclosure is unaffected', () => {
+  it('returns the document byte-identical, proof intact', () => {
+    const source = vc()
+    const result = deriveDisclosedCredential(source, ALL_CLAIMS, { holderDid: HOLDER })
+    expect(result.ok).toBe(true)
+    expect(result.ok && result.credential).toEqual(source)
+    expect(result.ok && (result.credential.proof as object)).toEqual({
+      type: 'Ed25519Signature2020',
+      jws: 'issuer-signature',
     })
   })
 
   it('does not mutate the stored credential', () => {
     const source = vc()
+    const before = JSON.stringify(source)
+    deriveDisclosedCredential(source, ALL_CLAIMS, { holderDid: HOLDER })
     deriveDisclosedCredential(source, ['fullName'], { holderDid: HOLDER })
-    expect(source.proof).toBeDefined()
-    expect(Object.keys(source.credentialSubject as object)).toHaveLength(5)
-  })
-})
-
-describe('full disclosure keeps the credential verifiable', () => {
-  it('selecting every claim returns the document untouched, proof intact', () => {
-    const source = vc()
-    const result = deriveDisclosedCredential(
-      source,
-      ['fullName', 'dateOfBirth', 'nationalId', 'address'],
-      { holderDid: HOLDER },
-    )
-
-    expect(result.complete).toBe(true)
-    expect(result.credential).toBe(source)
-    expect((result.credential).proof).toBeDefined()
-    expect(result.credential.type).not.toContain(DERIVED_TYPE)
+    expect(JSON.stringify(source)).toBe(before)
   })
 
-  it('withholding even one claim is not complete', () => {
-    const result = deriveDisclosedCredential(vc(), ['fullName', 'dateOfBirth', 'nationalId'], {
-      holderDid: HOLDER,
-    })
-    expect(result.complete).toBe(false)
-  })
-})
-
-describe('the subject identifier', () => {
-  it('is kept when it names the holder — the VP already reveals that DID', () => {
-    const { credential, withheld } = deriveDisclosedCredential(vc(), ['fullName'], {
-      holderDid: HOLDER,
-    })
-    expect((credential.credentialSubject as Record<string, unknown>).id).toBe(HOLDER)
-    expect(withheld).not.toContain('id')
+  it('the subject id does not need selecting when it names the holder', () => {
+    // `id` is the holder's own DID, already revealed by the VP envelope, so it
+    // is not treated as a withheld claim.
+    const result = deriveDisclosedCredential(vc(), ALL_CLAIMS, { holderDid: HOLDER })
+    expect(result.ok).toBe(true)
   })
 
-  it('is withheld when the subject is somebody else', () => {
-    // A third-party credential: the subject id identifies a person other than
-    // the presenter, so it is a claim the user did not choose to share.
+  it('🔒 a THIRD-PARTY subject id counts as a claim and forces a refusal', () => {
+    // Someone else's identifier is not ours to disclose implicitly. Selecting
+    // every named claim still leaves `id` withheld, so this must refuse.
     const thirdParty = vc({
-      credentialSubject: { id: 'did:jwk:someone-else', fullName: 'LEAK-NAME' },
+      credentialSubject: { ...(vc().credentialSubject as object), id: 'did:web:someone-else' },
     })
-    const { credential } = deriveDisclosedCredential(thirdParty, ['fullName'], { holderDid: HOLDER })
-
-    expect(wire(credential)).not.toContain('someone-else')
+    const result = deriveDisclosedCredential(thirdParty, ALL_CLAIMS, { holderDid: HOLDER })
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.withheld).toContain('id')
   })
 
-  it('is withheld when no holder DID was supplied', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName'])
-    expect((credential.credentialSubject as Record<string, unknown>).id).toBeUndefined()
+  it('a third-party subject id CAN be selected explicitly', () => {
+    const thirdParty = vc({
+      credentialSubject: { ...(vc().credentialSubject as object), id: 'did:web:someone-else' },
+    })
+    const result = deriveDisclosedCredential(thirdParty, [...ALL_CLAIMS, 'id'], {
+      holderDid: HOLDER,
+    })
+    expect(result.ok).toBe(true)
   })
 
-  it('can still be selected explicitly', () => {
-    const thirdParty = vc({ credentialSubject: { id: 'did:jwk:someone-else', fullName: 'n' } })
-    const { credential } = deriveDisclosedCredential(thirdParty, ['id'], { holderDid: HOLDER })
-    expect((credential.credentialSubject as Record<string, unknown>).id).toBe('did:jwk:someone-else')
-  })
-})
-
-describe('the selection list is untrusted input', () => {
-  it('a prototype-chain name copies nothing out', () => {
-    // Story 1.13 Phase 8 found this live on the SD-JWT reshare path: `field in
-    // subject` walks the prototype, so `constructor` copies an Object.prototype
-    // member into the output.
-    const { credential } = deriveDisclosedCredential(
-      vc(),
-      ['constructor', 'toString', 'hasOwnProperty', '__proto__'],
-      { holderDid: HOLDER },
-    )
-    const subject = credential.credentialSubject as Record<string, unknown>
-
-    expect(Object.keys(subject)).toEqual(['id'])
-    expect(subject.constructor).toBeUndefined()
-  })
-
-  it('`__proto__` in the selection does not reassign the output prototype', () => {
-    const poisoned = vc({ credentialSubject: { fullName: 'n', __proto__: { polluted: true } } })
-    const { credential } = deriveDisclosedCredential(poisoned, ['__proto__'], {})
-    expect((credential.credentialSubject as Record<string, unknown>).polluted).toBeUndefined()
-  })
-
-  it('a duplicated name emits the claim once', () => {
-    const { credential } = deriveDisclosedCredential(vc(), ['fullName', 'fullName'], {})
-    expect(Object.keys(credential.credentialSubject as object)).toEqual(['fullName'])
+  it('with no holder DID supplied, the subject id is a withheld claim', () => {
+    expect(deriveDisclosedCredential(vc(), ALL_CLAIMS).ok).toBe(false)
   })
 })
 
 describe('shapes we do not model', () => {
   it('a VC with no credentialSubject passes through rather than throwing', () => {
-    const odd = { '@context': [], type: ['VerifiableCredential'], proof: { jws: 'x' } }
-    const result = deriveDisclosedCredential(odd, ['anything'])
-    expect(result).toEqual({ credential: odd, withheld: [], complete: true })
+    const noSubject = { id: 'urn:uuid:x', type: ['VerifiableCredential'] }
+    const result = deriveDisclosedCredential(noSubject, ['anything'])
+    expect(result.ok).toBe(true)
+    expect(result.ok && result.credential).toEqual(noSubject)
   })
 
   it('an array credentialSubject passes through — filtering it would guess', () => {
-    // Multi-subject VCs are legal. Silently picking one is worse than declining
-    // to filter, and `complete: true` tells the caller the proof is intact.
-    const multi = vc({ credentialSubject: [{ id: 'a' }, { id: 'b' }] })
-    expect(deriveDisclosedCredential(multi, ['id']).complete).toBe(true)
+    const arraySubject = vc({ credentialSubject: [{ id: HOLDER, a: 1 }] })
+    const result = deriveDisclosedCredential(arraySubject, ['a'])
+    expect(result.ok).toBe(true)
+  })
+})
+
+/**
+ * The selection list comes from a UI and is untrusted. These pinned real
+ * defects in Story 1.13 Phase 8 and stay relevant: they decide whether a
+ * request counts as full or partial disclosure, which now decides refusal.
+ */
+describe('the selection list is untrusted input', () => {
+  it('a prototype-chain name does not count as selecting a claim', () => {
+    // `constructor` is not an own property of the subject, so selecting it
+    // discloses nothing and leaves the real claims withheld → refusal.
+    const result = deriveDisclosedCredential(vc(), ['constructor', 'toString'], {
+      holderDid: HOLDER,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.withheld).toEqual(
+      expect.arrayContaining(['fullName', 'nationalId']),
+    )
+  })
+
+  it('`__proto__` in the selection does not satisfy the full-disclosure check', () => {
+    const result = deriveDisclosedCredential(vc(), ['__proto__', ...ALL_CLAIMS], {
+      holderDid: HOLDER,
+    })
+    // Every real claim was named, so this is full disclosure; `__proto__` must
+    // neither break it nor smuggle anything in.
+    expect(result.ok).toBe(true)
+    expect(result.ok && Object.getPrototypeOf(result.credential)).toBe(Object.prototype)
+  })
+
+  it('a duplicated name is harmless', () => {
+    const result = deriveDisclosedCredential(vc(), [...ALL_CLAIMS, 'fullName'], {
+      holderDid: HOLDER,
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('a name that is not in the credential does not count toward disclosure', () => {
+    const result = deriveDisclosedCredential(vc(), ['notAClaim'], { holderDid: HOLDER })
+    expect(result.ok).toBe(false)
   })
 })

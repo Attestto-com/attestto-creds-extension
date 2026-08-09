@@ -140,37 +140,67 @@ describe('the screen offers a choice at all', () => {
   })
 })
 
-describe('an unselected claim does not reach the wire', () => {
-  it('withholds the claim the user unticked — THE story', async () => {
+/**
+ * 🛑 REWRITTEN 2026-08-09. Partial disclosure on JSON-LD is now REFUSED rather
+ * than emitted as a proof-stripped derivation.
+ *
+ * The three tests replaced here asserted the old behaviour: untick a claim,
+ * generate, and the withheld value is absent while the issuer proof is dropped.
+ * That was correct for the code as it stood. It is not what we do now, and
+ * adapting them would leave a suite describing a product that no longer exists.
+ *
+ * ⚠️ THIS SCREEN NEEDS UI WORK. It still renders a checkbox per claim, so a user
+ * can untick one, press Generate, and hit an error. Refusing at generate time is
+ * safer than emitting an unverifiable credential, but it is not the intended
+ * experience: the checkboxes should be disabled (or the format flagged) for
+ * JSON-LD credentials so the user is never offered a choice we cannot honour.
+ * Tracked with the SD-JWT format work.
+ */
+describe('an unselected claim is refused rather than silently downgraded', () => {
+  /** Press Generate without assuming a presentation came out. */
+  async function tryGenerate(wrapper: Wrapper) {
+    await wrapper.find('input[type="text"]').setValue('verifier-nonce')
+    const button = wrapper.findAll('button').find((b) => b.text().includes('Generate'))!
+    await button.trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('🛑 unticking a claim shows an error instead of emitting a derivation', async () => {
+    const wrapper = await mountView()
+    await untick(wrapper, 'nationalId')
+    await tryGenerate(wrapper)
+
+    // The view catches and surfaces it rather than crashing — the user is told
+    // at the moment they act, which is the whole point of refusing.
+    expect(wrapper.text()).toContain('Partial disclosure is not supported')
+  })
+
+  it('🔒 no presentation is rendered at all when it refuses', async () => {
     const wrapper = await mountView()
     await untick(wrapper, 'nationalId')
     await untick(wrapper, 'salary')
+    await tryGenerate(wrapper)
 
-    const { serialized } = await generate(wrapper)
-
-    expect(serialized).not.toContain('LEAK-CEDULA')
-    expect(serialized).not.toContain('LEAK-SALARY')
+    // The referent: the <pre> that holds the presentation does not exist, so
+    // there is nothing a user could copy to a verifier.
+    //
+    // Note the assertion is scoped to that element, NOT to wrapper.text(). The
+    // claim picker renders the user's own values on their own screen, so the
+    // sentinels legitimately appear there — a whole-page scan would fail for a
+    // reason that has nothing to do with disclosure.
+    expect(wrapper.find('pre').exists()).toBe(false)
   })
 
-  it('still carries the claim the user kept', async () => {
+  it('POSITIVE CONTROL: keeping every claim still generates, proof intact', async () => {
     const wrapper = await mountView()
-    await untick(wrapper, 'nationalId')
+    const { payload, serialized } = await generate(wrapper)
 
-    const { payload } = await generate(wrapper)
-    const subject = payload.vp.verifiableCredential[0].credentialSubject
-
-    expect(subject.fullName).toBe('Jane Q Public')
-    expect(subject.nationalId).toBeUndefined()
-  })
-
-  it('drops the issuer proof, so nothing claims an issuer signed the subset', async () => {
-    const wrapper = await mountView()
-    await untick(wrapper, 'salary')
-
-    const { serialized, payload } = await generate(wrapper)
-
-    expect(payload.vp.verifiableCredential[0].proof).toBeUndefined()
-    expect(serialized).not.toContain('LEAK-ISSUER-SIGNATURE')
+    const vc = payload.vp.verifiableCredential[0]
+    expect(vc.credentialSubject.fullName).toBe('Jane Q Public')
+    // The whole point of refusing: the issuer signature survives.
+    expect(vc.proof).toBeDefined()
+    expect(serialized).not.toContain('LEAK-PRIVATE-KEY')
   })
 
   it('never emits the private key, whatever is selected', async () => {

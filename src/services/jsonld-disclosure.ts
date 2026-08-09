@@ -17,36 +17,65 @@
  * whole document. Remove a claim and the issuer's `proof` no longer covers what
  * you are sending.
  *
- * There are three things one can do about that, and two of them are bad:
+ * Four things one can do about that, and three of them are bad:
  *
- *   - send everything (the bug) — the user's choice is a lie
- *   - filter the subject and KEEP the proof — the worst option, because the
- *     document now carries an issuer signature that does not verify, and anyone
- *     reading it (or verifying lazily) reads it as issuer-attested
- *   - filter the subject and DROP the proof — what this does
+ *   - send everything (the original bug) — the user's choice is a lie
+ *   - filter the subject and KEEP the proof — the worst, because the document
+ *     carries an issuer signature that does not verify and reads as
+ *     issuer-attested to anyone verifying lazily
+ *   - filter the subject and DROP the proof — what this module did until
+ *     2026-08-09. Private, but it emits a credential-shaped object nothing can
+ *     verify: the user consents, believes they shared verified data, and the
+ *     rejection arrives after the moment they could have chosen differently
+ *   - REFUSE the partial disclosure — what it does now
  *
- * So a partial disclosure produces a HOLDER-ATTESTED derivation, not an
- * issuer-attested credential, and it says so: `proof` is removed and
- * `DerivedCredential` is appended to `type`. A verifier gets something it will
- * correctly refuse to treat as issuer-signed, which is the truthful outcome. The
- * UI has to tell the user this before they choose it — a silently weaker
- * credential is its own kind of lie.
+ * ── The decision, and its cost ──────────────────────────────────────────────
  *
- * Selecting everything is NOT a derivation: the document is returned untouched,
- * proof intact. The common case keeps full issuer verifiability.
+ * Refusing fails at consent time, which is the only point the user can still
+ * act on the information. The cost is not small and is not hidden: someone who
+ * needs to stay verifiable on this format must now disclose everything, so we
+ * are pushing users toward full disclosure. That is a privacy regression of our
+ * making, and it is why this is a stopgap rather than a resolution.
+ *
+ * The resolution is a FORMAT change. SD-JWT gives cryptographic selective
+ * disclosure, `src/services/sdjwt.ts` already handles it, and the messaging
+ * profile already lists `dc+sd-jwt`. Issuing selectively-disclosable credentials
+ * in that format deletes this whole dilemma. Tracked for Phase 2.
+ *
+ * Selecting everything is unaffected: the document is returned untouched, proof
+ * intact. The common case keeps full issuer verifiability.
  */
 
-/** Appended to `type` when claims were withheld. No proof accompanies it. */
+/**
+ * Retained for readers of previously-issued artefacts only. NOTHING in this
+ * module emits it any more — partial disclosure is refused rather than
+ * downgraded. Kept because documents carrying this marker may exist from before
+ * 2026-08-09 and a verifier-side reader still needs to recognise them.
+ */
 export const DERIVED_TYPE = 'DerivedCredential'
 
-export interface DerivedCredential {
-  /** The VC to embed in the VP. */
-  credential: Record<string, unknown>
-  /** Claim names present in the source subject but not disclosed. */
-  withheld: string[]
-  /** True when nothing was withheld — issuer proof intact, fully verifiable. */
-  complete: boolean
-}
+/**
+ * The outcome of a disclosure attempt.
+ *
+ * A DISCRIMINATED result, not a credential plus a `complete` flag. The previous
+ * shape returned a usable `credential` alongside `complete: false`, and every
+ * caller was free to ignore the flag and send the credential anyway — which is
+ * exactly what happened. A refusal that a caller can destructure past is not a
+ * refusal. Now there is no `credential` field to reach on the failure branch.
+ */
+export type DisclosureResult =
+  | {
+      ok: true
+      /** The VC to embed in the VP. Issuer proof intact. */
+      credential: Record<string, unknown>
+      withheld: never[]
+    }
+  | {
+      ok: false
+      reason: 'partial-disclosure-unsupported'
+      /** Claim names the user withheld, for an explanatory message. */
+      withheld: string[]
+    }
 
 export interface DeriveOptions {
   /**
@@ -63,32 +92,6 @@ export interface DeriveOptions {
 }
 
 /**
- * Copy the selected own-properties of `subject`.
- *
- * `Object.prototype.hasOwnProperty.call` over a NULL-prototype accumulator, for
- * the reason found in Story 1.13 Phase 8: a plain `field in subject` walks the
- * prototype chain, so a selection naming `constructor` or `toString` copies
- * `Object.prototype` members into the output, and `__proto__` reassigns the
- * accumulator's prototype instead of setting a key.
- */
-function pickOwn(
-  subject: Record<string, unknown>,
-  selected: readonly string[],
-): Record<string, unknown> {
-  const picked: Record<string, unknown> = Object.create(null)
-  for (const field of selected) {
-    if (!Object.prototype.hasOwnProperty.call(subject, field)) continue
-    Object.defineProperty(picked, field, {
-      value: subject[field],
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    })
-  }
-  return picked
-}
-
-/**
  * Reduce a JSON-LD VC to the selected claims.
  *
  * `selectedFields` names keys of `credentialSubject` — the same names the UI
@@ -98,13 +101,13 @@ export function deriveDisclosedCredential(
   vc: Record<string, unknown>,
   selectedFields: readonly string[],
   options: DeriveOptions = {},
-): DerivedCredential {
+): DisclosureResult {
   const subject = vc.credentialSubject
   // No subject to filter (a shape we do not model). Withholding nothing is the
   // truthful answer; it is NOT "disclose everything after claiming otherwise",
   // because there are no subject claims here to withhold.
   if (!subject || typeof subject !== 'object' || Array.isArray(subject)) {
-    return { credential: vc, withheld: [], complete: true }
+    return { ok: true, credential: vc, withheld: [] }
   }
 
   const source = subject as Record<string, unknown>
@@ -117,19 +120,40 @@ export function deriveDisclosedCredential(
   const withheld = Object.keys(source).filter((key) => !requested.has(key))
   if (withheld.length === 0) {
     // Nothing removed: the issuer's signature still covers the whole document.
-    return { credential: vc, withheld: [], complete: true }
+    return { ok: true, credential: vc, withheld: [] }
   }
 
-  const { proof: _issuerProof, ...rest } = vc
-  const existingTypes = Array.isArray(vc.type) ? (vc.type as string[]) : vc.type ? [vc.type as string] : []
-
-  return {
-    credential: {
-      ...rest,
-      type: existingTypes.includes(DERIVED_TYPE) ? existingTypes : [...existingTypes, DERIVED_TYPE],
-      credentialSubject: pickOwn(source, [...requested]),
-    },
-    withheld,
-    complete: false,
-  }
+  /**
+   * 🛑 REFUSED. Decision 2026-08-09, replacing the previous behaviour.
+   *
+   * This used to strip the issuer proof, tag the result `DerivedCredential` and
+   * emit it. Privacy was honoured — withheld claims genuinely did not leave —
+   * but the artefact was a credential-shaped object no verifier could verify,
+   * because a conventional JSON-LD proof signs the whole document and removing
+   * a claim breaks it.
+   *
+   * Two things were wrong with shipping that:
+   *
+   *   1. It over-promised to the USER. They consented to sharing two claims,
+   *      believed they had shared verified data, and the verifier rejected it
+   *      after the fact. The failure landed after consent, where they could no
+   *      longer make a different choice.
+   *   2. It taught VERIFIERS that proof-less credentials are a normal thing to
+   *      receive. A lax one would accept forged claims.
+   *
+   * Refusing fails loudly at consent time instead, which is the only moment the
+   * user can still decide. The cost is real and should not be glossed: a user
+   * who wants to stay verifiable on this format must now disclose everything,
+   * and pushing people toward full disclosure is a privacy regression we are
+   * causing. That cost is the reason this is a stopgap.
+   *
+   * The actual fix is a FORMAT change, not a disclosure-logic change. SD-JWT has
+   * cryptographic selective disclosure — the issuer signs per-claim commitments,
+   * the holder reveals a subset, and the issuer's signature still verifies.
+   * `src/services/sdjwt.ts` already parses disclosures and builds presentations,
+   * and the messaging profile already lists `dc+sd-jwt`. Issuing
+   * selectively-disclosable credentials in that format removes this choice
+   * entirely. Tracked for Phase 2.
+   */
+  return { ok: false, reason: 'partial-disclosure-unsupported', withheld }
 }

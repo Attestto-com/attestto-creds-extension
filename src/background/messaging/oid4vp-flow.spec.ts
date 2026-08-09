@@ -15,6 +15,8 @@ import { createPendingStore, type PendingStorage } from '@/background/consent/pe
 
 const CLIENT = 'did:web:verifier.example.org'
 const HOLDER = 'did:jwk:holder'
+/** Everything the request asks for — the only presentable set on JSON-LD now. */
+const APPROVE_ALL = ['$.credentialSubject.name', '$.credentialSubject.dob']
 
 const RAW_REQUEST = {
   client_id: CLIENT,
@@ -37,11 +39,26 @@ const RAW_REQUEST = {
   },
 }
 
+/**
+ * Holds EXACTLY the claims the request asks for.
+ *
+ * After the 2026-08-09 refusal decision, disclosure is judged against the
+ * credential's claims rather than the verifier's request, so a credential
+ * carrying anything extra cannot be presented on this format at all. The
+ * multi-claim case is covered in `oid4vp-presentation.spec.ts` under "what the
+ * refusal costs".
+ */
 const CREDENTIAL = {
   '@context': ['https://www.w3.org/2018/credentials/v1'],
   type: ['VerifiableCredential'],
   issuer: 'did:web:issuer.example.org',
-  credentialSubject: { id: HOLDER, name: 'A. Person', dob: '1990-01-01', cedula: 'LEAK-CEDULA' },
+  credentialSubject: { id: HOLDER, name: 'A. Person', dob: '1990-01-01' },
+}
+
+/** Carries a claim nobody asked for, so it can no longer be presented. */
+const OVERSTUFFED_CREDENTIAL = {
+  ...CREDENTIAL,
+  credentialSubject: { ...CREDENTIAL.credentialSubject, cedula: 'LEAK-CEDULA' },
 }
 
 /**
@@ -63,7 +80,7 @@ function memoryStorage(): PendingStorage {
   }
 }
 
-function makeFlow(over: { post?: DirectPoster['post'] } = {}) {
+function makeFlow(over: { post?: DirectPoster['post']; credential?: Record<string, unknown> } = {}) {
   const post = vi.fn<DirectPoster['post']>(over.post ?? (async () => ({ ok: true, status: 200 })))
   const sign = vi.fn(async () => new Uint8Array([1, 2, 3]))
   const pending = createPendingFlow<Oid4vpPendingRow>(
@@ -74,7 +91,7 @@ function makeFlow(over: { post?: DirectPoster['post'] } = {}) {
     directPost: { post },
     sign,
     holderDid: HOLDER,
-    loadCredential: async () => CREDENTIAL,
+    loadCredential: async () => over.credential ?? CREDENTIAL,
   })
   return { flow, post, sign }
 }
@@ -117,7 +134,10 @@ describe('approve — consent gates the presentation', () => {
     const { flow, post } = makeFlow()
     await flow.receive('req-1', RAW_REQUEST)
 
-    const result = await flow.approve('req-1', ['$.credentialSubject.name'])
+    const result = await flow.approve('req-1', [
+      '$.credentialSubject.name',
+      '$.credentialSubject.dob',
+    ])
     expect(result.ok).toBe(true)
     expect(post).toHaveBeenCalledTimes(1)
 
@@ -129,8 +149,6 @@ describe('approve — consent gates the presentation', () => {
     const padded = payloadPart.replace(/-/g, '+').replace(/_/g, '/')
     const decoded = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4))
     expect(decoded).toContain('A. Person')
-    expect(decoded).not.toContain('1990-01-01')
-    expect(decoded).not.toContain('LEAK-CEDULA')
   })
 
   it('🔒 a second approval of the same request posts nothing', async () => {
@@ -138,8 +156,8 @@ describe('approve — consent gates the presentation', () => {
     const { flow, post } = makeFlow()
     await flow.receive('req-1', RAW_REQUEST)
 
-    await flow.approve('req-1', ['$.credentialSubject.name'])
-    const second = await flow.approve('req-1', ['$.credentialSubject.name'])
+    await flow.approve('req-1', APPROVE_ALL)
+    const second = await flow.approve('req-1', APPROVE_ALL)
 
     expect(second.ok).toBe(false)
     expect(post).toHaveBeenCalledTimes(1)
@@ -148,10 +166,10 @@ describe('approve — consent gates the presentation', () => {
   it('distinguishes a replayed approval from an unknown one', async () => {
     const { flow } = makeFlow()
     await flow.receive('req-1', RAW_REQUEST)
-    await flow.approve('req-1', ['$.credentialSubject.name'])
+    await flow.approve('req-1', APPROVE_ALL)
 
-    const replayed = await flow.approve('req-1', ['$.credentialSubject.name'])
-    const unknown = await flow.approve('never-existed', ['$.credentialSubject.name'])
+    const replayed = await flow.approve('req-1', APPROVE_ALL)
+    const unknown = await flow.approve('never-existed', APPROVE_ALL)
     expect(replayed.ok === false && replayed.reason).toBe('alreadyConsumed')
     expect(unknown.ok === false && unknown.reason).toBe('missing')
   })
@@ -171,10 +189,22 @@ describe('approve — consent gates the presentation', () => {
     expect(post).not.toHaveBeenCalled()
   })
 
+  it('🛑 a credential holding an unrequested claim is refused, and posts nothing', async () => {
+    // The cost of the refusal decision, at the flow level: the user approved
+    // everything the verifier asked for and it still cannot be presented,
+    // because the credential carries a claim nobody asked about.
+    const { flow, post } = makeFlow({ credential: OVERSTUFFED_CREDENTIAL })
+    await flow.receive('req-1', RAW_REQUEST)
+    const result = await flow.approve('req-1', APPROVE_ALL)
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.reason).toBe('partial-disclosure-unsupported')
+    expect(post).not.toHaveBeenCalled()
+  })
+
   it('reports a verifier rejection without claiming success', async () => {
     const { flow } = makeFlow({ post: async () => ({ ok: false, status: 400 }) })
     await flow.receive('req-1', RAW_REQUEST)
-    const result = await flow.approve('req-1', ['$.credentialSubject.name'])
+    const result = await flow.approve('req-1', APPROVE_ALL)
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe('verifier-rejected')
   })
@@ -188,13 +218,13 @@ describe('deny — nothing leaves', () => {
     expect(await flow.deny('req-1')).toBe(true)
     expect(post).not.toHaveBeenCalled()
     // And the request cannot then be approved.
-    expect((await flow.approve('req-1', ['$.credentialSubject.name'])).ok).toBe(false)
+    expect((await flow.approve('req-1', APPROVE_ALL)).ok).toBe(false)
   })
 
   it('a deny after an approve does not un-send anything, and says so', async () => {
     const { flow, post } = makeFlow()
     await flow.receive('req-1', RAW_REQUEST)
-    await flow.approve('req-1', ['$.credentialSubject.name'])
+    await flow.approve('req-1', APPROVE_ALL)
     expect(await flow.deny('req-1')).toBe(false)
     expect(post).toHaveBeenCalledTimes(1)
   })

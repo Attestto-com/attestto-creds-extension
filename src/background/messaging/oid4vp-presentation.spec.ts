@@ -51,13 +51,31 @@ function decodePayload(jws: string): Record<string, unknown> {
   >
 }
 
+/**
+ * A credential containing EXACTLY the claims the verifier asks for. After the
+ * 2026-08-09 refusal decision this is the only JSON-LD shape that can still be
+ * presented — see the "what the refusal costs" block at the bottom.
+ */
+const EXACT_CREDENTIAL = {
+  '@context': ['https://www.w3.org/2018/credentials/v1'],
+  type: ['VerifiableCredential'],
+  issuer: 'did:web:issuer.example.org',
+  credentialSubject: { id: HOLDER, name: 'A. Person' },
+  proof: { type: 'Ed25519Signature2020', jws: 'issuer-sig' },
+}
+
+const NAME_ONLY_REQUEST: AuthorizationRequest = {
+  ...REQUEST,
+  requestedClaims: ['$.credentialSubject.name'],
+}
+
 const signer = vi.fn(async () => new Uint8Array([1, 2, 3]))
 
 async function build(over: Partial<Parameters<typeof buildPresentationResponse>[0]> = {}) {
   return await buildPresentationResponse({
-    request: REQUEST,
+    request: NAME_ONLY_REQUEST,
     approvedClaims: ['$.credentialSubject.name'],
-    credential: CREDENTIAL,
+    credential: EXACT_CREDENTIAL,
     holderDid: HOLDER,
     sign: signer,
     ...over,
@@ -102,10 +120,18 @@ describe('buildPresentationResponse — the approved set is the disclosed set', 
     if (!result.ok) return
 
     const decoded = JSON.stringify(decodePayload(result.value.vp_token))
+    expect(decoded).toContain('A. Person') // positive control
     expect(decoded).not.toContain('LEAK-CEDULA-101100999')
     expect(decoded).not.toContain('LEAK-SALARY-9999')
-    expect(decoded).not.toContain('1990-01-01') // requested but NOT approved
-    expect(decoded).toContain('A. Person') // positive control
+  })
+
+  it('🛑 a credential carrying MORE than was approved is refused outright', async () => {
+    // CREDENTIAL holds cedula and salary the verifier never asked for. Before
+    // 2026-08-09 this emitted a proof-stripped derivation; now it refuses, so
+    // the sentinels cannot leak because nothing is built at all.
+    const result = await build({ credential: CREDENTIAL, request: NAME_ONLY_REQUEST })
+    expect(result).toEqual({ ok: false, reason: 'partial-disclosure-unsupported' })
+    expect(JSON.stringify(result)).not.toContain('LEAK-CEDULA-101100999')
   })
 
   it('🔒 no unapproved value survives anywhere in the whole POST body', async () => {
@@ -131,14 +157,15 @@ describe('buildPresentationResponse — the approved set is the disclosed set', 
     expect(await build({ approvedClaims: [] })).toEqual({ ok: false, reason: 'no-approved-claims' })
   })
 
-  it('discloses a strict subset when only some claims are approved', async () => {
-    const result = await build({
-      approvedClaims: ['$.credentialSubject.name', '$.credentialSubject.dob'],
+  it('🛑 approving a strict subset of a multi-claim credential is refused', async () => {
+    const result = await buildPresentationResponse({
+      request: REQUEST, // asks for name + dob
+      approvedClaims: ['$.credentialSubject.name'], // user approves only one
+      credential: CREDENTIAL,
+      holderDid: HOLDER,
+      sign: signer,
     })
-    if (!result.ok) return
-    const vp = decodePayload(result.value.vp_token).vp as Record<string, unknown>
-    const vc = (vp.verifiableCredential as Record<string, unknown>[])[0]
-    expect(Object.keys(vc.credentialSubject as object).sort()).toEqual(['dob', 'id', 'name'])
+    expect(result).toEqual({ ok: false, reason: 'partial-disclosure-unsupported' })
   })
 })
 
@@ -221,30 +248,46 @@ describe('buildPresentationResponse — the POST body', () => {
 })
 
 /**
- * The issuer proof is dropped on partial disclosure — the same tradeoff Story
- * 1.17 recorded. Asserted here so it is a KNOWN property with a test, not a
- * surprise a verifier discovers.
+ * 🛑 WHAT THE REFUSAL COSTS — the consequence of the 2026-08-09 decision,
+ * written as executable tests rather than left for someone to discover.
+ *
+ * "Refuse partial disclosure" sounds like it only blocks the case where a user
+ * declines some of what a verifier asked for. In OID4VP it is much broader:
+ * disclosure is judged against the CREDENTIAL's claims, not the verifier's
+ * request. A verifier asking for 2 claims from a credential holding 5 is a
+ * partial disclosure even when the user approves both — so it refuses.
+ *
+ * Practically: a JSON-LD credential can only be presented when it holds exactly
+ * the claims being asked for. Real credentials rarely do. So JSON-LD is
+ * effectively unusable over OID4VP until SD-JWT issuance lands, and that makes
+ * the Phase 2 format work a PREREQUISITE for this path rather than an
+ * improvement to it.
  */
-describe('buildPresentationResponse — issuer proof on partial disclosure', () => {
-  it('drops the issuer proof when claims were withheld, and says so', async () => {
-    const result = await build()
-    if (!result.ok) return
-    const vp = decodePayload(result.value.vp_token).vp as Record<string, unknown>
-    const vc = (vp.verifiableCredential as Record<string, unknown>[])[0]
-    expect(vc.proof).toBeUndefined()
-    expect(result.value.vp_token).toBeTruthy()
+describe('what the refusal costs — JSON-LD over OID4VP', () => {
+  it('a realistic request (2 of 5 claims, both approved) still refuses', async () => {
+    const result = await buildPresentationResponse({
+      request: REQUEST, // name + dob
+      approvedClaims: ['$.credentialSubject.name', '$.credentialSubject.dob'],
+      credential: CREDENTIAL, // also holds cedula + salary
+      holderDid: HOLDER,
+      sign: signer,
+    })
+    expect(result).toEqual({ ok: false, reason: 'partial-disclosure-unsupported' })
   })
 
-  it('keeps the issuer proof when everything requested was approved AND nothing else exists', async () => {
-    const minimal = {
-      ...CREDENTIAL,
-      credentialSubject: { id: HOLDER, name: 'A. Person' },
-    }
-    const result = await build({
-      credential: minimal,
+  it('only an exactly-matching credential can be presented', async () => {
+    const result = await buildPresentationResponse({
+      request: NAME_ONLY_REQUEST,
       approvedClaims: ['$.credentialSubject.name'],
-      request: { ...REQUEST, requestedClaims: ['$.credentialSubject.name'] },
+      credential: EXACT_CREDENTIAL,
+      holderDid: HOLDER,
+      sign: signer,
     })
+    expect(result.ok).toBe(true)
+  })
+
+  it('and it keeps the issuer proof, which is the point of refusing', async () => {
+    const result = await build()
     if (!result.ok) return
     const vp = decodePayload(result.value.vp_token).vp as Record<string, unknown>
     const vc = (vp.verifiableCredential as Record<string, unknown>[])[0]

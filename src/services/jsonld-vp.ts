@@ -58,9 +58,20 @@ export async function createJsonLdVp(options: JsonLdVpOptions): Promise<string> 
   const parsed = JSON.parse(credential) as Record<string, unknown>
   // Filter BEFORE the envelope is built, so there is no window in which the
   // whole VC exists inside something about to be signed.
-  const vc = selectedFields
-    ? deriveDisclosedCredential(parsed, selectedFields, { holderDid }).credential
-    : parsed
+  let vc = parsed
+  if (selectedFields) {
+    const derived = deriveDisclosedCredential(parsed, selectedFields, { holderDid })
+    if (!derived.ok) {
+      // Refused rather than downgraded (2026-08-09). Throwing keeps the caller
+      // from building a VP around a credential that would not verify; the UI
+      // must prevent the user reaching here by disabling partial selection on
+      // this format.
+      throw new Error(
+        `Partial disclosure is not supported for JSON-LD credentials (withholding: ${derived.withheld.join(', ')})`,
+      )
+    }
+    vc = derived.credential
+  }
 
   const vpPayload = {
     '@context': ['https://www.w3.org/2018/credentials/v1'],
