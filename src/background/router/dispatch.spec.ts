@@ -208,31 +208,152 @@ describe('dispatch — stage 4 shape (mutation ii)', () => {
   })
 })
 
-describe('dispatch — stage 6 verifyPeer seam', () => {
-  it('present + returns false → peer-verification-failed, handler not run', async () => {
+/**
+ * Story 2.2 — stage 6 is now a REAL executed check.
+ *
+ * These tests used to pass a FUNCTION as `verifyPeer`, matching `dispatch`'s
+ * `typeof === 'function'` branch. No real route ever did: both declared an
+ * object descriptor, so the branch never fired in production and this block was
+ * exercising a shape that existed only in the fixture. The type change caught it.
+ *
+ * They now drive the same descriptors the registry actually holds.
+ */
+const PEER_DID = 'did:web:peer.example'
+const PEER_VM = `${PEER_DID}#key-1`
+
+/** A resolver stub whose CALLS are the independent referent for "did stage 6 run". */
+function fakeResolver(over: { vmIds?: string[]; authentication?: string[]; throws?: boolean } = {}) {
+  const calls: string[] = []
+  const resolver = {
+    resolve: vi.fn(async (did: string) => {
+      calls.push(did)
+      if (over.throws) throw new Error('unresolvable')
+      const ids = over.vmIds ?? [PEER_VM]
+      return {
+        id: did,
+        verificationMethod: ids.map((id) => ({
+          id,
+          type: 'JsonWebKey2020',
+          controller: did,
+          publicKeyJwk: {},
+        })),
+        authentication: over.authentication ?? ids,
+        assertionMethod: ids,
+      }
+    }),
+  }
+  return { resolver: resolver as unknown as NonNullable<DispatchDeps['peerResolver']>, calls }
+}
+
+const vmPayload = { holderDid: PEER_DID, verificationMethod: PEER_VM }
+
+describe('dispatch — stage 6 verifyPeer (executed descriptor)', () => {
+  it('a vmBinding check that fails → peer-verification-failed, handler not run', async () => {
+    const { resolver, calls } = fakeResolver({ vmIds: [`${PEER_DID}#some-other-key`] })
     const { d, s } = deps({
-      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: async () => false }) }),
+      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: { check: 'vmBinding' } }) }),
+      peerResolver: resolver,
     })
-    const res = await dispatch(msg('WALLET_LINK'), {}, d)
+    const res = await dispatch(msg('WALLET_LINK', vmPayload), {}, d)
+    expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
+    expect(s.sign).not.toHaveBeenCalled()
+    // The check actually RAN — this is what the old function fixture could not show.
+    expect(calls).toEqual([PEER_DID])
+  })
+
+  it('a vmBinding check that passes → proceeds to handle', async () => {
+    const { resolver, calls } = fakeResolver()
+    const { d, s } = deps({
+      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: { check: 'vmBinding' } }) }),
+      peerResolver: resolver,
+    })
+    const res = await dispatch(msg('WALLET_LINK', vmPayload), {}, d)
+    expect(res).toEqual({ ok: true, data: { signed: true } })
+    expect(s.sign).toHaveBeenCalledTimes(1)
+    expect(calls).toEqual([PEER_DID])
+  })
+
+  it('a resolver that throws → peer-verification-failed', async () => {
+    const { resolver } = fakeResolver({ throws: true })
+    const { d, s } = deps({
+      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: { check: 'vmBinding' } }) }),
+      peerResolver: resolver,
+    })
+    const res = await dispatch(msg('WALLET_LINK', vmPayload), {}, d)
     expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
     expect(s.sign).not.toHaveBeenCalled()
   })
 
-  it('present + throws → peer-verification-failed', async () => {
-    const { d } = deps({
-      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: async () => { throw new Error('x') } }) }),
-    })
-    const res = await dispatch(msg('WALLET_LINK'), {}, d)
-    expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
-  })
-
-  it('present + returns true → proceeds to handle', async () => {
-    const { d, s } = deps({
-      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: async () => true }) }),
-    })
+  it('a route with NO declared check does not need a resolver', async () => {
+    const { d, s } = deps({ routes: registry({ WALLET_LINK: signingRoute() }) })
     const res = await dispatch(msg('WALLET_LINK'), {}, d)
     expect(res).toEqual({ ok: true, data: { signed: true } })
     expect(s.sign).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * 🔒 The regression this story exists to prevent. A declared check with no
+   * resolver to run it must FAIL, not silently skip — "skip" is precisely how
+   * both real routes shipped an inert counterparty check through all of Epic 1.
+   */
+  it('a declared check with NO resolver fails closed rather than skipping', async () => {
+    const { d, s } = deps({
+      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: { check: 'vmBinding' } }) }),
+      // peerResolver deliberately absent
+    })
+    const res = await dispatch(msg('WALLET_LINK', vmPayload), {}, d)
+    expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
+    expect(s.sign).not.toHaveBeenCalled()
+  })
+
+  it('an unrecognised descriptor fails closed rather than skipping', async () => {
+    const { resolver } = fakeResolver()
+    const bogus = { check: 'no-such-check' } as unknown as { check: 'vmBinding' }
+    const { d, s } = deps({
+      routes: registry({ WALLET_LINK: signingRoute({ verifyPeer: bogus }) }),
+      peerResolver: resolver,
+    })
+    const res = await dispatch(msg('WALLET_LINK', vmPayload), {}, d)
+    expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
+    expect(s.sign).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The registry-level guard: every check the REAL `MESSAGE_ROUTES` declares must
+ * be one `dispatch` can execute. A route declaring a check name with no
+ * implementation would be inert again — the exact Epic-1 defect.
+ */
+describe('dispatch — every declared check in the real registry is executable', () => {
+  it('runs stage 6 for each route that declares one', async () => {
+    const declaring = (Object.keys(MESSAGE_ROUTES) as MessageType[]).filter(
+      (k) => MESSAGE_ROUTES[k].verifyPeer !== undefined,
+    )
+    // Positive control: if this were empty the loop below would assert nothing.
+    expect(declaring.length).toBeGreaterThan(0)
+
+    for (const type of declaring) {
+      const { resolver, calls } = fakeResolver({ throws: true })
+      const route = MESSAGE_ROUTES[type]
+      const { d } = deps({
+        routes: registry({
+          [type]: {
+            ...route,
+            allowFrom: { origins: [GOOD], senders: ['web'] },
+            validate: (raw: unknown) => raw as never,
+            handle: async () => ({ ok: true }),
+          },
+        }),
+        peerResolver: resolver,
+      })
+      const res = await dispatch(msg(type, { ...vmPayload, from: PEER_DID }), {}, d)
+      // The resolver was consulted, and the unresolvable peer was rejected.
+      expect(calls, `${type} did not run its declared check`).toEqual([PEER_DID])
+      expect(res, `${type} did not fail closed`).toEqual({
+        ok: false,
+        error: 'peer-verification-failed',
+      })
+    }
   })
 })
 
@@ -259,22 +380,26 @@ describe('dispatch — FIXED ORDER (each adjacent boundary is a mutation target)
   })
 
   it('validate BEFORE verifyPeer: throwing validate + would-fail verifyPeer → invalid-payload', async () => {
+    const { resolver, calls } = fakeResolver({ throws: true })
     const r = signingRoute({
       validate: () => { throw new Error('bad') },
-      verifyPeer: async () => false,
+      verifyPeer: { check: 'vmBinding' },
     })
-    const { d } = deps({ routes: registry({ WALLET_LINK: r }) })
+    const { d } = deps({ routes: registry({ WALLET_LINK: r }), peerResolver: resolver })
     const res = await dispatch(msg('WALLET_LINK', 'garbage'), {}, d)
     expect(res).toEqual({ ok: false, error: 'invalid-payload' }) // NOT peer-verification-failed
+    // Independent referent for the ORDER: stage 6 never got to run.
+    expect(calls).toEqual([])
   })
 
   it('verifyPeer BEFORE handle: failing verifyPeer + would-throw handle → peer-verification-failed, handle not run', async () => {
+    const { resolver } = fakeResolver({ throws: true })
     const r = signingRoute({
-      verifyPeer: async () => false,
+      verifyPeer: { check: 'vmBinding' },
       handle: async () => { throw new Error('should not run') },
     })
-    const { d, s } = deps({ routes: registry({ WALLET_LINK: r }) })
-    const res = await dispatch(msg('WALLET_LINK'), {}, d)
+    const { d, s } = deps({ routes: registry({ WALLET_LINK: r }), peerResolver: resolver })
+    const res = await dispatch(msg('WALLET_LINK', vmPayload), {}, d)
     expect(res).toEqual({ ok: false, error: 'peer-verification-failed' }) // NOT handler-error
     expect(s.sign).not.toHaveBeenCalled()
   })

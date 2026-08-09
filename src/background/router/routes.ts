@@ -39,23 +39,34 @@ function stubRoute<K extends MessageType>(bundle: CtxBundleTag): Route<K> {
 // Story 1.9 — the first EXTRACTED route. Declared with its precise tag
 // (`Route<K, 'untrusted'>`) so the handler's ctx is `UntrustedCtx`, not the
 // heterogeneous `AnyCtx`; method-bivariance then stores it as `Route<K>` in the
-// registry below. `handle` is the real handler; `verifyPeer` declares the AD-9
-// envelope seam (filled in Epic 2). `allowFrom` stays empty: the case delegates
-// to `handle` directly (parity — no legacy sender-auth), so the empty descriptor
-// is not consulted until Epic 2 routes it through dispatch.
+// registry below. `handle` is the real handler.
+//
+// Story 2.2 — `verifyPeer` is now a REAL, executed check, and was renamed from
+// `{ check: 'envelope' }` to `{ check: 'senderResolvable' }` because that is all
+// it establishes: the claimed sender DID parses, uses an allowed method, and
+// resolves to a document with an authentication key. It is NOT authentication —
+// the DIDComm envelope parsed here carries no signature, so there is nothing to
+// verify against. `envelope` would have implied otherwise.
+//
+// `allowFrom` stays empty: the case delegates to `handle` directly (parity — no
+// legacy sender-auth), so the empty descriptor is not consulted until the case
+// routes through dispatch.
 const didcommInboundRoute: Route<'DIDCOMM_INBOUND', 'untrusted'> = {
   bundle: 'untrusted',
   allowFrom: { origins: [], senders: [] },
   validate: (raw) => raw as never,
   handle: handleDidcommInbound,
-  verifyPeer: { check: 'envelope' },
+  verifyPeer: { check: 'senderResolvable' },
 }
 
 // Story 1.10 — the second EXTRACTED route (first KeyAdmin). `handle` is the real
 // vault-mutation handler; it returns the DID_SYNC_RESPONSE data (the case
-// transports it). `verifyPeer: { check: 'vmBinding' }` declares the AD-9/10 seam
-// for the SAME missing control as counterparty validation: proof that the DID's
-// verification method controls the synced key (proof-of-control), filled in Epic 2.
+// transports it). Story 2.2 — `verifyPeer: { check: 'vmBinding' }` is now
+// EXECUTED: the claimed `verificationMethod` must appear in the document the
+// claimed `holderDid` publishes, so a page can no longer name an arbitrary key
+// URI for a DID whose document does not contain it. Proof-of-CONTROL (that the
+// sender holds the corresponding private key) still requires a signature over a
+// challenge and remains open as FR26 — the accepted risk, now narrowed.
 // `allowFrom` stays empty: origin authorization is dynamic (`isOriginTrusted`,
 // which a static descriptor cannot express), so the case keeps its inline gate and
 // delegates only the vault work here (parity — one axis of change).

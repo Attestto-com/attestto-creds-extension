@@ -23,6 +23,7 @@ import type {
   ConsentCtx,
   KeyAdminCtx,
 } from '@/background/ctx/ctx-bundles'
+import type { VerifyPeerDescriptor } from '@/background/did/peer-verification'
 
 /** Trust tier a route runs under. Load-bearing since Story 1.4 (see `CtxByTag`). */
 export type CtxBundleTag = 'untrusted' | 'signing' | 'consent' | 'keyAdmin'
@@ -107,7 +108,16 @@ export interface Route<K extends MessageType, Tag extends CtxBundleTag = CtxBund
   validate: RouteValidator<K>
   // Method signature (bivariant ctx) so `Route<K,'signing'>` stores as `Route<K>`.
   handle(payload: MessagePayload<K>, ctx: CtxFor<Tag>): Promise<HandlerData<K>>
-  verifyPeer?: unknown // router-owned counterparty check (AD-9); filled in Epic 2
+  /**
+   * Router-owned counterparty check (AD-9), Story 2.2.
+   *
+   * Was `unknown` through Epic 1, which let both real routes declare an OBJECT
+   * descriptor while `dispatch` executed only FUNCTIONS — so both declared
+   * checks were inert and no type error could say so. The union makes an
+   * unrecognised check a compile error, and `PEER_CHECKS` (keyed on the same
+   * union) makes a declared-but-unimplemented check one too.
+   */
+  verifyPeer?: VerifyPeerDescriptor
 }
 
 // `CtxByTag` must cover exactly the `CtxBundleTag` union — else `CtxFor<Tag>`

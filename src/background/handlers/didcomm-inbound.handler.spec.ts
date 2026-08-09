@@ -102,7 +102,16 @@ describe('DIDCOMM_INBOUND parity: WHY the case delegates to handle() directly', 
     expect(res).toEqual({ ok: false, error: 'forbidden-origin' })
   })
 
-  it('the route declares the AD-9 verifyPeer envelope seam (filled in Epic 2, not run in 1.9)', () => {
-    expect(MESSAGE_ROUTES.DIDCOMM_INBOUND.verifyPeer).toEqual({ check: 'envelope' })
+  /**
+   * Story 2.2 — was `{ check: 'envelope' }`, asserted here and executed nowhere:
+   * `dispatch` ran `verifyPeer` only when it was a FUNCTION, so this assertion
+   * passed while the check was inert. Renamed to `senderResolvable` because that
+   * is all it establishes — the claimed sender DID resolves under an allowed
+   * method. It is NOT authentication: the envelope parsed by this handler
+   * carries no signature. Execution is proven in `dispatch.spec.ts`, not here;
+   * this only pins the declaration.
+   */
+  it('the route declares the AD-9 senderResolvable check', () => {
+    expect(MESSAGE_ROUTES.DIDCOMM_INBOUND.verifyPeer).toEqual({ check: 'senderResolvable' })
   })
 })

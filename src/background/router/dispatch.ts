@@ -29,6 +29,8 @@ import type { AllowFromDescriptor, CtxBundleTag, CtxFor, Route } from './route'
 import { ok, fail, type Response } from './response'
 import type { Pending } from '@/background/ports/ports'
 import { getSenderOrigin, isExtensionSender } from '@/utils/message-guard'
+import { runPeerCheck } from '@/background/did/peer-verification'
+import type { CounterpartyDidResolver } from '@/background/did/did-resolver'
 
 /** The wire shape the router accepts. `id` (optional) keys the idempotency seam. */
 export interface InboundMessage {
@@ -45,8 +47,6 @@ export interface ResolvedSender {
   kind: SenderKind
 }
 
-/** The counterparty-verify seam (AD-9). Epic 2 supplies the real resolver. */
-type VerifyPeer = (payload: unknown, ctx: unknown) => Promise<boolean>
 
 export interface DispatchDeps {
   /**
@@ -62,6 +62,14 @@ export interface DispatchDeps {
   resolveSender?: (sender: chrome.runtime.MessageSender | undefined) => ResolvedSender
   /** Idempotency store (AD-4). When absent, the replay seam is inert. */
   pending?: Pending
+  /**
+   * Counterparty DID resolver (AD-9, Story 2.1). Router-owned: it is passed to
+   * the stage-6 check and never enters a ctx bundle, so no handler can reach it.
+   *
+   * Optional so routes that declare no check need no resolver — but a route that
+   * DOES declare one and finds this absent fails closed rather than skipping.
+   */
+  peerResolver?: CounterpartyDidResolver
 }
 
 /** Default stage-1: trust only Chrome-populated sender fields (never payload). */
@@ -143,10 +151,24 @@ export async function dispatch(
   }
 
   // 6 — verifyPeer, if the route declares one (router-owned, AD-9)
-  if (typeof route.verifyPeer === 'function') {
+  //
+  // Story 2.2. This used to read `typeof route.verifyPeer === 'function'`, while
+  // every real route declared an OBJECT descriptor — so the two declared
+  // counterparty checks never ran, and `verifyPeer?: unknown` meant nothing
+  // caught it. A declared check now either RUNS or fails the dispatch; there is
+  // no third branch in which it is quietly skipped.
+  if (route.verifyPeer !== undefined) {
+    // A route declaring a check while the router has no resolver to run it with
+    // is a composition error. Failing closed keeps that a visible outage rather
+    // than a silent downgrade to no verification.
+    if (!deps.peerResolver) return fail('peer-verification-failed')
+
     let peerOk: boolean
     try {
-      peerOk = await (route.verifyPeer as VerifyPeer)(validated, ctx)
+      peerOk = await runPeerCheck(route.verifyPeer, {
+        payload: validated,
+        resolver: deps.peerResolver,
+      })
     } catch {
       return fail('peer-verification-failed')
     }
