@@ -29,38 +29,51 @@ import { MESSAGE_ROUTES } from '@/background/router/routes'
  * DEPLOYED and public at `resolver.attestto.com` behind the DIF Universal
  * Resolver API. Wiring it in is a small job.
  *
- * Wiring it in would also be the WORST available outcome, and that is the real
- * finding. Resolving `did:sns:eduardo.attestto` against the live service today
- * returns a single verification method:
+ * Wiring it in is not the fix, though, because what it returns does not match
+ * the did:sns method specification. Measured against the spec (§8.5 / §8.2,
+ * `did-sns-spec/did-sns/spec/08-did-document.md`), the live service today
+ * returns for EVERY record:
  *
- *     #key-1  Ed25519VerificationKey2020  publicKeyBase58: 6V3DA…yUs6Y
+ *     #key-1  Ed25519VerificationKey2020  publicKeyBase58: <SNS owner wallet>
  *     authentication: [#key-1]   assertionMethod: [#key-1]
  *
- * That key is the SNS DOMAIN OWNER WALLET. The workspace's foundational
- * name-vs-key doctrine names that exact pubkey as the canonical example of what
- * must NEVER be published as a verification key: the name layer, the owner
- * wallet and the signing key are three layers that are never collapsed, because
- * collapsing them destroys the privacy delinkage, defeats key rotation, and —
- * where the owner wallet is platform-custodied — puts signing power somewhere
- * other than the sole control of the natural person.
+ * The owner wallet as a verification method is NOT wrong per se — §8.5 says
+ * `#solana-key` MUST be the SNS owner's Solana public key. But that is a TIER 3
+ * method, a self-custodial wallet for on-chain governance. §8.5 and the §8.2
+ * note are explicit that Tier 1/2 expose ONLY `#firma-digital` and/or
+ * `#attestto-sign`, with "no wallet keys, no keyAgreement".
+ *
+ * `sns-resolver.ts:370-377` emits it unconditionally, at every tier. Resolving
+ * `did:sns:attestto` returns `isTier3: false` alongside the owner wallet in
+ * `authentication`. The resolver PARSES the TIER_3 flag (0x04) into `isTier3`
+ * and then never gates the key on it — so every Tier 1/2 identity publishes a
+ * Solana address, which is precisely the transaction-history correlation §5.3
+ * excludes wallet addresses from `alsoKnownAs` to prevent.
+ *
+ * Three conformance gaps ride along in the same function: the fragment `#key-1`
+ * is not in §8.5's vocabulary; `publicKeyBase58` is emitted where the spec uses
+ * `publicKeyMultibase` (§8.8's implementer note tells relying parties to read
+ * `publicKeyMultibase`); and `#attestto-sign` / `#firma-digital` are never
+ * emitted at all, so a conformant Tier 1/2 identity resolves with NO usable
+ * verification method.
  *
  * And `DID_SYNC` sends `verificationMethod: did:sns:<name>#key-1` (see
- * `did-sync.handler.spec.ts`). So the two halves MATCH. Switching `vmBinding`
- * on with the SNS resolver attached would not fail — it would PASS, go green,
- * and report a verified peer binding whose content is "this identity is
- * controlled by the owner wallet". A control that exists, looks like it covers
- * the invariant, and certifies the wrong key.
+ * `did-sync.handler.spec.ts`) — also not a spec fragment. So the two halves
+ * MATCH, and switching `vmBinding` on would not fail: it would PASS and report
+ * a verified binding. Green, because both sides are non-conformant in the same
+ * direction. A control that exists, looks like it covers the invariant, and
+ * agrees with the one thing it was supposed to be independent of.
  *
- * ── The options, restated against what is actually true ────────────────────
+ * ── The options, restated against the spec ─────────────────────────────────
  *
- *   A. Fix the resolver's key layer: publish the vault-derived signing key as
- *      the verification method instead of the owner wallet, and have DID_SYNC
- *      reference THAT fragment. This is the doctrine-conformant fix. It is work
- *      in `attestto-did-resolver` and in whatever writes the on-chain record,
- *      not in this repo.
+ *   A. Make the resolver emit what §8.5 specifies, gated on the tier flag it
+ *      already reads: `#attestto-sign` (and `#firma-digital` where it exists)
+ *      for Tier 1/2, `#solana-key` in `publicKeyMultibase` for Tier 3 only.
+ *      Then bind here to that fragment. Work in `attestto-did-resolver` and in
+ *      whatever writes the on-chain record — not in this repo.
  *   B. Have the platform emit a `did:web` or `did:jwk` holder for sync, keeping
- *      `did:sns` as a naming layer above it. Cheapest; sidesteps the key layer
- *      entirely rather than correcting it.
+ *      `did:sns` as a naming layer above it. Cheapest; leaves the resolver's
+ *      non-conformance in place for every other consumer.
  *   C. Accept unverified `verificationMethod` for `did:sns` explicitly, as a
  *      recorded decision with an expiry — not as a silent gap.
  *
