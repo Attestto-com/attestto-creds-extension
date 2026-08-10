@@ -22,60 +22,72 @@ import { MESSAGE_ROUTES } from '@/background/router/routes'
  * check returns false, and dispatch answers `peer-verification-failed`. Every
  * Tier 2/3 identity sync would break.
  *
- * ── CORRECTION, 2026-08-10: the blocker is NOT a missing resolver ───────────
+ * ── CORRECTION, 2026-08-10: the blocker is SOC-87, and it predates this file ─
  *
- * This header previously offered "build a did:sns resolver" as option 1. That
- * was wrong. One exists, is published (`@attestto/did-sns-resolver`), and is
- * DEPLOYED and public at `resolver.attestto.com` behind the DIF Universal
- * Resolver API. Wiring it in is a small job.
+ * This header previously offered "build a did:sns resolver" as option 1, then
+ * offered three options of my own invention. Both were wrong, and the second
+ * more embarrassingly than the first: a resolver exists, is published
+ * (`@attestto/did-sns-resolver`), is DEPLOYED at `resolver.attestto.com` — and
+ * the defect below was filed as **SOC-87 on 2026-07-20**, three weeks before I
+ * re-derived it. It is still To Do. Do not re-derive it a third time.
  *
- * Wiring it in is not the fix, though, because what it returns does not match
- * the did:sns method specification. Measured against the spec (§8.5 / §8.2,
- * `did-sns-spec/did-sns/spec/08-did-document.md`), the live service today
- * returns for EVERY record:
+ * SOC-87 — "Enforce SNS name ≠ verification key: anchor doc-hash, separate
+ * roles, stop owner→key default" — records both the symptom and the cause:
  *
- *     #key-1  Ed25519VerificationKey2020  publicKeyBase58: <SNS owner wallet>
- *     authentication: [#key-1]   assertionMethod: [#key-1]
+ *   Symptom: `snsMetadata.owner` is byte-identical to `verificationMethod[0]`
+ *   (`#key-1`), referenced by `authentication` AND `assertionMethod`.
+ *   Cause:   `documentHash` was unanchored, so the resolver DEFAULTS `#key-1`
+ *            to the owner wallet (`sns-resolver.ts:370-377`).
  *
- * The owner wallet as a verification method is NOT wrong per se — §8.5 says
- * `#solana-key` MUST be the SNS owner's Solana public key. But that is a TIER 3
- * method, a self-custodial wallet for on-chain governance. §8.5 and the §8.2
- * note are explicit that Tier 1/2 expose ONLY `#firma-digital` and/or
- * `#attestto-sign`, with "no wallet keys, no keyAgreement".
+ * The architecture this violates is DECIDED, not open (Confluence, "did:sns
+ * Anchor Authority — Operator ≠ Authority", 2026-07-20): the subdomain's SNS
+ * record data space is the CONTAINER FOR THE DID DOCUMENT — the user's
+ * verification keys are written there, separate from the domain-owner wallet.
+ * Attestto operates the record; it is never the key authority. SOC-87's target
+ * shape: owner wallet → `capabilityInvocation` only, vault Ed25519 →
+ * `authentication`/`assertionMethod`, X25519 → `keyAgreement`.
  *
- * `sns-resolver.ts:370-377` emits it unconditionally, at every tier. Resolving
- * `did:sns:attestto` returns `isTier3: false` alongside the owner wallet in
- * `authentication`. The resolver PARSES the TIER_3 flag (0x04) into `isTier3`
- * and then never gates the key on it — so every Tier 1/2 identity publishes a
- * Solana address, which is precisely the transaction-history correlation §5.3
- * excludes wallet addresses from `alsoKnownAs` to prevent.
+ * ⚠️ `did-sns-spec` §8.5 CONTRADICTS that decision — it still says `#solana-key`
+ * MUST be the SNS owner's key. The spec predates the decision and was never
+ * updated (SOC-87 anticipated this: "consider a follow-up spec note"). Reading
+ * §8.5 as authoritative is what made me file the decided model as the defect.
+ * The spec is the stale artefact here, not the rule.
  *
- * Three conformance gaps ride along in the same function: the fragment `#key-1`
- * is not in §8.5's vocabulary; `publicKeyBase58` is emitted where the spec uses
- * `publicKeyMultibase` (§8.8's implementer note tells relying parties to read
- * `publicKeyMultibase`); and `#attestto-sign` / `#firma-digital` are never
- * emitted at all, so a conformant Tier 1/2 identity resolves with NO usable
- * verification method.
+ * ── Where the three SOC-87 touchpoints stand (verified live, 2026-08-10) ────
  *
- * And `DID_SYNC` sends `verificationMethod: did:sns:<name>#key-1` (see
- * `did-sync.handler.spec.ts`) — also not a spec fragment. So the two halves
- * MATCH, and switching `vmBinding` on would not fail: it would PASS and report
- * a verified binding. Green, because both sides are non-conformant in the same
- * direction. A control that exists, looks like it covers the invariant, and
- * agrees with the one thing it was supposed to be independent of.
+ *   1. Registrar writes a real `documentHash` — PARTIAL. SOC-87 saw all zeros;
+ *      `did:sns:attestto` now carries `71c41848…`. But nothing serves the
+ *      document that hash commits to, so the anchor changes nothing observable.
+ *   2. Key-gen uses the vault key, not the owner wallet — UNVERIFIABLE from
+ *      outside, and moot while (3) holds: the resolver never reads a document,
+ *      so a correct key inside one would never surface.
+ *   3. Resolver refuses the owner→key default and verifies the hash — NOT DONE.
+ *      `documentHash` is parsed, copied into metadata, and never used. There is
+ *      no document-fetch path in `server.ts` at all.
  *
- * ── The options, restated against the spec ─────────────────────────────────
+ * Related: SOC-84 ("degraded fallback is a downgrade attack with no
+ * machine-readable warning") is marked DONE — but only the spec changed. §9.1,
+ * §9.2 and §12 now require `didResolutionMetadata.degraded = true`; the word
+ * `degraded` appears ZERO times in the resolver, and the live service omits it.
+ * So an unwritten SNS domain still returns a document indistinguishable from a
+ * registered identity. That is how this file's author misread one.
  *
- *   A. Make the resolver emit what §8.5 specifies, gated on the tier flag it
- *      already reads: `#attestto-sign` (and `#firma-digital` where it exists)
- *      for Tier 1/2, `#solana-key` in `publicKeyMultibase` for Tier 3 only.
- *      Then bind here to that fragment. Work in `attestto-did-resolver` and in
- *      whatever writes the on-chain record — not in this repo.
- *   B. Have the platform emit a `did:web` or `did:jwk` holder for sync, keeping
- *      `did:sns` as a naming layer above it. Cheapest; leaves the resolver's
- *      non-conformance in place for every other consumer.
- *   C. Accept unverified `verificationMethod` for `did:sns` explicitly, as a
- *      recorded decision with an expiry — not as a silent gap.
+ * ── What that means for 2.3 ────────────────────────────────────────────────
+ *
+ * `DID_SYNC` sends `verificationMethod: did:sns:<name>#key-1` (see
+ * `did-sync.handler.spec.ts`) — the same defaulted fragment the resolver
+ * synthesises. So the two halves MATCH, and switching `vmBinding` on would not
+ * fail: it would PASS and report a verified binding. Green, because both sides
+ * derive from the same owner-wallet default. A control that exists, looks like
+ * it covers the invariant, and agrees with the one thing it was supposed to be
+ * independent of.
+ *
+ * The blocker is therefore NOT a technical gap in this repo, and not a choice
+ * between options. It is the single open decision on SOC-87, owned by Eduardo:
+ * does the owner wallet appear in-document as `capabilityInvocation`, or stay
+ * entirely off-document? Everything downstream — resolver fix, registrar
+ * anchor, and this check — waits on that. SOC-85 (co-authorization) and SOC-86
+ * (continuity anchor) are To Do in the same family.
  *
  * What is NOT an option is turning the check on as-is. It would be green.
  *
