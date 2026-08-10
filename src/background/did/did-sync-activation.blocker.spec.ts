@@ -22,6 +22,50 @@ import { MESSAGE_ROUTES } from '@/background/router/routes'
  * check returns false, and dispatch answers `peer-verification-failed`. Every
  * Tier 2/3 identity sync would break.
  *
+ * ── CORRECTION, 2026-08-10: the blocker is NOT a missing resolver ───────────
+ *
+ * This header previously offered "build a did:sns resolver" as option 1. That
+ * was wrong. One exists, is published (`@attestto/did-sns-resolver`), and is
+ * DEPLOYED and public at `resolver.attestto.com` behind the DIF Universal
+ * Resolver API. Wiring it in is a small job.
+ *
+ * Wiring it in would also be the WORST available outcome, and that is the real
+ * finding. Resolving `did:sns:eduardo.attestto` against the live service today
+ * returns a single verification method:
+ *
+ *     #key-1  Ed25519VerificationKey2020  publicKeyBase58: 6V3DA…yUs6Y
+ *     authentication: [#key-1]   assertionMethod: [#key-1]
+ *
+ * That key is the SNS DOMAIN OWNER WALLET. The workspace's foundational
+ * name-vs-key doctrine names that exact pubkey as the canonical example of what
+ * must NEVER be published as a verification key: the name layer, the owner
+ * wallet and the signing key are three layers that are never collapsed, because
+ * collapsing them destroys the privacy delinkage, defeats key rotation, and —
+ * where the owner wallet is platform-custodied — puts signing power somewhere
+ * other than the sole control of the natural person.
+ *
+ * And `DID_SYNC` sends `verificationMethod: did:sns:<name>#key-1` (see
+ * `did-sync.handler.spec.ts`). So the two halves MATCH. Switching `vmBinding`
+ * on with the SNS resolver attached would not fail — it would PASS, go green,
+ * and report a verified peer binding whose content is "this identity is
+ * controlled by the owner wallet". A control that exists, looks like it covers
+ * the invariant, and certifies the wrong key.
+ *
+ * ── The options, restated against what is actually true ────────────────────
+ *
+ *   A. Fix the resolver's key layer: publish the vault-derived signing key as
+ *      the verification method instead of the owner wallet, and have DID_SYNC
+ *      reference THAT fragment. This is the doctrine-conformant fix. It is work
+ *      in `attestto-did-resolver` and in whatever writes the on-chain record,
+ *      not in this repo.
+ *   B. Have the platform emit a `did:web` or `did:jwk` holder for sync, keeping
+ *      `did:sns` as a naming layer above it. Cheapest; sidesteps the key layer
+ *      entirely rather than correcting it.
+ *   C. Accept unverified `verificationMethod` for `did:sns` explicitly, as a
+ *      recorded decision with an expiry — not as a silent gap.
+ *
+ * What is NOT an option is turning the check on as-is. It would be green.
+ *
  * ── Why this is a spec and not a TODO comment ──────────────────────────────
  *
  * A comment saying "don't turn this on yet" is exactly the artefact this
@@ -30,19 +74,9 @@ import { MESSAGE_ROUTES } from '@/background/router/routes'
  * methods — so the blocker cannot silently outlive its cause, and they fail if
  * someone widens the allowlist without building a resolver.
  *
- * ── The three ways forward, for a human to choose ──────────────────────────
- *
- * 1. Build a `did:sns` resolver (Solana RPC + SNS lookup). Needs an RPC
- *    provider decision and a host permission. Note the recorded constraint that
- *    an SNS name is NOT a verification key — resolution must produce the key
- *    from the record, not from the name.
- * 2. Have the platform emit a `did:web` or `did:jwk` holder for sync, keeping
- *    `did:sns` as a naming layer above it.
- * 3. Accept unverified `verificationMethod` for `did:sns` explicitly, as a
- *    recorded decision with an expiry — not as a silent gap.
- *
- * Until one is chosen, the check stays wired-and-off, and that state is HONEST
- * rather than hidden: `background.ts` runs no peer check, and says so.
+ * The options are A/B/C in the correction block above. Until one is chosen, the
+ * check stays wired-and-off, and that state is HONEST rather than hidden:
+ * `background.ts` runs no peer check, and says so.
  */
 
 const SNS_DID = 'did:sns:alice.attestto.sol'
