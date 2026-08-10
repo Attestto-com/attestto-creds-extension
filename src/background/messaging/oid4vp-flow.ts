@@ -49,6 +49,8 @@ export interface Oid4vpFlowDeps {
   directPost: DirectPoster
   sign: JwsSigner
   holderDid: string
+  /** Verification-method id of the key `sign` uses — rides as the JWS `kid`. */
+  holderVerificationMethod: string
   loadCredential: () => Promise<Record<string, unknown>>
 }
 
@@ -98,6 +100,7 @@ export function createOid4vpFlow(deps: Oid4vpFlowDeps) {
           approvedClaims,
           credential,
           holderDid: deps.holderDid,
+          holderVerificationMethod: deps.holderVerificationMethod,
           sign: deps.sign,
         })
         if (!built.ok) return { ok: false as const, reason: built.reason }

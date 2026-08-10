@@ -15,6 +15,7 @@ import type { AuthorizationRequest } from './oid4vp-request'
 
 const CLIENT = 'did:web:verifier.example.org'
 const HOLDER = 'did:jwk:abc'
+const HOLDER_VM = `${HOLDER}#0`
 
 const REQUEST: AuthorizationRequest = {
   clientId: CLIENT,
@@ -77,6 +78,7 @@ async function build(over: Partial<Parameters<typeof buildPresentationResponse>[
     approvedClaims: ['$.credentialSubject.name'],
     credential: EXACT_CREDENTIAL,
     holderDid: HOLDER,
+    holderVerificationMethod: HOLDER_VM,
     sign: signer,
     ...over,
   })
@@ -163,6 +165,7 @@ describe('buildPresentationResponse — the approved set is the disclosed set', 
       approvedClaims: ['$.credentialSubject.name'], // user approves only one
       credential: CREDENTIAL,
       holderDid: HOLDER,
+      holderVerificationMethod: HOLDER_VM,
       sign: signer,
     })
     expect(result).toEqual({ ok: false, reason: 'partial-disclosure-unsupported' })
@@ -270,6 +273,7 @@ describe('what the refusal costs — JSON-LD over OID4VP', () => {
       approvedClaims: ['$.credentialSubject.name', '$.credentialSubject.dob'],
       credential: CREDENTIAL, // also holds cedula + salary
       holderDid: HOLDER,
+      holderVerificationMethod: HOLDER_VM,
       sign: signer,
     })
     expect(result).toEqual({ ok: false, reason: 'partial-disclosure-unsupported' })
@@ -281,6 +285,7 @@ describe('what the refusal costs — JSON-LD over OID4VP', () => {
       approvedClaims: ['$.credentialSubject.name'],
       credential: EXACT_CREDENTIAL,
       holderDid: HOLDER,
+      holderVerificationMethod: HOLDER_VM,
       sign: signer,
     })
     expect(result.ok).toBe(true)

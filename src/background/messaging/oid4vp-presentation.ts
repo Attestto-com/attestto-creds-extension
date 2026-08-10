@@ -73,6 +73,17 @@ export interface BuildPresentationInput {
   approvedClaims: readonly string[]
   credential: Record<string, unknown>
   holderDid: string
+  /**
+   * The verification-method id of the key `sign` uses — becomes the JWS `kid`.
+   *
+   * Required, and deliberately not defaulted to `${holderDid}#0`. That default
+   * is correct for `did:jwk` only, because there the DID *is* the key. Every
+   * other holder method resolves to a document with N verification methods, and
+   * a guessed `kid` would name a key that did not sign — a verifier then fails
+   * a presentation that was perfectly valid, or worse, checks the wrong key.
+   * The caller supplies the signer, so the caller knows which key it is.
+   */
+  holderVerificationMethod: string
   sign: JwsSigner
 }
 
@@ -100,7 +111,7 @@ export function claimToSubjectField(path: string): string | null {
 export async function buildPresentationResponse(
   input: BuildPresentationInput,
 ): Promise<BuildPresentationResult> {
-  const { request, approvedClaims, credential, holderDid, sign } = input
+  const { request, approvedClaims, credential, holderDid, holderVerificationMethod, sign } = input
 
   if (approvedClaims.length === 0) return { ok: false, reason: 'no-approved-claims' }
 
@@ -138,7 +149,11 @@ export async function buildPresentationResponse(
   let vpToken: string
   try {
     vpToken = await signCompactJws(
-      { alg: 'ES256', typ: 'JWT' },
+      // 🔑 `kid` names the key that signed. Without it a verifier holding a
+      // multi-key holder document cannot tell which verification method to
+      // check, and `did:jwk` hides that — there the DID carries the only key,
+      // so the omission is invisible until the first did:web or did:sns holder.
+      { alg: 'ES256', typ: 'JWT', kid: holderVerificationMethod },
       {
         iss: holderDid,
         sub: holderDid,

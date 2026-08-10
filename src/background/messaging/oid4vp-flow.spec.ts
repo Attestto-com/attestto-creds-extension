@@ -91,6 +91,7 @@ function makeFlow(over: { post?: DirectPoster['post']; credential?: Record<strin
     directPost: { post },
     sign,
     holderDid: HOLDER,
+    holderVerificationMethod: `${HOLDER}#0`,
     loadCredential: async () => over.credential ?? CREDENTIAL,
   })
   return { flow, post, sign }
