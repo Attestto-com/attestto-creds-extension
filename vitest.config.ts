@@ -62,12 +62,13 @@ export default defineConfig({
        */
       thresholds: {
         // Global: stops overall regression without demanding UI tests.
-        // Ratcheted 45→50→52 as background.ts (0→66%) and
-        // credential-api.content.ts (26→87%) came under test.
-        statements: 52,
-        branches: 44,
-        functions: 50,
-        lines: 52,
+        // Ratcheted 45→50→52→54 as the entrypoints came under test:
+        // background.ts 0→66%, credential-api.content.ts 26→87%,
+        // credential-handler.content.ts 0→73%.
+        statements: 54,
+        branches: 46,
+        functions: 52,
+        lines: 54,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
@@ -81,6 +82,9 @@ export default defineConfig({
         // The untrusted boundary — runs on every https page. Measured 87.4%.
         // Floored so the origin invariant cannot lose its only assertion.
         'src/entrypoints/credential-api.content.ts': { statements: 80, branches: 78, functions: 90, lines: 80 },
+        // MAIN world — it monkey-patches navigator.credentials.get on every
+        // https page, so a regression here breaks passkey login site-wide.
+        'src/entrypoints/credential-handler.content.ts': { statements: 70, branches: 64, functions: 74, lines: 74 },
       },
     },
   },
