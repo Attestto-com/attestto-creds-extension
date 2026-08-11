@@ -62,11 +62,12 @@ export default defineConfig({
        */
       thresholds: {
         // Global: stops overall regression without demanding UI tests.
-        // Raised 45→50 once the dispatch spec took background.ts from 0 to 66%.
-        statements: 50,
-        branches: 42,
-        functions: 48,
-        lines: 50,
+        // Ratcheted 45→50→52 as background.ts (0→66%) and
+        // credential-api.content.ts (26→87%) came under test.
+        statements: 52,
+        branches: 44,
+        functions: 50,
+        lines: 52,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
@@ -77,6 +78,9 @@ export default defineConfig({
         // ZERO: nothing had ever imported the module. Floored so the reachability
         // spec cannot be quietly deleted without a red build.
         'src/entrypoints/background.ts': { statements: 60, branches: 50, functions: 44, lines: 60 },
+        // The untrusted boundary — runs on every https page. Measured 87.4%.
+        // Floored so the origin invariant cannot lose its only assertion.
+        'src/entrypoints/credential-api.content.ts': { statements: 80, branches: 78, functions: 90, lines: 80 },
       },
     },
   },
