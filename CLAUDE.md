@@ -47,8 +47,18 @@ There is NO `/app/register` or `/app/login`. Don't invent routes.
 | Tier | DID method | Issued via | Use case |
 |---|---|---|---|
 | 1 — local | `did:jwk` (auto-gen) | Extension, locally | **The first-run identity.** Every user starts here; upgrading to Tier 2/3 is optional |
-| 2 — tenant-anchored | `did:sns:user.tenant.attestto.sol` | Tenant via CORTEX subdomain allocation | KYC'd vendors (OPTISOFT, notarios) |
+| 2 — tenant-anchored | `did:sns:user.tenant.sol` (e.g. `did:sns:alice.optisoft.sol`) | Tenant via CORTEX subdomain allocation | KYC'd vendors (OPTISOFT, notarios) |
 | 3 — user-root | `did:sns:chongkan.attestto.sol` | User claims via `attestto-app` | Cross-site portable identity, the "Sign in with Attestto" play |
+
+> ⛔ **SNS is `subdomain.domain` — TWO levels, and that is structural.** This row
+> previously read `did:sns:user.tenant.attestto.sol`, which is **impossible**:
+> strip `.sol` and it is three labels, and there is no PDA to derive. Solana Name
+> Service supports a root domain and one level of subdomain, full stop
+> (`did-sns-spec` §7.2). **The tenant IS the domain** — a Tier 2 identity is
+> `alice.optisoft`, never `alice.optisoft.attestto`. Do not "fix" this by
+> proposing a spec change or asking which way it should go; there is nothing to
+> decide. Corrected 2026-08-10 after this line generated the same wrong
+> conclusion for a third time.
 
 **Extension-first (confirmed 2026-08-09).** A user creates a wallet and a Tier 1
 identity in the extension, with no external service. Tier 2/3 are upgrades on top,
