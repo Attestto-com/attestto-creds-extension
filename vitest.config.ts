@@ -62,13 +62,13 @@ export default defineConfig({
        */
       thresholds: {
         // Global: stops overall regression without demanding UI tests.
-        // Ratcheted 45→50→52→54 as the entrypoints came under test:
+        // Ratcheted 45→50→52→54→56 as the entrypoints came under test:
         // background.ts 0→66%, credential-api.content.ts 26→87%,
-        // credential-handler.content.ts 0→73%.
-        statements: 54,
-        branches: 46,
-        functions: 52,
-        lines: 54,
+        // credential-handler.content.ts 0→73%, trust-bar.content.ts 13→83%.
+        statements: 56,
+        branches: 48,
+        functions: 54,
+        lines: 56,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
@@ -85,6 +85,9 @@ export default defineConfig({
         // MAIN world — it monkey-patches navigator.credentials.get on every
         // https page, so a regression here breaks passkey login site-wide.
         'src/entrypoints/credential-handler.content.ts': { statements: 70, branches: 64, functions: 74, lines: 74 },
+        // The threat report is the only thing in this feature that leaves the
+        // user's machine, and its allowed-field list lived only in a comment.
+        'src/entrypoints/trust-bar.content.ts': { statements: 80, branches: 55, functions: 78, lines: 82 },
       },
     },
   },
