@@ -773,14 +773,28 @@ export default defineBackground(() => {
       case 'PUSH_PRESENTATION': {
         const push = message.payload as PushPresentationMessage['payload']
         answerOrFail(recordPreparedPresentation(push, vaultRecordCtx).then(({ record }) => {
+          // The notification lives INSIDE the success path for two reasons.
+          //
+          // It used to sit after this call, in the listener body, reading
+          // `push.selectedFields.length` with no validation — a synchronous
+          // throw on any payload lacking the field, raised BEFORE `return true`
+          // ran. The channel then closed with no reply and the caller waited
+          // forever: precisely the hang `answerOrFail` exists to prevent, from
+          // the one line that was outside it. `PUSH_PRESENTATION` crosses the
+          // content-script bridge, so the payload is not ours to trust.
+          //
+          // And announcing "Presentation Ready" before the record is stored
+          // told the user something was in their vault when the write could
+          // still fail. `record` is the stored value, so the count is now the
+          // one actually persisted.
+          chrome.notifications.create({
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icon/48.png'),
+            title: 'Presentation Ready',
+            message: `A prepared presentation with ${record.selectedFields?.length ?? 0} field(s) is ready in your vault.`,
+          })
           sendResponse({ ok: true, preparedId: record.id })
         }), 'PUSH_PRESENTATION')
-        chrome.notifications.create({
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icon/48.png'),
-          title: 'Presentation Ready',
-          message: `A prepared presentation with ${push.selectedFields.length} field(s) is ready in your vault.`,
-        })
         return true // async
       }
 

@@ -62,16 +62,21 @@ export default defineConfig({
        */
       thresholds: {
         // Global: stops overall regression without demanding UI tests.
-        statements: 45,
-        branches: 40,
-        functions: 43,
-        lines: 45,
+        // Raised 45→50 once the dispatch spec took background.ts from 0 to 66%.
+        statements: 50,
+        branches: 42,
+        functions: 48,
+        lines: 50,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
         'src/background/did/**': { statements: 92, branches: 88, functions: 90, lines: 92 },
         // Crypto helpers, vault, trusted origins, passphrase KDF. Measured 63.9%.
         'src/utils/**': { statements: 60, branches: 58, functions: 60, lines: 62 },
+        // The composition root — the 42-case dispatch. Measured 66.1%, up from
+        // ZERO: nothing had ever imported the module. Floored so the reachability
+        // spec cannot be quietly deleted without a red build.
+        'src/entrypoints/background.ts': { statements: 60, branches: 50, functions: 44, lines: 60 },
       },
     },
   },
