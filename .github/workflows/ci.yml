@@ -1,8 +1,15 @@
 name: CI
 
+# CI ran only on `develop` and on PRs targeting it. This branch has 37 commits
+# pushed to a PUBLIC repo with no PR open, so not one of them has ever been
+# through a gate — the type-check, lint, test and gate-self-test steps below all
+# existed and none had run against this work.
+#
+# Running on every branch closes that: work is checked when it is pushed, not
+# when someone remembers to open a PR.
 on:
   push:
-    branches: [develop]
+    branches: ['**']
   pull_request:
     branches: [develop]
 
@@ -42,6 +49,13 @@ jobs:
 
       - name: Test
         run: npm run test:run
+
+      # `test:coverage` existed and nothing ran it, so coverage was computed and
+      # never enforced. Floors live in vitest.config.ts and are per-area, not one
+      # global number: a threshold low enough for the untested Vue views to pass
+      # would let src/services rot from 95% to 50% without a red build.
+      - name: Coverage
+        run: npm run test:coverage
 
       # The gate self-test runs LAST and is the reason to believe the three above.
       # For each of type-check / lint / test it seeds a deliberate violation,

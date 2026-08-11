@@ -22,7 +22,23 @@ beforeEach(() => {
   mockStorage.local = {}
 })
 
-describe('passphrase-kdf', () => {
+/**
+ * Argon2id is memory-hard ON PURPOSE — 19 MiB and t=2 per OWASP 2024, ~380 ms
+ * per derivation on this hardware. Several tests below derive two or three
+ * keys, so under vitest's default 5 s they pass in isolation and fail
+ * intermittently in a full 90-file run where the workers contend for CPU. A CI
+ * runner has fewer cores than a dev machine, so it fails there MORE often.
+ *
+ * An intermittently red gate is worse than a missing one: the reflex is to
+ * re-run until green, which teaches everyone to disregard the signal.
+ *
+ * The fix is the timeout, never the parameters. Lowering `m` or `t` to make the
+ * suite fast would weaken the key derivation protecting the vault in order to
+ * make a test pass — the cost IS the security property.
+ */
+const ARGON2_TIMEOUT_MS = 30_000
+
+describe('passphrase-kdf', { timeout: ARGON2_TIMEOUT_MS }, () => {
   it('rejects passphrases shorter than 8 characters', async () => {
     const salt = new Uint8Array(32)
     await expect(deriveKeyFromPassphrase('short', salt)).rejects.toThrow('at least 8 characters')

@@ -73,6 +73,27 @@ const GATES = [
     seedPath: 'src/__gate-self-test__.spec.ts',
     seed: `import { describe, it, expect } from 'vitest'\n\ndescribe('gate self-test', () => {\n  it('fails on purpose', () => {\n    expect(1).toBe(2)\n  })\n})\n`,
   },
+  {
+    name: 'test:coverage',
+    command: 'npm run test:coverage',
+    // Seeded INSIDE src/services, which carries a 90% floor. A global-only
+    // threshold could not notice one uncovered file among hundreds — that is
+    // the argument for per-area floors, and this is the test of it.
+    seedPath: 'src/services/__gate-self-test__.ts',
+    // Untested branches, not merely untested lines: a file that only lowers
+    // line coverage would prove less than one that also drags branches down,
+    // and branch coverage is the number that actually degrades first.
+    seed:
+      `export function neverCalled(n: number): string {\n` +
+      `  if (n > 10) return 'big'\n` +
+      `  if (n > 5) return 'medium'\n` +
+      `  if (n > 0) return 'small'\n` +
+      `  return 'none'\n` +
+      `}\n\n` +
+      `export function alsoNeverCalled(items: string[]): string[] {\n` +
+      `  return items.filter((i) => i.length > 0).map((i) => i.toUpperCase())\n` +
+      `}\n`,
+  },
 ]
 
 let failures = 0

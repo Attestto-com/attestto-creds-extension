@@ -41,6 +41,38 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.{ts,vue}'],
       exclude: ['src/**/*.spec.ts'],
+      /**
+       * Coverage was computed and never enforced — `test:coverage` existed, no
+       * CI step ran it, no threshold read it. So "is this tested?" could only
+       * be answered by grepping which module a spec imports.
+       *
+       * The global number is 48%, and quoting that alone would misdescribe the
+       * repo in both directions. It is dragged down by Vue views (0%, no unit
+       * tests planned) and by `src/entrypoints/background.ts` (5.9%), while the
+       * logic Story 1.13 extracted OUT of that service worker sits at 94–98%.
+       *
+       * So the floors are per-area rather than one global figure. A single
+       * threshold low enough for the views to pass would let `services` rot
+       * from 95% to 50% without a red build — a gate that cannot notice the
+       * regression it exists to catch.
+       *
+       * Every number is set just below what the suite measures TODAY. Raising
+       * them as coverage rises is the intended edit; lowering one to make a
+       * build pass is how this becomes decorative.
+       */
+      thresholds: {
+        // Global: stops overall regression without demanding UI tests.
+        statements: 45,
+        branches: 40,
+        functions: 43,
+        lines: 45,
+        // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
+        'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
+        // DID resolution and document handling. Measured 96.1%.
+        'src/background/did/**': { statements: 92, branches: 88, functions: 90, lines: 92 },
+        // Crypto helpers, vault, trusted origins, passphrase KDF. Measured 63.9%.
+        'src/utils/**': { statements: 60, branches: 58, functions: 60, lines: 62 },
+      },
     },
   },
 })
