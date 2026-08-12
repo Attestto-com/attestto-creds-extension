@@ -69,22 +69,44 @@ export default defineConfig({
        * build pass is how this becomes decorative.
        */
       thresholds: {
-        // Global: stops overall regression without demanding UI tests.
-        // Ratcheted 45→50→52→54→56→59 as the entrypoints came under test:
-        // background.ts 0→66%, credential-api.content.ts 26→87%,
-        // credential-handler.content.ts 0→73%, trust-bar.content.ts 13→83%,
-        // approval/App.vue 0→53%. The last step also came from excluding
-        // `*.test-d.ts` above, which had been counted as uncovered source.
-        statements: 59,
-        branches: 50,
-        functions: 55,
-        lines: 60,
+        /**
+         * Global: a BACKSTOP, deliberately kept slack — unlike the per-area
+         * floors below, which are set just under what their area measures.
+         *
+         * The two serve different purposes and should not share a convention.
+         * A per-area floor detects a real regression: `services` sliding from
+         * 95% to 50% is a fact about one area, and its floor names that area
+         * when it trips. The global number moves whenever ANY file is added,
+         * so ratcheting it tight mostly detects that someone wrote a file —
+         * and it reports that as "branches 50.9 < 51", which says nothing
+         * about the change that caused it.
+         *
+         * It was briefly ratcheted to 60/51/55/61 against a measured
+         * 61.52/51.76/56.02/62.50, leaving 0.76 points of headroom on
+         * branches: about one new component with a few untested conditionals.
+         * Backed off to roughly four points of slack, matching the margin the
+         * per-area floors carry. Raise it when a whole tranche of the codebase
+         * comes under test, not on every PR that adds coverage.
+         *
+         * History: 45→50→52→54→56 as the entrypoints came under test
+         * (background.ts 0→66%, credential-api.content.ts 26→87%,
+         * credential-handler.content.ts 0→73%, trust-bar.content.ts 13→83%,
+         * approval/App.vue 0→53%, webauthn.ts 64→94%). The `*.test-d.ts`
+         * exclude above also lifted every number, by removing type tests that
+         * had been counted as uncovered source rather than as test code.
+         */
+        statements: 57,
+        branches: 48,
+        functions: 53,
+        lines: 58,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
         'src/background/did/**': { statements: 92, branches: 88, functions: 90, lines: 92 },
-        // Crypto helpers, vault, trusted origins, passphrase KDF. Measured 63.9%.
-        'src/utils/**': { statements: 60, branches: 58, functions: 60, lines: 62 },
+        // Crypto helpers, vault, trusted origins, passphrase KDF. Measured 71.4%,
+        // up from 63.9% now that `unlockWithPasskey` is covered (SOC-236):
+        // webauthn.ts alone went 64.2 -> 93.7% statements, 45.5 -> 84.1% branches.
+        'src/utils/**': { statements: 69, branches: 65, functions: 68, lines: 73 },
         // The composition root — the 42-case dispatch. Measured 66.1%, up from
         // ZERO: nothing had ever imported the module. Floored so the reachability
         // spec cannot be quietly deleted without a red build.
