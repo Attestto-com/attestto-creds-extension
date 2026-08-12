@@ -2,7 +2,13 @@
 import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { TrashIcon } from '@heroicons/vue/24/outline'
-import { DEFAULT_SETTINGS, readSettings, writeSettings, type SettingsConfig } from '@/utils/settings-config'
+import {
+  AUTO_LOCK_CHOICES,
+  DEFAULT_SETTINGS,
+  readSettings,
+  writeSettings,
+  type SettingsConfig,
+} from '@/utils/settings-config'
 import { readPublicVault } from '@/utils/vault'
 import { useWalletStore } from '@/stores/wallet'
 
@@ -54,10 +60,11 @@ watch(
   (next) => {
     if (!loaded.value) return
     if (saveDebounce) clearTimeout(saveDebounce)
-    saveDebounce = setTimeout(async () => {
-      await writeSettings(next)
-      justSaved.value = true
-      setTimeout(() => (justSaved.value = false), 1500)
+    saveDebounce = setTimeout(() => {
+      void writeSettings(next).then(() => {
+        justSaved.value = true
+        setTimeout(() => (justSaved.value = false), 1500)
+      })
     }, 200)
   },
   { deep: true },
@@ -124,6 +131,30 @@ async function confirmRemove(): Promise<void> {
     <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
       <h2 class="text-lg font-semibold text-[#f1f4f8]">{{ t('security.pinBehavior.title') }}</h2>
       <p class="mt-1 text-sm text-[#a8b4c4]">{{ t('security.pinBehavior.always') }}</p>
+    </section>
+
+    <!-- Idle auto-lock (Story 1.14) -->
+    <section class="rounded-xl border border-[#243044] bg-[#111a28] p-5 shadow-sm">
+      <h2 class="mb-1 text-lg font-semibold text-[#f1f4f8]">{{ t('security.autoLock.title') }}</h2>
+      <p class="mb-4 text-sm text-[#a8b4c4]">{{ t('security.autoLock.description') }}</p>
+      <div class="flex flex-wrap gap-2">
+        <button
+          v-for="minutes in AUTO_LOCK_CHOICES"
+          :key="minutes"
+          type="button"
+          :aria-pressed="cfg.autoLockMinutes === minutes"
+          class="rounded-md border px-4 py-2 text-sm transition-colors"
+          :class="
+            cfg.autoLockMinutes === minutes
+              ? 'border-[#4a8ec8] bg-[#4a8ec8]/15 font-semibold text-[#f1f4f8]'
+              : 'border-[#243044] text-[#a8b4c4] hover:text-[#f1f4f8]'
+          "
+          @click="cfg.autoLockMinutes = minutes"
+        >
+          {{ t('security.autoLock.minutes', { count: minutes }, minutes) }}
+        </button>
+      </div>
+      <p class="mt-3 text-xs text-[#8a97a8]">{{ t('security.autoLock.noNeverNote') }}</p>
     </section>
 
     <!-- Notifications -->

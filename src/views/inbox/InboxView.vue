@@ -26,11 +26,11 @@ onMounted(() => {
 })
 
 function openRequest(id: string): void {
-  router.push(`/consent/${id}`)
+  void router.push(`/consent/${id}`)
 }
 
 function openPrepared(): void {
-  router.push('/credentials/prepared')
+  void router.push('/credentials/prepared')
 }
 </script>
 

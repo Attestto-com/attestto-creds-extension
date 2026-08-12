@@ -1,46 +1,24 @@
 /**
- * DIDComm v2 message handler — P2P encrypted channel with verifiers.
+ * Inbound proof-request parsing.
  *
- * Implements the Present Proof 3.0 protocol (Aries RFC 0454):
- *   1. Receive request-presentation from verifier
- *   2. Build consent popup data (requested fields)
- *   3. On user approval, create partial SD-JWT presentation
- *   4. Send presentation back via the same channel
+ * Honest surface (Story 1.8): this module borrows DIDComm/Present-Proof-3.0
+ * message-type vocabulary but implements NONE of the DIDComm wire mechanics —
+ * there is no JWE envelope, no X25519 key agreement, no DID-endpoint resolution,
+ * no encrypted transport. It only reads fields off an already-received plain
+ * message. Earlier docs claimed a "P2P encrypted channel / implements Present
+ * Proof 3.0"; that was borrowed vocabulary, never a protocol. The real inbound
+ * transport is REST + DIF Presentation Exchange and is rebuilt in Epic 2 (OID4VP);
+ * the `DIDCOMM_INBOUND` route that calls `parseProofRequest` is characterized in
+ * Story 1.9 before that rework, which is why the parser is kept here.
  *
- * Transport: The verifier's DIDComm endpoint is resolved from their DID.
- * Encryption: X25519 ECDH-ES+A256KW key agreement (JWE envelope).
- *
- * NOTE: This is a logical handler — the actual encrypted transport
- * will use the platform relay in Phase 6. Direct P2P requires
- * WebSocket or HTTP endpoint exchange, which is Phase 4+ scope.
+ * The response/problem-report builders that previously lived here were dead
+ * (zero production callsites — tested placeholders) and were retired in Story 1.8.
  */
 
-import type { DIDCommMessage, DIDCommProofRequest } from '@/types/credential'
+import type { DIDCommProofRequest } from '@/types/credential'
 
-// ── DIDComm v2 Message Types ─────────────────────────────
-
+/** The inbound message type this parser recognizes (Present-Proof request shape). */
 const PRESENT_PROOF_REQUEST = 'https://didcomm.org/present-proof/3.0/request-presentation'
-const PRESENT_PROOF_RESPONSE = 'https://didcomm.org/present-proof/3.0/presentation'
-const PRESENT_PROOF_PROBLEM = 'https://didcomm.org/present-proof/3.0/problem-report'
-
-export interface DIDCommPresentationResponse extends DIDCommMessage {
-  type: typeof PRESENT_PROOF_RESPONSE
-  body: {
-    goal_code: 'verify-identity'
-    formats: Array<{
-      attach_id: string
-      format: string
-    }>
-    presentations_attach: Array<{
-      id: string
-      media_type: string
-      data: {
-        json?: Record<string, unknown>
-        base64?: string
-      }
-    }>
-  }
-}
 
 export interface ParsedProofRequest {
   id: string
@@ -51,11 +29,9 @@ export interface ParsedProofRequest {
   comment: string
 }
 
-// ── Parsing ──────────────────────────────────────────────
-
 /**
- * Parse a DIDComm v2 message and extract proof request data.
- * Returns null if the message is not a valid proof request.
+ * Parse an inbound proof-request message and extract the request data.
+ * Returns null if the message is not a well-formed proof request.
  */
 export function parseProofRequest(message: unknown): ParsedProofRequest | null {
   if (!message || typeof message !== 'object') return null
@@ -74,65 +50,5 @@ export function parseProofRequest(message: unknown): ParsedProofRequest | null {
     requestedFields: attach.data.requestedFields ?? [],
     audience: attach.data.audience ?? msg.from,
     comment: msg.body.comment ?? '',
-  }
-}
-
-/**
- * Build a DIDComm v2 presentation response message.
- */
-export function buildPresentationResponse(
-  requestId: string,
-  from: string,
-  to: string,
-  presentation: string,
-  format: 'sd-jwt' | 'json-ld',
-): DIDCommPresentationResponse {
-  const attachFormat = format === 'sd-jwt'
-    ? 'dif/presentation-exchange/v2@v2.0'
-    : 'aries/ld-proof-vc-detail@v2.0'
-
-  return {
-    id: `${requestId}-response`,
-    type: PRESENT_PROOF_RESPONSE,
-    from,
-    to: [to],
-    created_time: Math.floor(Date.now() / 1000),
-    body: {
-      goal_code: 'verify-identity',
-      formats: [{
-        attach_id: 'presentation-0',
-        format: attachFormat,
-      }],
-      presentations_attach: [{
-        id: 'presentation-0',
-        media_type: format === 'sd-jwt' ? 'application/sd-jwt' : 'application/ld+json',
-        data: format === 'sd-jwt'
-          ? { base64: btoa(presentation) }
-          : { json: JSON.parse(presentation) },
-      }],
-    },
-  }
-}
-
-/**
- * Build a DIDComm v2 problem report (decline/error).
- */
-export function buildProblemReport(
-  requestId: string,
-  from: string,
-  to: string,
-  code: 'e.p.user-declined' | 'e.p.credential-not-found' | 'e.p.internal-error',
-  comment: string,
-): DIDCommMessage {
-  return {
-    id: `${requestId}-problem`,
-    type: PRESENT_PROOF_PROBLEM,
-    from,
-    to: [to],
-    created_time: Math.floor(Date.now() / 1000),
-    body: {
-      code,
-      comment,
-    },
   }
 }

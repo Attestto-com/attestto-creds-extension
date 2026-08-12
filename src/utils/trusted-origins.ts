@@ -12,6 +12,7 @@
  */
 
 import { STORAGE_KEYS } from '@/config/app'
+import { normalizeOrigin } from '@/utils/origin'
 
 export interface TrustedOriginRecord {
   /** ISO timestamp when the user first approved this origin */
@@ -31,25 +32,15 @@ async function writeMap(map: TrustedOriginsMap): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.TRUSTED_ORIGINS]: map })
 }
 
-function normalize(origin: string | null | undefined): string | null {
-  if (!origin) return null
-  try {
-    const u = new URL(origin)
-    return `${u.protocol}//${u.host}`
-  } catch {
-    return null
-  }
-}
-
 export async function isOriginTrusted(origin: string | null | undefined): Promise<boolean> {
-  const key = normalize(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return false
   const map = await readMap()
   return Boolean(map[key])
 }
 
 export async function recordTrustedOrigin(origin: string | null | undefined): Promise<void> {
-  const key = normalize(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return
   const map = await readMap()
   const now = new Date().toISOString()
@@ -62,7 +53,7 @@ export async function recordTrustedOrigin(origin: string | null | undefined): Pr
 }
 
 export async function revokeTrustedOrigin(origin: string): Promise<void> {
-  const key = normalize(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return
   const map = await readMap()
   delete map[key]

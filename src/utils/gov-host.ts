@@ -27,10 +27,18 @@ export const GOV_MATCH_PATTERNS = [
 /**
  * True when `host` ends in one of the recognized CR public-sector suffixes.
  * Tolerant of null/undefined, case-insensitive, and strips a trailing dot.
+ *
+ * This is the CANONICAL gov-host predicate (Story 1.12, FR18/AD-8) — the single
+ * home for the classification logic AND the oracle the serialized `analyzeSiteHealth`
+ * copy is parity-tested against. `tlds` is parameterized so the same normalization
+ * is applied whether the list comes from the module's `GOV_TLDS` (badge/trust-bar
+ * callers) or is threaded in as data. The injected copy in `site-health.ts` cannot
+ * import this (it must stay closure-free for `executeScript`), so it re-expresses
+ * this exact logic and a parity test reddens if the two ever diverge.
  */
-export function isGovHost(host: string | null | undefined): boolean {
+export function isGovHost(host: string | null | undefined, tlds: readonly string[] = GOV_TLDS): boolean {
   if (!host) return false
   const h = host.trim().toLowerCase().replace(/\.$/, '')
   if (!h) return false
-  return GOV_TLDS.some((tld) => h.endsWith(tld))
+  return tlds.some((tld) => h.endsWith(tld))
 }

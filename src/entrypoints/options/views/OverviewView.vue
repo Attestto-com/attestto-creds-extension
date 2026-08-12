@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { ShieldCheckIcon, FingerPrintIcon, LockClosedIcon, EyeSlashIcon, ArrowRightIcon, QuestionMarkCircleIcon, ArrowTopRightOnSquareIcon } from '@heroicons/vue/24/outline'
 import { listPins, type PinRecord } from '@/utils/pin-store'
 import { useWalletStore } from '@/stores/wallet'
-import { APP_VERSION, PLATFORM_URL } from '@/config/app'
+import { APP_VERSION } from '@/config/app'
 
 defineEmits<{ goto: [tab: 'overview' | 'security' | 'privacy'] }>()
 
@@ -73,7 +73,7 @@ onMounted(async () => {
           <template v-else>
             <p class="mt-1 text-sm text-[#a8b4c4]">{{ t('overview.identity.upgradeBody') }}</p>
             <a
-              :href="`${PLATFORM_URL}/onboarding?src=extension`"
+              to="/setup"
               target="_blank"
               rel="noopener noreferrer"
               class="mt-3 inline-flex items-center gap-1 rounded-md bg-[#3b82a0] px-4 py-2 text-sm font-medium text-white hover:bg-[#4a9ab8]"
@@ -84,7 +84,7 @@ onMounted(async () => {
             <p class="mt-2 text-xs text-[#8a97a8]">
               {{ t('overview.identity.alreadyHave') }}
               <a
-                :href="`${PLATFORM_URL}/lock?src=extension`"
+                to="/setup"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="text-[#5a9db8] hover:text-[#9ecbe0]"
@@ -134,7 +134,7 @@ onMounted(async () => {
         <ArrowTopRightOnSquareIcon class="ml-auto size-4 text-[#8a97a8]" />
       </a>
       <a
-        :href="PLATFORM_URL"
+        href="https://attestto.com"
         target="_blank"
         rel="noopener noreferrer"
         class="flex items-center gap-3 rounded-xl border border-[#243044] bg-[#111a28] p-4 text-left shadow-sm hover:border-[#3b82a0]/60 hover:bg-[#141e2e]"

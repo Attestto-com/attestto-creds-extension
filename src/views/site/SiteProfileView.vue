@@ -45,7 +45,7 @@ import {
 } from '@heroicons/vue/24/outline'
 import { lookupTls, snapshotDate, type TlsSnapshotRow } from '@/utils/tls-snapshot'
 import { lookupHost } from '@/utils/trust-registry'
-import { isGovHost } from '@/utils/gov-host'
+import { isGovHost, GOV_TLDS } from '@/utils/gov-host'
 import { homographState, type HomographVerdict } from '@/utils/homograph'
 import { isPinned } from '@/utils/pin-store'
 import { analyzeSiteHealth, type SiteHealthResult } from '@/utils/site-health'
@@ -88,7 +88,7 @@ async function runLiveScan(): Promise<void> {
     const response = await chrome.runtime.sendMessage({
       type: 'CERT_SCAN_REQUEST',
       payload: { hostname: host.value },
-    }) as CertScanResult
+    })
     if (response?.ok === false) {
       scanError.value = true
     } else {
@@ -158,16 +158,17 @@ async function runHealthAnalysis(tabId: number | null): Promise<void> {
   healthLoading.value = true
   healthError.value = false
   try {
-    // Serialize analyzeSiteHealth as an inline function injected into the
-    // active tab. The function has no closure captures and returns a plain
-    // object — safe to serialize and transfer across the extension boundary.
+    // Serialize analyzeSiteHealth as an inline function injected into the active
+    // tab. No closure captures — the gov-TLD list is threaded in as a DATA arg from
+    // the single source (Story 1.12), never re-inlined in the serialized function.
     const results = await chrome.scripting.executeScript({
       target: { tabId },
       func: analyzeSiteHealth,
+      args: [[...GOV_TLDS]],
       world: 'MAIN',
     })
     const value = results?.[0]?.result ?? null
-    healthResult.value = value as SiteHealthResult | null
+    healthResult.value = value
     if (!healthResult.value) healthError.value = true
   } catch {
     healthError.value = true
@@ -177,7 +178,7 @@ async function runHealthAnalysis(tabId: number | null): Promise<void> {
 }
 
 function goBack(): void {
-  router.push('/')
+  void router.push('/')
 }
 </script>
 

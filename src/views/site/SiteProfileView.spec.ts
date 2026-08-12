@@ -57,6 +57,13 @@ const mockTlsRow: TlsSnapshotRow = {
   isFreeCA: false,
   expired: false,
   daysToExpiry: 180,
+  issuerCommonName: 'DigiCert EV RSA CA G2',
+  issuerOrganization: 'DigiCert Inc',
+  isOrganizationValidated: true,
+  subjectCommonName: 'bccr.fi.cr',
+  subjectAltNames: ['bccr.fi.cr'],
+  validFrom: '2026-01-01T00:00:00Z',
+  sha256: 'aa:bb:cc',
   validTo: '2026-12-31T00:00:00Z',
 }
 

@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  parseProofRequest,
-  buildPresentationResponse,
-  buildProblemReport,
-} from './didcomm'
+import { parseProofRequest } from './didcomm'
 
 describe('DIDComm v2 — parseProofRequest', () => {
   const validRequest = {
@@ -89,68 +85,5 @@ describe('DIDComm v2 — parseProofRequest', () => {
     expect(parsed!.nonce).toBe('')
     expect(parsed!.requestedFields).toEqual([])
     expect(parsed!.comment).toBe('')
-  })
-})
-
-describe('DIDComm v2 — buildPresentationResponse', () => {
-  it('builds an SD-JWT presentation response', () => {
-    const response = buildPresentationResponse(
-      'req-001',
-      'did:key:zHolder',
-      'did:sns:verifier',
-      'eyJhbGciOiJFUzI1NiJ9.test~disclosure1~',
-      'sd-jwt',
-    )
-
-    expect(response.id).toBe('req-001-response')
-    expect(response.type).toBe('https://didcomm.org/present-proof/3.0/presentation')
-    expect(response.from).toBe('did:key:zHolder')
-    expect(response.to).toEqual(['did:sns:verifier'])
-    expect(response.body.presentations_attach[0].media_type).toBe('application/sd-jwt')
-    expect(response.body.presentations_attach[0].data.base64).toBeTruthy()
-  })
-
-  it('builds a JSON-LD presentation response', () => {
-    const vpJson = JSON.stringify({ type: 'VerifiablePresentation' })
-    const response = buildPresentationResponse(
-      'req-002',
-      'did:key:zHolder',
-      'did:sns:verifier',
-      vpJson,
-      'json-ld',
-    )
-
-    expect(response.body.presentations_attach[0].media_type).toBe('application/ld+json')
-    expect(response.body.presentations_attach[0].data.json).toEqual({ type: 'VerifiablePresentation' })
-  })
-})
-
-describe('DIDComm v2 — buildProblemReport', () => {
-  it('builds a user-declined problem report', () => {
-    const report = buildProblemReport(
-      'req-001',
-      'did:key:zHolder',
-      'did:sns:verifier',
-      'e.p.user-declined',
-      'User declined the request',
-    )
-
-    expect(report.id).toBe('req-001-problem')
-    expect(report.type).toBe('https://didcomm.org/present-proof/3.0/problem-report')
-    expect(report.body.code).toBe('e.p.user-declined')
-    expect(report.body.comment).toBe('User declined the request')
-  })
-
-  it('includes correct from/to', () => {
-    const report = buildProblemReport(
-      'req-002',
-      'did:key:zA',
-      'did:sns:zB',
-      'e.p.credential-not-found',
-      'No matching credential',
-    )
-
-    expect(report.from).toBe('did:key:zA')
-    expect(report.to).toEqual(['did:sns:zB'])
   })
 })

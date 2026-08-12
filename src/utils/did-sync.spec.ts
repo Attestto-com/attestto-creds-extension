@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest'
-import { publicJwkToDid, didToPublicJwk, didJwkVerificationMethod } from './did-jwk'
+import { publicJwkToDid, didJwkVerificationMethod } from './did-jwk'
 
 /**
  * DID Sync — tests for the Phase C key lifecycle.
@@ -100,7 +100,6 @@ describe('DID Sync — public key extraction', () => {
 describe('DID Sync — holderDid coexistence', () => {
   it('self-issued did:jwk is independent from platform DID', () => {
     const platformDid = 'did:sns:alice.attestto.sol'
-    const platformVm = `${platformDid}#ext-key`
 
     // Vault would store both:
     // - did: selfIssuedDid (the extension's own identity)

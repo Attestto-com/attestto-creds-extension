@@ -8,7 +8,7 @@
  *
  * All tests mock fetch; no real network calls are made.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
 // ── Module-level mock so import.meta.env resolves without WXT globals ────────
 vi.mock('@/config/backend', () => ({

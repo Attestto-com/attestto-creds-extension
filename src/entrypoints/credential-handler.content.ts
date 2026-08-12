@@ -73,7 +73,14 @@ export default defineContentScript({
       // wallet DID). Ignore requests targeted at a different wallet.
       if (detail.walletDid && detail.walletDid !== ATTESTTO_WALLET.did) return
 
+      // First answer wins. The timeout below and a real reply can both fire —
+      // the listener is detached on reply but the timer is not cancelled — and
+      // a late `approved: false` arriving 120s after a SUCCESSFUL auth would
+      // overwrite it in whatever the site did with the first one.
+      let answered = false
       function dispatchAuthResponse(response: unknown) {
+        if (answered) return
+        answered = true
         window.dispatchEvent(
           new CustomEvent('credential-wallet:auth-response', {
             detail: { nonce: envelopeNonce, response },
@@ -107,8 +114,17 @@ export default defineContentScript({
       }, window.location.origin)
 
       // Safety timeout mirrors the adapter's default requestAuth window.
+      //
+      // It used to detach the listener and dispatch NOTHING — the exact outcome
+      // the error path above rejects in its own comment ("rather than letting
+      // it hang until its timeout"). A service worker that dies mid-approval,
+      // or a user who closes the window, produced no reply at all and the site
+      // sat waiting out its own window with no way to tell a decline from a
+      // disappearance. Answering is strictly better: `verifyAuth` rejects an
+      // unapproved response, which is what "no answer" meant anyway.
       setTimeout(() => {
         window.removeEventListener('message', handleResponse)
+        dispatchAuthResponse({ approved: false })
       }, 120000)
     })
 

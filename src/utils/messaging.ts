@@ -5,7 +5,6 @@
  * and the background service worker all speak the same protocol.
  */
 
-import type { CredentialFormat } from '@/types/credential'
 
 // ── Message Types ────────────────────────────────────
 
@@ -18,21 +17,17 @@ export interface SessionExpiredMessage {
   type: 'SESSION_EXPIRED'
 }
 
-export interface SignRequestMessage {
-  type: 'SIGN_REQUEST'
-  payload: string // base64 data to sign
-}
-
-export interface SignResponseMessage {
-  ok: boolean
-  signature?: string
-  error?: string
-}
-
 export interface CredentialOfferMessage {
   type: 'CREDENTIAL_OFFER'
   payload: {
-    format: CredentialFormat | string
+    /**
+     * Deliberately widened: the wire accepts formats this build does not know
+     * (`attestto-id` predates the enum, and an issuer may send a newer one). The
+     * narrowing to `CredentialFormat` happens at the storage boundary. Written as
+     * a plain `string` because `CredentialFormat | string` IS `string` — the union
+     * read like a constraint and was not one.
+     */
+    format: string
     raw: string
     issuerName: string
     /** Pre-decoded claims (used by attestto-id push format) */
@@ -298,7 +293,6 @@ export interface SubmitThreatReportMessage {
 export type ExtensionMessage =
   | NotificationReceivedMessage
   | SessionExpiredMessage
-  | SignRequestMessage
   | CredentialOfferMessage
   | CredentialAcceptedMessage
   | CredentialRejectedMessage
@@ -327,7 +321,7 @@ export type ExtensionMessage =
 export async function sendToBackground<T = unknown>(
   message: ExtensionMessage,
 ): Promise<T> {
-  return chrome.runtime.sendMessage(message) as Promise<T>
+  return chrome.runtime.sendMessage(message)
 }
 
 /**
@@ -337,5 +331,5 @@ export async function sendToTab<T = unknown>(
   tabId: number,
   message: ExtensionMessage,
 ): Promise<T> {
-  return chrome.tabs.sendMessage(tabId, message) as Promise<T>
+  return chrome.tabs.sendMessage(tabId, message)
 }

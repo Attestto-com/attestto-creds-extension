@@ -9,37 +9,72 @@
  * 5. Keep the offscreen document alive via alarms
  */
 
-import { signPayload } from '@/services/signing'
-import { parseSdJwt, getDecodedClaims } from '@/services/sdjwt'
-import { parseProofRequest } from '@/services/didcomm'
-import { createChapiVp } from '@/services/jsonld-vp'
+import { MESSAGE_ROUTES } from '@/background/router/routes'
+import type { KeyAdminCtx } from '@/background/ctx/ctx-bundles'
+import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
+import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
+import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
+import { handleChapiApprove } from '@/background/handlers/chapi-approve.handler'
+import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestto-pdf-approve.handler'
+import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
+import { createBuildBundle } from '@/background/ctx/build-bundle'
+import { createSigningAdapters } from '@/background/adapters/signing-adapters'
+import { createKeyAdminAdapters, createUntrustedAdapters } from '@/background/adapters/chrome-adapters'
+import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
+import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
+import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
-import type { LinkedIdentity } from '@/stores/wallet'
-import type { StoredCredential, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
-import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
+import type { VaultData } from '@/stores/wallet'
 import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
-import { split2of3, combine2of3, toBase64Url, fromBase64Url } from '@/services/shamir'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
 import { findOrCreateSiteDid, publicJwkOf } from '@/utils/site-did'
-import { signDidAuth, type WalletAuthResponse } from '@/services/did-auth'
 import { pinSite } from '@/utils/pin-store'
 import { initToolbarStateTracker } from '@/utils/tab-state'
 import { fetchCertScan, submitThreatReport } from '@/api/backend-client'
-
-/**
- * Fire-and-forget message to a page tab's content script.
- *
- * The tab may have closed or navigated between when its id was captured and
- * now — `chrome.tabs.sendMessage` then rejects with "No tab with id: N", an
- * expected race, not a failure. Swallow it so it doesn't surface as an
- * "Unchecked runtime.lastError" in the service-worker console. Callers here
- * never read the response (the page receives it via the content-script bridge).
- */
-function notifyTab(tabId: number, message: unknown): void {
-  void chrome.tabs.sendMessage(tabId, message).catch(() => {})
-}
+// Story 1.13 Phase 3 — the background → page response envelope is written in
+// ONE place now (`background/transport/tab-responses.ts`), pinned to the content
+// script's bridge by a round-trip spec. The entrypoint only transports.
+import {
+  sendSigningErrorToTab,
+  sendSigningResponseToTab,
+  sendAuthErrorToTab,
+  sendAuthResponseToTab,
+  sendCwAuthErrorToTab,
+  sendCwAuthResponseToTab,
+  sendAttesttoPdfErrorToTab,
+  sendAttesttoPdfResponseToTab,
+  sendPaymentErrorToTab,
+  sendPaymentResponseToTab,
+  sendChapiErrorToTab,
+  sendChapiPresentation,
+  sendStoredCredentials,
+  sendResharePresentation,
+  sendDidSyncResponse,
+  sendKeyRotateResponse,
+  sendKeyBackupResponse,
+  sendKeyRestoreResponse,
+  sendReshareError,
+} from '@/background/transport/tab-responses'
+import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
+import { createPendingConsent } from '@/background/consent/pending-consent'
+import { createPendingFlow, approveRejection } from '@/background/consent/pending-flow'
+import { createPendingStore, chromePendingStorage } from '@/background/consent/pending-store'
+import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
+import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
+import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
+import { recordProofAccessRequest, recordPreparedPresentation, linkWalletAddress } from '@/background/handlers/vault-records.handler'
+import { approvalParams } from '@/utils/approval-params'
+import {
+  createIdleLock,
+  chromeAlarms,
+  chromeSessionLock,
+  chromeActivityStamp,
+} from '@/background/lock/idle-lock'
+import { shouldCountAsActivity } from '@/background/lock/user-gestures'
+import { readSettings, onSettingsChanged } from '@/utils/settings-config'
+import { STORAGE_KEYS } from '@/config/app'
 
 export default defineBackground(() => {
   // ── Toolbar trust state (ATT-727) ──────────────────
@@ -73,195 +108,138 @@ export default defineBackground(() => {
     }
   }
 
-  // ── Approval window placement ──────────────────────
-  // Position approval popups at the top-right of the focused window (Phantom/MetaMask style)
-  // instead of Chrome's default (0, 0) which lands them in the corner of the display.
-  async function computeApprovalPosition(
-    width: number,
-    height: number,
-  ): Promise<{ left: number; top: number }> {
-    try {
-      const current = await chrome.windows.getCurrent()
-      const winLeft = current.left ?? 0
-      const winTop = current.top ?? 0
-      const winWidth = current.width ?? 1280
-      const winHeight = current.height ?? 800
-      // Center the approval window over the active browser window.
-      return {
-        left: Math.max(0, Math.round(winLeft + (winWidth - width) / 2)),
-        top: Math.max(0, Math.round(winTop + (winHeight - height) / 2)),
-      }
-    } catch {
-      return { left: 100, top: 100 }
-    }
+  // ── Approval windows ───────────────────────────────
+  // Opening a consent popup, positioning it, and cleaning up after a dismissed
+  // one live in `background/consent/approval-window.ts` (Story 1.13 Phase 4).
+  // Six flows shared one algorithm in six copies; the cleanup half — turning a
+  // closed window into an explicit denial so the page never hangs — is the part
+  // that had to stop being duplicated.
+  const approvalWindows = createApprovalWindows(chromeApprovalWindowPlatform())
+
+  // ── Vault-record writers (Story 1.13 Phase 10) ─────────────────
+  // Proof-access requests, prepared presentations and the Solana link all append
+  // to the encrypted vault and MUST mirror to the public one (the dual-vault
+  // rule in CLAUDE.md). The write+mirror pair is applied inside the handler, so
+  // no call site can do one without the other.
+  const vaultRecordStore = {
+    read: () => readVault(),
+    write: (v: VaultData) => writeVault(v),
+    syncPublic: (v: VaultData) => syncPublicVault(v),
   }
-
-  // ── Approval window lifecycle tracking ─────────────
-  // When the user dismisses an approval window without clicking approve/deny, we
-  // must send an error back to the originating page so it doesn't hang. We also
-  // run a per-request timeout backstop in case onRemoved never fires.
-  //
-  // Flow: open*Window registers a cleanup → user closes window OR backstop fires
-  // → cleanup runs (page gets error, pending map is purged). On approve/deny,
-  // the handler calls `unregister` BEFORE sending its response so the cleanup
-  // becomes a no-op.
-
-  const windowCleanups = new Map<number, () => void>()
-
-  // 5 minutes — generous backstop. The page-side TIMEOUT_MS is 30s, so the page
-  // will reject first in nearly all cases. This catches the pathological case
-  // where chrome.windows.onRemoved never fires (extension crash, page closed
-  // before popup, etc.) so pending maps don't leak forever.
-  const PENDING_REQUEST_BACKSTOP_MS = 5 * 60 * 1000
-
-  function registerApprovalWindow(
-    windowId: number | undefined,
-    cleanup: () => void,
-  ): () => void {
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    const unregister = (): void => {
-      if (windowId !== undefined) windowCleanups.delete(windowId)
-      if (timer) {
-        clearTimeout(timer)
-        timer = null
-      }
-    }
-
-    const wrapped = (): void => {
-      unregister()
-      try {
-        cleanup()
-      } catch (err) {
-        console.error('[Attestto ID] Approval window cleanup failed:', err)
-      }
-    }
-
-    if (windowId !== undefined) {
-      windowCleanups.set(windowId, wrapped)
-    }
-    timer = setTimeout(wrapped, PENDING_REQUEST_BACKSTOP_MS)
-    return unregister
+  const vaultRecordCtx = {
+    store: vaultRecordStore,
+    clock: { nowIso: () => new Date().toISOString() },
+    newId: (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   }
-
-  chrome.windows.onRemoved.addListener((windowId) => {
-    const cleanup = windowCleanups.get(windowId)
-    if (cleanup) cleanup()
-  })
 
   /**
    * Open the dedicated approval window for a credential offer (identity sync OR VC issuance).
-   * Replaces the OS-notification flow which is unreliable across platforms.
+   * Notification-style: the page sent CREDENTIAL_PUSH and already got
+   * `pendingConsent: true`, so there is no promise to reject — cleanup only purges.
    */
   async function openCredentialOfferApprovalWindow(
     notifId: string,
     offer: CredentialOfferMessage['payload'],
     origin: string | null,
   ): Promise<void> {
-    const params = new URLSearchParams({
-      credentialOfferId: notifId,
-      format: offer.format,
-      issuerName: offer.issuerName,
-      origin: origin ?? '',
+    await approvalWindows.open({
+      id: notifId,
+      params: approvalParams.credentialOffer({
+        id: notifId,
+        format: offer.format,
+        issuerName: offer.issuerName,
+        origin,
+      }),
+      width: 420,
+      height: 560,
+      rows: pendingOffers,
+      logPrefix: '[Attestto ID] credential offer:',
     })
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-    try {
-      const pos = await computeApprovalPosition(420, 560)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 420,
-        height: 560,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      // Credential offers are notification-style: the page sent CREDENTIAL_PUSH
-      // and already got `pendingConsent: true`. No outstanding promise on the
-      // page side, so cleanup just purges the local pending map.
-      const unregister = registerApprovalWindow(win?.id, () => {
-        pendingOffers.delete(notifId)
-      })
-      const pending = pendingOffers.get(notifId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto ID] Failed to open credential offer approval window:', err)
-      pendingOffers.delete(notifId)
-    }
   }
 
   // ── Alarms — keep offscreen alive ──────────────────
 
-  chrome.alarms.create('keepOffscreenAlive', { periodInMinutes: 4 })
+  fireAndForget(chrome.alarms.create('keepOffscreenAlive', { periodInMinutes: 4 }), 'keep-offscreen alarm')
 
-  chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === 'keepOffscreenAlive') {
-      ensureOffscreenDocument()
-    }
-    if (alarm.name === 'autoLock') {
-      // Clear session key to lock the vault
-      await chrome.storage.session.remove('attestto_ext_session_key')
-      console.log('[Attestto ID] Auto-lock triggered')
-    }
+  // ── Idle auto-lock (Story 1.14) ────────────────────
+  // The deadline is measured from the last USER gesture, held in
+  // `storage.session` beside the key it guards, and every decision is recomputed
+  // from it inside `background/lock/idle-lock.ts`. The entrypoint only supplies
+  // the ports and forwards three events: worker start, alarm, gesture.
+  //
+  // What this replaced: `chrome.alarms.create('autoLock', {delayInMinutes: 1})`
+  // at the top level. Because MV3 revives the worker for any message, the timer
+  // restarted whenever a background tab poked the credential API — a web page
+  // could hold the vault open, while the user's own popup activity reset nothing.
+  const idleLock = createIdleLock({
+    clock: { now: () => Date.now() },
+    alarms: chromeAlarms(),
+    session: chromeSessionLock(STORAGE_KEYS.SESSION_KEY),
+    activity: chromeActivityStamp(),
+    timeoutMs: async () => (await readSettings()).autoLockMinutes * 60_000,
   })
 
-  // Auto-lock is fixed at 1 minute — no longer user-configurable (the timer
-  // selector was removed from settings). Kept as a function so the
-  // AUTO_LOCK_CHANGED message and initial setup share one code path.
-  const AUTO_LOCK_MINUTES = 1
-  async function resetAutoLockAlarm(): Promise<void> {
-    chrome.alarms.create('autoLock', { delayInMinutes: AUTO_LOCK_MINUTES })
-  }
+  // Not `async`: chrome expects a void-returning listener, so a promise handed
+  // back here is one nobody awaits and whose rejection has nowhere to go.
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'keepOffscreenAlive') {
+      fireAndForget(ensureOffscreenDocument(), 'offscreen bootstrap')
+    }
+    fireAndForget(idleLock.onAlarm(alarm.name), 'idle-lock alarm')
+  })
 
-  resetAutoLockAlarm()
+  // Re-arm against the deadline already running. NOT a touch — see above.
+  fireAndForget(idleLock.resume(), 'idle-lock resume')
 
-  // ── Pending Credential Offers ─────────────────────
+  // A shorter timeout must take effect on the open session, not on the next one.
+  // Driven by the storage event rather than a message so it works no matter which
+  // surface changed it (the old `AUTO_LOCK_CHANGED` message had no sender at all).
+  onSettingsChanged(() => {
+    fireAndForget(idleLock.resume(), 'idle-lock resume')
+  })
+
+  // ── Pending consent rows (Story 1.15) ─────────────
+  // These were six `Map`s inside this closure. MV3 kills the worker after ~30s
+  // idle and a consent flow is defined by waiting for a human, so the row a user
+  // was about to approve routinely no longer existed by the time they clicked —
+  // the page got "No pending request" for an approval genuinely given. Rows now
+  // live in `chrome.storage.session` via `consent/pending-store.ts`, which
+  // outlives the worker and dies with the browser.
+  //
+  // The `unregister` hook is NOT part of these types any more: it cannot be
+  // serialized, and after a restart there is no window cleanup to disarm.
+  // `pending-flow.ts` keeps it worker-local, keyed by the same id.
+  const pendingFlow = <T,>(flow: string) =>
+    createPendingFlow<T>(
+      createPendingStore({ flow, storage: chromePendingStorage(), now: () => Date.now() }),
+    )
 
   interface PendingOffer {
     offer: CredentialOfferMessage['payload']
     origin: string | null
-    unregister?: () => void
   }
-  const pendingOffers = new Map<string, PendingOffer>()
-
-  // ── Pending CHAPI Requests (waiting for user consent via popup) ──
-
-  interface PendingChapiRequest {
-    apiReq: CredentialApiRequestMessage['payload']
-    holderDid: string
-    vcs: Record<string, unknown>[]
-    challenge: string
-    domain: string
-    privateKeyJwk: JsonWebKey
-    verificationMethod?: string
-    senderTabId: number | null
-  }
-
-  const pendingChapiRequests = new Map<string, PendingChapiRequest>()
+  const pendingOffers = pendingFlow<PendingOffer>('offer')
 
   /** Raw CHAPI requests waiting for the popup to unlock + approve */
   interface PendingChapiRawRequest {
     apiReq: CredentialApiRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingChapiRawRequests = new Map<string, PendingChapiRawRequest>()
+  const pendingChapiRawRequests = pendingFlow<PendingChapiRawRequest>('chapi')
 
   /** Pending payment requests waiting for user approval in the popup */
   interface PendingPaymentRequest {
     payReq: PaymentRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingPaymentRequests = new Map<string, PendingPaymentRequest>()
+  const pendingPaymentRequests = pendingFlow<PendingPaymentRequest>('payment')
 
   /** Pending document signing requests waiting for user approval in the popup */
   interface PendingSigningRequest {
     signReq: SignDocumentRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingSigningRequests = new Map<string, PendingSigningRequest>()
+  const pendingSigningRequests = pendingFlow<PendingSigningRequest>('signing')
 
   /** Pending DID authentication requests (login via extension — ATT-123) */
   interface PendingAuthRequest {
@@ -270,7 +248,6 @@ export default defineBackground(() => {
     timestamp: string
     origin: string
     senderTabId: number | null
-    unregister?: () => void
     /**
      * Protocol variant. Absent = the legacy `attestto:auth` proof-of-possession
      * flow verified by CORTEX's DidAuthController. 'cw' = the identity-bridge
@@ -286,15 +263,60 @@ export default defineBackground(() => {
     /** (cw) Issuer DIDs the site will accept; carried through for the consent UI. */
     trustedIssuers?: string[]
   }
-  const pendingAuthRequests = new Map<string, PendingAuthRequest>()
+  const pendingAuthRequests = pendingFlow<PendingAuthRequest>('auth')
 
   /** Pending Attestto self-attested PDF sign requests (ATT-364) */
   interface PendingAttesttoPdfRequest {
     req: SignAttesttoPdfRequestMessage['payload']
     senderTabId: number | null
-    unregister?: () => void
   }
-  const pendingAttesttoPdfRequests = new Map<string, PendingAttesttoPdfRequest>()
+  const pendingAttesttoPdfRequests = pendingFlow<PendingAttesttoPdfRequest>('attesttoPdf')
+
+  // ── Pending-consent registries (Story 1.13 Phase 7) ────────────
+  // `*_GET_PENDING` and `*_DENY` were ten near-identical case bodies. The DENY
+  // half has to disarm the approval window before purging (else the closing
+  // window reports a second cancellation) and has to be idempotent — both now
+  // live once, in `consent/pending-consent.ts`. Each flow supplies only its
+  // not-found string and how it reports a denial to the page.
+  const offerConsent = createPendingConsent({
+    flow: pendingOffers,
+    notFound: 'Offer not found or already handled',
+    reportDenied: () => {},
+  })
+  const signingConsent = createPendingConsent({
+    flow: pendingSigningRequests,
+    notFound: 'No pending signing request found',
+    reportDenied: (row) => sendSigningErrorToTab(row.senderTabId, row.signReq.requestId, 'User declined signing'),
+  })
+  const authConsent = createPendingConsent({
+    flow: pendingAuthRequests,
+    notFound: 'No pending auth request found',
+    // Route the denial back on the SAME protocol the request arrived on. A cw
+    // (credential-wallet:auth) request must get a CW_AUTH_RESPONSE so the
+    // MAIN-world listener resolves requestAuth immediately; sending the legacy
+    // AUTH_RESPONSE would leave it hanging until its 120s timeout.
+    reportDenied: (row) =>
+      (row.protocol === 'cw' ? sendCwAuthErrorToTab : sendAuthErrorToTab)(
+        row.senderTabId,
+        row.requestId,
+        'User declined',
+      ),
+  })
+  const attesttoPdfConsent = createPendingConsent({
+    flow: pendingAttesttoPdfRequests,
+    notFound: 'No pending Attestto PDF sign request found',
+    reportDenied: (row) => sendAttesttoPdfErrorToTab(row.senderTabId, row.req.requestId, 'User declined signing'),
+  })
+  const paymentConsent = createPendingConsent({
+    flow: pendingPaymentRequests,
+    notFound: 'No pending payment request found',
+    reportDenied: (row) => sendPaymentErrorToTab(row.senderTabId, row.payReq.requestId, 'User declined payment'),
+  })
+  const chapiConsent = createPendingConsent({
+    flow: pendingChapiRawRequests,
+    notFound: 'No pending request found',
+    reportDenied: (row) => sendChapiErrorToTab(row.senderTabId, row.apiReq.requestId, 'User declined'),
+  })
 
   /**
    * Open the approval popup for a document signing request.
@@ -303,64 +325,58 @@ export default defineBackground(() => {
     signReq: SignDocumentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    pendingSigningRequests.set(signReq.requestId, { signReq, senderTabId })
-
-    const params = new URLSearchParams({
-      signingRequest: signReq.requestId,
-      origin: signReq.origin || '',
-      documentTitle: signReq.documentTitle || '',
-      signerName: signReq.signerName || '',
+    await pendingSigningRequests.put(signReq.requestId, { signReq, senderTabId })
+    await approvalWindows.open({
+      id: signReq.requestId,
+      params: approvalParams.signing({
+        id: signReq.requestId,
+        origin: signReq.origin,
+        documentTitle: signReq.documentTitle,
+        signerName: signReq.signerName,
+      }),
+      width: 380,
+      height: 580,
+      rows: pendingSigningRequests,
+      logPrefix: '[Attestto Sign]',
+      reportCancelled: (message) => sendSigningErrorToTab(senderTabId, signReq.requestId, message),
     })
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      const pos = await computeApprovalPosition(380, 580)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 580,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingSigningRequests.has(signReq.requestId)) {
-          pendingSigningRequests.delete(signReq.requestId)
-          sendSigningErrorToTab(senderTabId, signReq.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingSigningRequests.get(signReq.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto Sign] Failed to open signing approval window:', err)
-      pendingSigningRequests.delete(signReq.requestId)
-      sendSigningErrorToTab(senderTabId, signReq.requestId, 'Could not open approval window')
-    }
   }
 
-  function sendSigningErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_DOCUMENT_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
+  /**
+   * The composition root (Story 1.13 Phase 1b, AD-3). Constructs the real signing
+   * adapters ONCE and hands `buildBundle` the injection site; every extracted signing
+   * APPROVE case gets its capability-scoped ctx from `buildBundle('signing')` — a fresh
+   * bundle per message whose ONE gated `crypto.sign` reads a per-request key-slot (AD-11c).
+   * The three non-signing tiers are unwired here (throwing) until their routes migrate —
+   * nothing calls `buildBundle('untrusted'|'consent'|'keyAdmin')` yet.
+   */
+  const unwiredBundle = <T,>(tier: string): T =>
+    new Proxy({}, {
+      get: () => () => {
+        throw new Error(`buildBundle('${tier}') not wired until its routes migrate (Story 1.13, later phase)`)
+      },
+    }) as T
+  const buildBundle = createBuildBundle({
+    signing: createSigningAdapters({
+      readVault,
+      writeVault,
+      syncPublicVault,
+      findOrCreateSiteDid,
+      publicJwkOf,
+      pinSite,
+    }),
+    untrusted: unwiredBundle('untrusted'),
+    consent: unwiredBundle('consent'),
+    keyAdmin: unwiredBundle('keyAdmin'),
+  })
 
-  function sendSigningResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; publicKeyJwk: Record<string, string>; timestamp: string },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_DOCUMENT_RESPONSE',
-        payload: { requestId, ...data },
-      })
-    }
-  }
+  // KeyAdmin's concrete surface (store + P-256 keygen) and the untrusted tier's
+  // chrome surface are built in `adapters/chrome-adapters.ts` (Story 1.13
+  // Phase 11). The entrypoint now holds no crypto symbol at all — `generateP256`
+  // used to be a bare `crypto.subtle.generateKey` here, which is exactly what the
+  // F1 capability fence forbids.
+  const keyAdminAdapters = createKeyAdminAdapters({ readVault, writeVault, syncPublicVault })
+  const untrustedAdapters = createUntrustedAdapters()
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
 
@@ -381,7 +397,7 @@ export default defineBackground(() => {
     // earlier fail-fast replaced that flow with a dead-end error message on the
     // page — the popup is fully actionable (Create DID / Cancel), so there is no
     // empty-list hang.
-    pendingAuthRequests.set(authReq.requestId, { ...authReq, senderTabId })
+    await pendingAuthRequests.put(authReq.requestId, { ...authReq, senderTabId })
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendAuthErrorToTab)
   }
 
@@ -410,41 +426,18 @@ export default defineBackground(() => {
       }
     }
 
-    const params = new URLSearchParams({
-      authRequest: requestId,
-      origin: origin || '',
+    // Aligned with other approval modes (380 wide) after the compact-header
+    // refactor — the old 420×620 was sized for the bigger hero card. Height
+    // dropped to 460 to remove the empty bottom gap visible at 620.
+    await approvalWindows.open({
+      id: requestId,
+      params: approvalParams.auth({ id: requestId, origin, siteName }),
+      width: 380,
+      height: 460,
+      rows: pendingAuthRequests,
+      logPrefix: '[Attestto ID] auth:',
+      reportCancelled: (message) => sendError(senderTabId, requestId, message),
     })
-    if (siteName) params.set('siteName', siteName)
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      // Aligned with other approval modes (380 wide) after the compact-header
-      // refactor — the old 420×620 was sized for the bigger hero card. Height
-      // dropped to 460 to remove the empty bottom gap visible at 620.
-      const pos = await computeApprovalPosition(380, 460)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 460,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingAuthRequests.has(requestId)) {
-          pendingAuthRequests.delete(requestId)
-          sendError(senderTabId, requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingAuthRequests.get(requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto ID] Failed to open auth approval window:', err)
-      pendingAuthRequests.delete(requestId)
-      sendError(senderTabId, requestId, 'Could not open approval window')
-    }
   }
 
   /**
@@ -469,7 +462,7 @@ export default defineBackground(() => {
     // No fail-fast on missing identity — open the popup so its "Create DID"
     // flow can mint one and complete the sign-in in one step (see
     // handleAuthRequest). The popup is fully actionable, so no empty-list hang.
-    pendingAuthRequests.set(authReq.requestId, {
+    await pendingAuthRequests.put(authReq.requestId, {
       requestId: authReq.requestId,
       nonce: authReq.nonce,
       // The signed timestamp is minted at approval time (fresh per the verifier's
@@ -485,56 +478,6 @@ export default defineBackground(() => {
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendCwAuthErrorToTab)
   }
 
-  function sendAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'AUTH_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendAuthResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; nonce: string; timestamp: string; publicKeyJwk: Record<string, string> },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'AUTH_RESPONSE',
-        payload: { requestId, ...data },
-      })
-    }
-  }
-
-  // ── credential-wallet:auth response bridge (SOC-71) ──────────────
-  // These route back through the ISOLATED content script, which posts
-  // ATTESTTO_CW_AUTH_RESPONSE to the page; the MAIN world then dispatches the
-  // `credential-wallet:auth-response` event `verifyAuth` listens for. `requestId`
-  // is the envelope nonce the site used to correlate request → response.
-
-  function sendCwAuthErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'CW_AUTH_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendCwAuthResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    response: WalletAuthResponse,
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'CW_AUTH_RESPONSE',
-        payload: { requestId, response },
-      })
-    }
-  }
-
   // ── Attestto self-attested PDF signing (ATT-364) ─────────────────
 
   /**
@@ -544,117 +487,26 @@ export default defineBackground(() => {
     req: SignAttesttoPdfRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    pendingAttesttoPdfRequests.set(req.requestId, { req, senderTabId })
-
-    const params = new URLSearchParams({
-      attesttoPdfRequest: req.requestId,
-      origin: req.origin || '',
-      fileName: req.fileName || '',
-      documentHash: req.documentHash || '',
+    await pendingAttesttoPdfRequests.put(req.requestId, { req, senderTabId })
+    await approvalWindows.open({
+      id: req.requestId,
+      params: approvalParams.attesttoPdf({
+        id: req.requestId,
+        origin: req.origin,
+        fileName: req.fileName,
+        documentHash: req.documentHash,
+      }),
+      width: 380,
+      height: 580,
+      rows: pendingAttesttoPdfRequests,
+      logPrefix: '[Attestto Sign] PDF:',
+      reportCancelled: (message) => sendAttesttoPdfErrorToTab(senderTabId, req.requestId, message),
     })
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      const pos = await computeApprovalPosition(380, 580)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 580,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingAttesttoPdfRequests.has(req.requestId)) {
-          pendingAttesttoPdfRequests.delete(req.requestId)
-          sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingAttesttoPdfRequests.get(req.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto Sign] Failed to open Attestto PDF approval window:', err)
-      pendingAttesttoPdfRequests.delete(req.requestId)
-      sendAttesttoPdfErrorToTab(senderTabId, req.requestId, 'Could not open approval window')
-    }
   }
 
-  function sendAttesttoPdfErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_ATTESTTO_PDF_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendAttesttoPdfResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; publicKey: string },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'SIGN_ATTESTTO_PDF_RESPONSE',
-        payload: { requestId, ...data },
-      })
-    }
-  }
-
-  /**
-   * Get or lazily create the vault's Ed25519 keypair (ATT-364).
-   *
-   * Lives alongside the legacy P-256 key — does NOT replace it. Used
-   * exclusively for Attestto self-attested PDF signing where the
-   * verifier only accepts Ed25519. Persists across sessions.
-   *
-   * Returns the unwrapped CryptoKey ready to sign + the raw 32-byte
-   * public key as base64.
-   */
-  async function getOrCreateEd25519Key(): Promise<{
-    privateKey: CryptoKey
-    publicKeyB64: string
-  } | null> {
-    const vault = await readVault()
-    if (!vault) return null
-
-    if (vault.ed25519PrivateKeyJwk && vault.ed25519PublicKeyB64) {
-      try {
-        const privateKey = await crypto.subtle.importKey(
-          'jwk',
-          vault.ed25519PrivateKeyJwk,
-          { name: 'Ed25519' },
-          false,
-          ['sign'],
-        )
-        return { privateKey, publicKeyB64: vault.ed25519PublicKeyB64 }
-      } catch (err) {
-        console.warn('[Attestto Sign] Existing Ed25519 key import failed, regenerating:', err)
-      }
-    }
-
-    // First-time generation. Web Crypto Ed25519 is supported in
-    // Chromium 113+ / Firefox 130+ / Safari 17+.
-    const keyPair = (await crypto.subtle.generateKey(
-      { name: 'Ed25519' },
-      true,
-      ['sign', 'verify'],
-    )) as CryptoKeyPair
-
-    const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
-    const rawPub = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey))
-    const publicKeyB64 = btoa(String.fromCharCode(...rawPub))
-
-    vault.ed25519PrivateKeyJwk = privateKeyJwk
-    vault.ed25519PublicKeyB64 = publicKeyB64
-    await writeVault(vault)
-    // Mirror the public Ed25519 key so the popup/consumers see it.
-    await syncPublicVault(vault)
-
-    return { privateKey: keyPair.privateKey, publicKeyB64 }
-  }
+  // Ed25519 provisioning (ATT-364) moved to `createSigningAdapters` (Story 1.13
+  // Phase 1b) — the APDF signing key is now provisioned through the composition
+  // root's `buildBundle('signing')`, not a closure here.
 
   /**
    * Open the approval popup for a payment request.
@@ -663,261 +515,68 @@ export default defineBackground(() => {
     payReq: PaymentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    pendingPaymentRequests.set(payReq.requestId, { payReq, senderTabId })
-
-    const params = new URLSearchParams({
-      paymentRequest: payReq.requestId,
-      origin: payReq.origin || '',
-      amount: String(payReq.amount),
-      currency: payReq.currency || 'USDC',
-      merchant: payReq.merchantName || '',
+    await pendingPaymentRequests.put(payReq.requestId, { payReq, senderTabId })
+    await approvalWindows.open({
+      id: payReq.requestId,
+      params: approvalParams.payment({
+        id: payReq.requestId,
+        origin: payReq.origin,
+        amount: payReq.amount,
+        currency: payReq.currency,
+        merchantName: payReq.merchantName,
+      }),
+      width: 380,
+      height: 580,
+      rows: pendingPaymentRequests,
+      logPrefix: '[Attestto Pay]',
+      reportCancelled: (message) => sendPaymentErrorToTab(senderTabId, payReq.requestId, message),
     })
-
-    const approvalUrl = chrome.runtime.getURL(`approval.html?${params.toString()}`)
-
-    try {
-      const pos = await computeApprovalPosition(380, 580)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 580,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingPaymentRequests.has(payReq.requestId)) {
-          pendingPaymentRequests.delete(payReq.requestId)
-          sendPaymentErrorToTab(senderTabId, payReq.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingPaymentRequests.get(payReq.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto Pay] Failed to open payment approval window:', err)
-      pendingPaymentRequests.delete(payReq.requestId)
-      sendPaymentErrorToTab(senderTabId, payReq.requestId, 'Could not open approval window')
-    }
-  }
-
-  function sendPaymentErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'PAYMENT_RESPONSE',
-        payload: { requestId, error },
-      })
-    }
-  }
-
-  function sendPaymentResponseToTab(
-    tabId: number | null,
-    requestId: string,
-    data: { did: string; signature: string; publicKeyJwk: Record<string, string> },
-  ): void {
-    if (tabId) {
-      notifyTab(tabId, {
-        type: 'PAYMENT_RESPONSE',
-        payload: { requestId, ...data },
-      })
-    }
   }
 
   /**
-   * Accept a credential offer: parse, store in vault, notify popup.
+   * Accept a credential offer the user approved: decode it, store it in both
+   * vaults, and record trust for a first-time identity sync.
+   *
+   * The decision logic (format-scoped trust-on-first-use, identity minting
+   * restricted to `attestto-id`, write-nothing-on-decode-failure) lives in
+   * `handlers/credential-offer-accept.handler.ts` (Story 1.13 Phase 5). Here we
+   * only take the pending row and inject the real vault/origin/clock adapters.
    */
-  async function acceptCredentialOffer(
-    notificationId: string,
-  ): Promise<string | null> {
-    const pending = pendingOffers.get(notificationId)
+  async function acceptCredentialOffer(notificationId: string): Promise<string | null> {
+    // Atomic claim (Story 1.15): the get/delete pair this replaced could be
+    // interleaved with the approval window's own cleanup once rows became
+    // storage-backed, and both paths would think they owned the offer.
+    const pending = await pendingOffers.take(notificationId)
     if (!pending) return null
-    const { offer, origin } = pending
-    pendingOffers.delete(notificationId)
 
-    // Identity-format sync from a freshly-approved origin: remember it so the
-    // next offer from this origin can be accepted silently. Other formats
-    // (sd-jwt, json-ld) are one-off issuance events, not recurring sync — no
-    // benefit to persisting trust for them.
-    if (offer.format === 'attestto-id' && origin) {
-      await recordTrustedOrigin(origin)
-    }
-
-    try {
-      let decodedClaims: Record<string, unknown> = {}
-      let types: string[] = ['VerifiableCredential']
-      let issuer = offer.issuerName
-      let issuedAt = new Date().toISOString()
-      let expiresAt: string | null = null
-      const disclosureDigests: string[] = []
-
-      if (offer.format === 'sd-jwt') {
-        const parsed = await parseSdJwt(offer.raw)
-        decodedClaims = await getDecodedClaims(offer.raw)
-        types = (parsed.payload.vct as string[]) ?? types
-        issuer = (parsed.payload.iss as string) ?? issuer
-        issuedAt = parsed.payload.iat
-          ? new Date((parsed.payload.iat as number) * 1000).toISOString()
-          : issuedAt
-        expiresAt = parsed.payload.exp
-          ? new Date((parsed.payload.exp as number) * 1000).toISOString()
-          : null
-        parsed.disclosures.forEach((d) => {
-          if (d.digest) disclosureDigests.push(d.digest)
-        })
-      } else {
-        // JSON-LD or attestto-id format
-        try {
-          const vc = JSON.parse(offer.raw) as Record<string, unknown>
-          decodedClaims = (vc.credentialSubject as Record<string, unknown>) ?? vc
-          types = (vc.type as string[]) ?? types
-          issuer = (typeof vc.issuer === 'string' ? vc.issuer : (vc.issuer as Record<string, unknown>)?.id as string) ?? issuer
-          issuedAt = (vc.issuanceDate as string) ?? issuedAt
-          expiresAt = (vc.expirationDate as string) ?? null
-        } catch {
-          // Raw claims object (from attestto-id push)
-          decodedClaims = offer.claims ?? {}
-        }
-      }
-
-      const credential: StoredCredential = {
-        id: crypto.randomUUID(),
-        format: offer.format,
-        raw: offer.raw,
-        issuer,
-        issuedAt,
-        expiresAt,
-        types: Array.isArray(types) ? types : [types],
-        decodedClaims,
-        metadata: {
-          addedAt: new Date().toISOString(),
-          source: 'push',
-          disclosureDigests: disclosureDigests.length > 0 ? disclosureDigests : undefined,
-        },
-      }
-
-      // Identity-format offers (attestto-id) carry a didUri that should populate
-      // linkedIdentities[] so the popup's IdentityListView shows the identity.
-      // The credential itself is still stored for record-keeping.
-      const identityDid = offer.format === 'attestto-id'
-        ? (decodedClaims.didUri as string | undefined)
-        : undefined
-
-      // Store in public vault (always works, no passkey needed). Create an
-      // empty public vault if the read returned null — otherwise the offer
-      // silently disappears, which is exactly the bug that "I pushed an
-      // identity and nothing showed up" was hiding.
-      const pub = (await readPublicVault()) ?? {
-        did: null,
-        credentials: [],
-        linkedSolanaAddress: null,
-        keyShares: [],
-        proofRequests: [],
-        preparedPresentations: [],
-      }
-      pub.credentials = [...(pub.credentials ?? []), credential]
-      if (identityDid) {
-        pub.linkedIdentities = upsertIdentity(
-          pub.linkedIdentities ?? [],
-          identityDid,
-          credential,
-        )
-      }
-      await writePublicVault(pub)
-
-      // Also store in encrypted vault if unlocked
-      const vault = await readVault()
-      if (vault) {
-        vault.credentials = [...(vault.credentials ?? []), credential]
-        if (identityDid) {
-          vault.linkedIdentities = upsertIdentity(
-            vault.linkedIdentities ?? [],
-            identityDid,
-            credential,
-          )
-        }
-        await writeVault(vault)
-        await syncPublicVault(vault)
-      }
-
-      return credential.id
-    } catch {
-      return null
-    }
-  }
-
-  /**
-   * Upsert an identity DID into linkedIdentities[], attaching the credential
-   * that carried it. Used by acceptCredentialOffer for `attestto-id` format.
-   */
-  function upsertIdentity(
-    list: LinkedIdentity[],
-    did: string,
-    credential: StoredCredential,
-  ): LinkedIdentity[] {
-    const now = new Date().toISOString()
-    const idx = list.findIndex((id) => id.did === did)
-    if (idx >= 0) {
-      const existing = list[idx]
-      const hasCred = existing.credentials.some((c) => c.id === credential.id)
-      return list.map((id, i) =>
-        i === idx
-          ? {
-              ...id,
-              syncedAt: now,
-              credentials: hasCred ? id.credentials : [...id.credentials, credential],
-            }
-          : id,
-      )
-    }
-    return [
-      ...list,
+    return handleCredentialOfferAccept(
+      { offer: pending.offer, origin: pending.origin },
       {
-        did,
-        label: extractDidLabelForSync(did),
-        credentials: [credential],
-        syncedAt: now,
-        tenantId: null,
+        store: {
+          readPublic: readPublicVault,
+          writePublic: writePublicVault,
+          read: readVault,
+          write: writeVault,
+          syncPublic: syncPublicVault,
+        },
+        origins: { recordTrusted: recordTrustedOrigin },
+        clock: { nowIso: () => new Date().toISOString() },
+        newId: () => crypto.randomUUID(),
       },
-    ]
+    )
   }
 
-  // ── Notification Button Handling ───────────────────
-
-  chrome.notifications.onButtonClicked.addListener(
-    (notificationId, buttonIndex) => {
-      // CHAPI consent notifications
-      if (pendingChapiRequests.has(notificationId)) {
-        if (buttonIndex === 0) {
-          completeChapiRequest(notificationId)
-        } else {
-          denyChapiRequest(notificationId)
-        }
-        chrome.notifications.clear(notificationId)
-        return
-      }
-
-      // Credential offer notifications
-      if (buttonIndex === 0) {
-        // Accept
-        acceptCredentialOffer(notificationId).then((credentialId) => {
-          if (credentialId) {
-            chrome.runtime.sendMessage({
-              type: 'CREDENTIAL_ACCEPTED',
-              payload: { credentialId },
-            })
-          }
-        })
-      } else {
-        // Reject
-        pendingOffers.delete(notificationId)
-        chrome.runtime.sendMessage({
-          type: 'CREDENTIAL_REJECTED',
-          payload: { reason: 'User declined' },
-        })
-      }
-      chrome.notifications.clear(notificationId)
-    },
-  )
+  // ── Notification button handling — REMOVED (Story 1.13 Phase 6) ──
+  // There was a `chrome.notifications.onButtonClicked` listener here that
+  // treated EVERY button-bearing notification as a credential offer. No
+  // notification in this extension is a credential offer any more: offers moved
+  // to the approval window (see `openCredentialOfferApprovalWindow`), and the
+  // three flows that DO raise button notifications — PROOF_ACCESS_REQUEST,
+  // DIDCOMM_INBOUND, and the non-CHAPI CREDENTIAL_API_REQUEST — carry ids the
+  // listener never matched. "Review" therefore did nothing and "Dismiss"
+  // broadcast a spurious CREDENTIAL_REJECTED that nothing listens for.
+  // Those three flows still have no notification handler; that is a product gap
+  // filed separately, not something a dead listener was covering.
 
   // ── CHAPI Request Handler ────────────────────────────
 
@@ -931,413 +590,77 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     // Store the raw request + sender tab for the approval page to use
-    pendingChapiRawRequests.set(apiReq.requestId, { apiReq, senderTabId })
-
-    const approvalUrl = chrome.runtime.getURL(
-      `approval.html?chapiRequest=${encodeURIComponent(apiReq.requestId)}&origin=${encodeURIComponent(apiReq.origin || '')}`
-    )
-
-    try {
-      const pos = await computeApprovalPosition(380, 520)
-      const win = await chrome.windows.create({
-        url: approvalUrl,
-        type: 'popup',
-        width: 380,
-        height: 520,
-        left: pos.left,
-        top: pos.top,
-        focused: true,
-      })
-      const unregister = registerApprovalWindow(win?.id, () => {
-        if (pendingChapiRawRequests.has(apiReq.requestId)) {
-          pendingChapiRawRequests.delete(apiReq.requestId)
-          sendChapiErrorToTab(senderTabId, apiReq.requestId, 'User cancelled — approval window closed')
-        }
-      })
-      const pending = pendingChapiRawRequests.get(apiReq.requestId)
-      if (pending) pending.unregister = unregister
-    } catch (err) {
-      console.error('[Attestto ID] Failed to open approval window:', err)
-      pendingChapiRawRequests.delete(apiReq.requestId)
-      sendChapiErrorToTab(senderTabId, apiReq.requestId, 'Could not open approval window')
-    }
-  }
-
-  /**
-   * Send a CHAPI error to the originating tab. tabId MUST be the sender.tab.id
-   * captured at request-receipt time — never the active-tab fallback (that would
-   * route the error to whatever tab the user is currently looking at).
-   */
-  function sendChapiErrorToTab(tabId: number | null, requestId: string, error: string): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping CHAPI error — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'CREDENTIAL_API_RESPONSE',
-      payload: { requestId, error },
+    await pendingChapiRawRequests.put(apiReq.requestId, { apiReq, senderTabId })
+    await approvalWindows.open({
+      id: apiReq.requestId,
+      params: approvalParams.chapi({ id: apiReq.requestId, origin: apiReq.origin }),
+      width: 380,
+      height: 520,
+      rows: pendingChapiRawRequests,
+      logPrefix: '[Attestto ID] CHAPI:',
+      reportCancelled: (message) => sendChapiErrorToTab(senderTabId, apiReq.requestId, message),
     })
   }
 
-  async function completeChapiRequest(notifId: string): Promise<void> {
-    const pending = pendingChapiRequests.get(notifId)
-    if (!pending) return
-    pendingChapiRequests.delete(notifId)
-
-    try {
-      const vp = await createChapiVp({
-        credentials: pending.vcs,
-        holderDid: pending.holderDid,
-        holderPrivateKey: pending.privateKeyJwk,
-        challenge: pending.challenge,
-        domain: pending.domain,
-        verificationMethod: pending.verificationMethod,
-      })
-
-      if (pending.senderTabId) {
-        notifyTab(pending.senderTabId, {
-          type: 'CREDENTIAL_API_RESPONSE',
-          payload: { requestId: pending.apiReq.requestId, presentation: vp },
-        })
-      } else {
-        console.warn('[Attestto ID] Dropping CHAPI VP — no originating tabId', {
-          requestId: pending.apiReq.requestId,
-        })
-      }
-    } catch {
-      sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Failed to build presentation')
-    }
-  }
-
-  function denyChapiRequest(notifId: string): void {
-    const pending = pendingChapiRequests.get(notifId)
-    if (!pending) return
-    pendingChapiRequests.delete(notifId)
-    sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'User declined')
-  }
+  // `completeChapiRequest` / `denyChapiRequest` — REMOVED (Story 1.13 Phase 6).
+  // They read `pendingChapiRequests`, a map nothing ever wrote to, so both
+  // early-returned on every call. The live CHAPI path is the approval window
+  // (`handleChapiRequest` → CHAPI_APPROVE → `handleChapiApprove`).
 
   // ── DID Sync Handler ───────────────────────────────────
 
-  /**
-   * Handle DID sync from the platform.
-   *
-   * The platform pushes a holderDid + verificationMethod after DID assignment.
-   * We store them in the vault and return the extension's public JWK so the
-   * platform can include it in the DID Document.
-   *
-   * If the vault has no keypair yet, we generate one (same as createDid flow).
-   */
-  async function handleDidSync(
-    syncReq: DidSyncMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'Vault is locked')
-      return
-    }
+  // `handleDidSync` moved to `@/background/handlers/did-sync.handler` (Story 1.10),
+  // consumed via `MESSAGE_ROUTES.DID_SYNC.handle`. The handler returns the
+  // DID_SYNC_RESPONSE data; the case below transports it via `sendDidSyncResponse`.
+  // `extractDidLabelForSync` was hoisted to the pure `@/utils/did-label` util.
 
-    // Generate keypair if none exists
-    if (!vault.privateKeyJwk) {
-      const keyPair = await crypto.subtle.generateKey(
-        { name: 'ECDSA', namedCurve: 'P-256' },
-        true,
-        ['sign', 'verify'],
-      )
-      vault.privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
+  // Key admin (rotate / backup / restore): the handler cores live in
+  // `handlers/key-*.handler.ts` (Story 1.13 Phase 2) and their transport in
+  // `transport/tab-responses.ts` (Phase 3). Nothing left here.
 
-      // Also set the self-issued did:jwk as fallback DID if none set
-      if (!vault.did) {
-        const publicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-        vault.did = publicJwkToDid(publicJwk)
+  /** Background work with nobody waiting on it. Logged, never silent. */
+  function fireAndForget(work: Promise<unknown> | void, label: string): void {
+    void Promise.resolve(work).catch((err: unknown) => {
+      console.error(`[Attestto ID] ${label} failed:`, err)
+    })
+  }
+
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // ── Answering, even when the handler throws (Story 1.18) ─────
+    // ESLint's `no-floating-promises` found 46 chains in this listener on its
+    // FIRST EVER run, and not one of them had a `.catch`. In MV3 that is not a
+    // stray console warning: `sendResponse` never fires, so the approval window
+    // or the page waits for an answer that is not coming and eventually times
+    // out — indistinguishable from a user who walked away. Whatever goes wrong,
+    // the caller now gets a reply.
+    //
+    // `sendResponse` throws if called twice (or after the channel closed), and
+    // a failure can race a success that already answered, so the answer is
+    // latched: first reply wins, later ones are dropped rather than throwing.
+    let answered = false
+    const answer = (response: unknown): void => {
+      if (answered) return
+      answered = true
+      try {
+        sendResponse(response)
+      } catch (err) {
+        console.warn('[Attestto ID] response channel already closed', err)
       }
     }
-
-    // Extract public key from private JWK (strip private fields)
-    const publicKeyJwk: JsonWebKey = {
-      kty: vault.privateKeyJwk.kty,
-      crv: vault.privateKeyJwk.crv,
-      x: vault.privateKeyJwk.x,
-      y: vault.privateKeyJwk.y,
-    }
-
-    // Keep legacy fields for backward compat
-    vault.holderDid = syncReq.holderDid
-    vault.verificationMethod = syncReq.verificationMethod
-
-    // Upsert into linkedIdentities[]
-    if (!vault.linkedIdentities) vault.linkedIdentities = []
-
-    const existingIdx = vault.linkedIdentities.findIndex(
-      (id) => id.did === syncReq.holderDid,
-    )
-
-    const label = extractDidLabelForSync(syncReq.holderDid)
-    const now = new Date().toISOString()
-
-    if (existingIdx >= 0) {
-      vault.linkedIdentities[existingIdx].verificationMethod = syncReq.verificationMethod
-      vault.linkedIdentities[existingIdx].syncedAt = now
-      if (syncReq.tenantId) {
-        vault.linkedIdentities[existingIdx].tenantId = syncReq.tenantId
-      }
-    } else {
-      vault.linkedIdentities.push({
-        did: syncReq.holderDid,
-        label,
-        verificationMethod: syncReq.verificationMethod,
-        credentials: [],
-        syncedAt: now,
-        tenantId: syncReq.tenantId ?? null,
+    const answerOrFail = (work: Promise<unknown>, label: string): void => {
+      void work.catch((err: unknown) => {
+        console.error(`[Attestto ID] ${label} failed:`, err)
+        answer({ ok: false, error: err instanceof Error ? err.message : 'Internal error' })
       })
     }
 
-    await writeVault(vault)
-    await syncPublicVault(vault)
-
-    sendDidSyncResponse(senderTabId, syncReq.requestId, publicKeyJwk, syncReq.holderDid, null)
-  }
-
-  /** Extract a human-readable label from a DID. */
-  function extractDidLabelForSync(did: string): string {
-    const snsMatch = did.match(/^did:sns:(.+)$/)
-    if (snsMatch) return snsMatch[1]
-
-    const webMatch = did.match(/^did:web:(.+)$/)
-    if (webMatch) return webMatch[1].replace(/:/g, '/')
-
-    return did
-  }
-
-  function sendDidSyncResponse(
-    tabId: number | null,
-    requestId: string,
-    publicKeyJwk: JsonWebKey | null,
-    holderDid: string | null,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping DID_SYNC_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'DID_SYNC_RESPONSE',
-      payload: { requestId, publicKeyJwk, holderDid, error },
-    })
-  }
-
-  // ── Key Rotation (Phase D) ──────────────────────────
-
-  async function handleKeyRotate(
-    rotateReq: KeyRotateMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendKeyRotateResponse(senderTabId, rotateReq.requestId, null, null, 'Vault is locked')
-      return
+    // Story 1.14 — only a user gesture may move the idle deadline. The predicate
+    // (extension sender AND an allowlisted type) lives in `lock/user-gestures`;
+    // both halves are load-bearing and are proven there.
+    if (shouldCountAsActivity(sender, message)) {
+      fireAndForget(idleLock.touch(), 'idle-lock touch')
     }
 
-    if (!vault.privateKeyJwk) {
-      sendKeyRotateResponse(senderTabId, rotateReq.requestId, null, null, 'No existing key to rotate')
-      return
-    }
-
-    // Capture old public key before overwriting
-    const oldPublicKeyJwk: JsonWebKey = {
-      kty: vault.privateKeyJwk.kty,
-      crv: vault.privateKeyJwk.crv,
-      x: vault.privateKeyJwk.x,
-      y: vault.privateKeyJwk.y,
-    }
-
-    // Generate fresh P-256 keypair
-    const keyPair = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      true,
-      ['sign', 'verify'],
-    )
-
-    vault.privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
-
-    // Update self-issued did:jwk to match new key
-    const newPublicJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey)
-    vault.did = publicJwkToDid(newPublicJwk)
-
-    await writeVault(vault)
-    // Mirror the rotated did:jwk into the public vault, or hasIdentity() (auth
-    // fail-fast) and the popup keep reading a stale/empty did after rotation.
-    await syncPublicVault(vault)
-
-    const newPublicKeyJwk: JsonWebKey = {
-      kty: newPublicJwk.kty,
-      crv: newPublicJwk.crv,
-      x: newPublicJwk.x,
-      y: newPublicJwk.y,
-    }
-
-    sendKeyRotateResponse(senderTabId, rotateReq.requestId, newPublicKeyJwk, oldPublicKeyJwk, null)
-  }
-
-  function sendKeyRotateResponse(
-    tabId: number | null,
-    requestId: string,
-    newPublicKeyJwk: JsonWebKey | null,
-    oldPublicKeyJwk: JsonWebKey | null,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping KEY_ROTATE_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'KEY_ROTATE_RESPONSE',
-      payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
-    })
-  }
-
-  // ── Key Backup / Restore (Phase E) ─────────────────
-
-  async function handleKeyBackup(
-    backupReq: KeyBackupMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendKeyBackupResponse(senderTabId, backupReq.requestId, null, 'Vault is locked')
-      return
-    }
-
-    if (!vault.privateKeyJwk) {
-      sendKeyBackupResponse(senderTabId, backupReq.requestId, null, 'No private key to back up')
-      return
-    }
-
-    // Serialize the private key JWK to bytes
-    const keyBytes = new TextEncoder().encode(JSON.stringify(vault.privateKeyJwk))
-
-    // Split into 2-of-3 Shamir shares
-    const [share1, share2, share3] = split2of3(keyBytes)
-
-    // Compute a hash of the original key for verification after reconstruction
-    const hashBuffer = await crypto.subtle.digest('SHA-256', keyBytes)
-    const hashArray = new Uint8Array(hashBuffer)
-    const keyHash = toBase64Url(hashArray)
-
-    sendKeyBackupResponse(senderTabId, backupReq.requestId, {
-      deviceShare: { data: toBase64Url(share1), index: 1 },
-      cloudShare: { data: toBase64Url(share2), index: 2 },
-      guardianShare: { data: toBase64Url(share3), index: 3 },
-      keyHash,
-    }, null)
-  }
-
-  function sendKeyBackupResponse(
-    tabId: number | null,
-    requestId: string,
-    shares: {
-      deviceShare: { data: string; index: number }
-      cloudShare: { data: string; index: number }
-      guardianShare: { data: string; index: number }
-      keyHash: string
-    } | null,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping KEY_BACKUP_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'KEY_BACKUP_RESPONSE',
-      payload: { requestId, shares, error },
-    })
-  }
-
-  async function handleKeyRestore(
-    restoreReq: KeyRestoreMessage['payload'],
-    senderTabId: number | null,
-  ): Promise<void> {
-    const vault = await readVault()
-    if (!vault) {
-      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, 'Vault is locked')
-      return
-    }
-
-    try {
-      const shareA = {
-        data: fromBase64Url(restoreReq.shareA.data),
-        index: restoreReq.shareA.index,
-      }
-      const shareB = {
-        data: fromBase64Url(restoreReq.shareB.data),
-        index: restoreReq.shareB.index,
-      }
-
-      // Reconstruct the private key bytes
-      const keyBytes = combine2of3(shareA, shareB)
-      const keyJson = new TextDecoder().decode(keyBytes)
-      const privateKeyJwk = JSON.parse(keyJson) as JsonWebKey
-
-      // Validate it's a valid P-256 private key
-      if (privateKeyJwk.kty !== 'EC' || privateKeyJwk.crv !== 'P-256' || !privateKeyJwk.d) {
-        sendKeyRestoreResponse(senderTabId, restoreReq.requestId, 'Reconstructed key is not a valid P-256 private key')
-        return
-      }
-
-      // Write restored key to vault
-      vault.privateKeyJwk = privateKeyJwk
-
-      // Regenerate did:jwk from the restored key
-      const publicJwk: JsonWebKey = {
-        kty: privateKeyJwk.kty,
-        crv: privateKeyJwk.crv,
-        x: privateKeyJwk.x,
-        y: privateKeyJwk.y,
-      }
-      vault.did = publicJwkToDid(publicJwk)
-
-      await writeVault(vault)
-      // Mirror the restored did:jwk into the public vault, or hasIdentity()
-      // (auth fail-fast) and the popup keep reading an empty did after recovery.
-      await syncPublicVault(vault)
-      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, null)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Key restoration failed'
-      sendKeyRestoreResponse(senderTabId, restoreReq.requestId, msg)
-    }
-  }
-
-  function sendKeyRestoreResponse(
-    tabId: number | null,
-    requestId: string,
-    error: string | null,
-  ): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping KEY_RESTORE_RESPONSE — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'KEY_RESTORE_RESPONSE',
-      payload: { requestId, success: error === null, error },
-    })
-  }
-
-  // ── Helpers ──────────────────────────────────────────
-
-  function sendReshareError(tabId: number | null, requestId: string, error: string): void {
-    if (!tabId) {
-      console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE error — no originating tabId', { requestId })
-      return
-    }
-    notifyTab(tabId, {
-      type: 'RESHARE_STORED_VP_RESPONSE',
-      payload: { requestId, error },
-    })
-  }
-
-  // ── Message Router ─────────────────────────────────
-
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message.type) {
       case 'NOTIFICATION_RECEIVED':
         chrome.notifications.create({
@@ -1350,36 +673,32 @@ export default defineBackground(() => {
         break
 
       case 'SESSION_EXPIRED':
-        chrome.storage.session.remove('attestto_ext_session_key')
+        answerOrFail(chrome.storage.session.remove('attestto_ext_session_key'), 'SESSION_EXPIRED')
         sendResponse({ ok: true })
         break
 
-      case 'AUTO_LOCK_CHANGED':
-        resetAutoLockAlarm()
+      // The touch already happened above; the case exists so the popup gets an
+      // ack and so the message is a real routed type rather than a silent drop.
+      case 'WALLET_ACTIVITY':
         sendResponse({ ok: true })
         break
 
       // ── Credential Offer Approval Window Handlers ───
       case 'CREDENTIAL_OFFER_GET_PENDING': {
-        const notifId = message.payload?.notifId as string | undefined
-        if (!notifId) {
-          sendResponse({ ok: false, error: 'No notifId provided' })
-          break
-        }
-        const pending = pendingOffers.get(notifId)
-        if (!pending) {
-          sendResponse({ ok: false, error: 'Offer not found or already handled' })
-          break
-        }
-        sendResponse({
-          ok: true,
-          offer: {
-            format: pending.offer.format,
-            issuerName: pending.offer.issuerName,
-          },
-          origin: pending.origin,
-        })
-        break
+        // Answers with a PROJECTION, not the row: the approval page needs only
+        // what it renders, and the raw offer carries the credential itself.
+        answerOrFail(offerConsent.peek(message.payload?.notifId as string | undefined).then((peeked) => {
+          sendResponse(
+            peeked.ok
+              ? {
+                  ok: true,
+                  offer: { format: peeked.request.offer.format, issuerName: peeked.request.offer.issuerName },
+                  origin: peeked.request.origin,
+                }
+              : peeked,
+          )
+        }), 'CREDENTIAL_OFFER_GET_PENDING')
+        return true // async
       }
 
       case 'CREDENTIAL_OFFER_APPROVE': {
@@ -1388,173 +707,109 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'No notifId provided' })
           break
         }
-        pendingOffers.get(notifId)?.unregister?.()
-        acceptCredentialOffer(notifId).then((credentialId) => {
+        // The disarm happens inside `acceptCredentialOffer`'s atomic take.
+        answerOrFail(acceptCredentialOffer(notifId).then((credentialId) => {
           sendResponse({ ok: !!credentialId, credentialId })
-        })
+        }), 'CREDENTIAL_OFFER_APPROVE')
         return true // async
       }
 
       case 'CREDENTIAL_OFFER_DENY': {
-        const notifId = message.payload?.notifId as string | undefined
-        if (notifId) {
-          pendingOffers.get(notifId)?.unregister?.()
-          pendingOffers.delete(notifId)
-        }
-        sendResponse({ ok: true })
-        break
+        answerOrFail(offerConsent.deny(message.payload?.notifId as string | undefined).then(() => sendResponse({ ok: true })), 'CREDENTIAL_OFFER_DENY')
+        return true // async
       }
 
-      case 'SIGN_REQUEST':
-        signPayload(message.payload).then((result) => {
-          sendResponse(result)
-        })
-        break
-
       case 'CREDENTIAL_OFFER': {
-        console.log('[Attestto ID] CREDENTIAL_OFFER received in background', message.payload)
         const offer = message.payload as CredentialOfferMessage['payload']
+        // The origin comes from the unspoofable `sender`, NEVER from the payload.
         const senderOrigin = sender?.origin ?? sender?.url ?? null
-        const notifId = `credential-offer-${Date.now()}`
-        pendingOffers.set(notifId, { offer, origin: senderOrigin })
 
-        // Identity-format offers (attestto-id): auto-accept ONLY if the user
-        // previously approved this origin. Untrusted origins (or any non-identity
-        // format) route through the dedicated approval window — reliable across
-        // platforms, unlike OS notifications which silently fail on macOS Brave.
-        if (offer.format === 'attestto-id') {
-          isOriginTrusted(senderOrigin).then((trusted) => {
-            if (trusted) {
-              acceptCredentialOffer(notifId).then((credentialId) => {
-                console.log('[Attestto ID] Identity offer auto-accepted (trusted origin):', credentialId)
-              })
-              sendResponse({ ok: true, autoAccepted: true })
-              return
-            }
-            openCredentialOfferApprovalWindow(notifId, offer, senderOrigin)
-            sendResponse({ ok: true, pendingConsent: true })
-          })
-          return true // keep sendResponse channel open for async trust check
-        }
-
-        // Non-identity formats (sd-jwt, json-ld) — also route through approval window.
-        openCredentialOfferApprovalWindow(notifId, offer, senderOrigin)
-        sendResponse({ ok: true, pendingConsent: true })
-        break
+        // The silent-acceptance gate lives in `handlers/credential-offer.handler.ts`
+        // (Story 1.13 Phase 9): an offer skips consent only when it is the
+        // identity-sync format AND the origin was approved before.
+        answerOrFail(handleCredentialOffer(offer, senderOrigin, {
+          isOriginTrusted,
+          stage: (notifId, staged, origin) => pendingOffers.put(notifId, { offer: staged, origin }),
+          accept: acceptCredentialOffer,
+          requestConsent: openCredentialOfferApprovalWindow,
+          newNotifId: () => `credential-offer-${Date.now()}`,
+        }).then((outcome) => {
+          sendResponse(
+            outcome.kind === 'autoAccepted'
+              ? { ok: true, autoAccepted: true }
+              : { ok: true, pendingConsent: true },
+          )
+        }), 'CREDENTIAL_OFFER')
+        return true // async: the trust check and the window open are both awaited
       }
 
       case 'WALLET_LINK': {
-        const address = message.payload?.address as string | undefined
-        if (address) {
-          readVault().then(async (vault) => {
-            if (vault) {
-              vault.linkedSolanaAddress = address
-              await writeVault(vault)
-              await syncPublicVault(vault)
-            }
-            sendResponse({ ok: true })
-          })
-        } else {
-          sendResponse({ ok: false, error: 'No address provided' })
-        }
-        break
+        answerOrFail(linkWalletAddress(message.payload?.address as string | undefined, { store: vaultRecordStore }).then(
+          (result) => sendResponse(result.ok ? { ok: true } : result),
+        ), 'WALLET_LINK')
+        return true // async
       }
 
       case 'PROOF_ACCESS_REQUEST': {
         const par = message.payload as ProofAccessRequestMessage['payload']
-        const proofRequest: ProofAccessRequest = {
-          id: `par-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          credentialId: par.credentialId,
-          requesterDid: par.requesterDid,
-          requesterName: par.requesterName,
-          purpose: par.purpose,
-          requestedFields: par.requestedFields,
-          approvedFields: [],
-          status: 'pending',
-          receivedAt: new Date().toISOString(),
-          decidedAt: null,
-          expiresAt: par.expiresAt,
-          transport: par.transport,
-          nonce: par.nonce,
-          audience: par.audience,
-        }
-
-        // Store in vault
-        readVault().then(async (vault) => {
-          if (vault) {
-            vault.proofRequests = [...(vault.proofRequests ?? []), proofRequest]
-            await writeVault(vault)
-            await syncPublicVault(vault)
-          }
-        })
-
-        // Show notification
-        chrome.notifications.create(proofRequest.id, {
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icon/48.png'),
-          title: 'Proof Access Request',
-          message: `${par.requesterName} is requesting access to ${par.requestedFields.length} field(s).`,
-          buttons: [{ title: 'Review' }, { title: 'Dismiss' }],
-          requireInteraction: true,
-        })
-
-        sendResponse({ ok: true, requestId: proofRequest.id })
-        break
+        answerOrFail(recordProofAccessRequest(par, vaultRecordCtx).then(({ record }) => {
+          // Parity: the caller is told `ok` even when `stored` was false (a
+          // locked vault drops the request). The handler reports the truth; this
+          // line is the one that discards it. See SOC-145's sibling gap — the
+          // notification below has no working handler either.
+          chrome.notifications.create(record.id, {
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icon/48.png'),
+            title: 'Proof Access Request',
+            message: `${par.requesterName} is requesting access to ${par.requestedFields.length} field(s).`,
+            buttons: [{ title: 'Review' }, { title: 'Dismiss' }],
+            requireInteraction: true,
+          })
+          sendResponse({ ok: true, requestId: record.id })
+        }), 'PROOF_ACCESS_REQUEST')
+        return true // async
       }
 
       case 'PUSH_PRESENTATION': {
         const push = message.payload as PushPresentationMessage['payload']
-        const prep: PreparedPresentation = {
-          id: `prep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          credentialId: push.credentialId,
-          presentation: push.presentation,
-          selectedFields: push.selectedFields,
-          createdAt: new Date().toISOString(),
-          expiresAt: push.expiresAt,
-          used: false,
-          usedAt: null,
-        }
-
-        readVault().then(async (vault) => {
-          if (vault) {
-            vault.preparedPresentations = [...(vault.preparedPresentations ?? []), prep]
-            await writeVault(vault)
-            await syncPublicVault(vault)
-          }
-          sendResponse({ ok: true, preparedId: prep.id })
-        })
-
-        chrome.notifications.create({
-          type: 'basic',
-          iconUrl: chrome.runtime.getURL('icon/48.png'),
-          title: 'Presentation Ready',
-          message: `A prepared presentation with ${push.selectedFields.length} field(s) is ready in your vault.`,
-        })
-        break
+        answerOrFail(recordPreparedPresentation(push, vaultRecordCtx).then(({ record }) => {
+          // The notification lives INSIDE the success path for two reasons.
+          //
+          // It used to sit after this call, in the listener body, reading
+          // `push.selectedFields.length` with no validation — a synchronous
+          // throw on any payload lacking the field, raised BEFORE `return true`
+          // ran. The channel then closed with no reply and the caller waited
+          // forever: precisely the hang `answerOrFail` exists to prevent, from
+          // the one line that was outside it. `PUSH_PRESENTATION` crosses the
+          // content-script bridge, so the payload is not ours to trust.
+          //
+          // And announcing "Presentation Ready" before the record is stored
+          // told the user something was in their vault when the write could
+          // still fail. `record` is the stored value, so the count is now the
+          // one actually persisted.
+          chrome.notifications.create({
+            type: 'basic',
+            iconUrl: chrome.runtime.getURL('icon/48.png'),
+            title: 'Presentation Ready',
+            message: `A prepared presentation with ${record.selectedFields?.length ?? 0} field(s) is ready in your vault.`,
+          })
+          sendResponse({ ok: true, preparedId: record.id })
+        }), 'PUSH_PRESENTATION')
+        return true // async
       }
 
       case 'DIDCOMM_INBOUND': {
-        const didcommMsg = (message as DIDCommInboundMessage).payload
-        const parsed = parseProofRequest(didcommMsg)
-
-        if (parsed) {
-          // Convert DIDComm proof request to our internal format
-          // The popup will handle matching to a credential
-          chrome.notifications.create(`didcomm-${parsed.id}`, {
-            type: 'basic',
-            iconUrl: chrome.runtime.getURL('icon/48.png'),
-            title: 'DIDComm Proof Request',
-            message: `${parsed.from} is requesting identity verification via DIDComm v2.`,
-            buttons: [{ title: 'Review' }, { title: 'Dismiss' }],
-            requireInteraction: true,
-          })
-
-          // Forward to popup
-          chrome.runtime.sendMessage({
-            type: 'DIDCOMM_PROOF_REQUEST',
-            payload: parsed,
-          })
-        }
+        // Story 1.9 — extracted to the DIDCOMM_INBOUND route (parity-tested in
+        // didcomm-inbound.handler.spec). Delegates DIRECTLY to `handle` (not
+        // through `dispatch`, whose empty `allowFrom` would reject — the legacy
+        // case did no sender-auth). Effects fire-and-forget, response stays sync —
+        // same as before. The inline ctx is a thin chrome adapter; the real
+        // capability-scoped bundle is built by the composition root (Story 1.13),
+        // which also removes this cast.
+        void MESSAGE_ROUTES.DIDCOMM_INBOUND.handle(
+          (message as DIDCommInboundMessage).payload,
+          untrustedAdapters as never,
+        )
         sendResponse({ ok: true })
         break
       }
@@ -1564,9 +819,9 @@ export default defineBackground(() => {
 
         if (apiReq.protocol === 'chapi') {
           // CHAPI standard — open popup for user consent (Phantom-style)
-          handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
+          answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
             sendResponse({ ok: true })
-          })
+          }), 'CREDENTIAL_API_REQUEST')
         } else {
           // Attestto proprietary — forward to popup consent UI
           chrome.notifications.create(`cred-api-${apiReq.requestId}`, {
@@ -1578,10 +833,10 @@ export default defineBackground(() => {
             requireInteraction: true,
           })
 
-          chrome.runtime.sendMessage({
+          answerOrFail(chrome.runtime.sendMessage({
             type: 'CREDENTIAL_API_REQUEST_FORWARD',
             payload: apiReq,
-          })
+          }), 'CREDENTIAL_API_REQUEST')
           sendResponse({ ok: true })
         }
         break
@@ -1590,28 +845,10 @@ export default defineBackground(() => {
       case 'LIST_STORED_CREDENTIALS': {
         const listReqId = message.payload?.requestId as string
         const listSenderTabId = sender.tab?.id ?? null
-        readVault().then((vault) => {
-          const creds = (vault?.credentials ?? []).map((c: StoredCredential) => ({
-            id: c.id,
-            format: c.format,
-            issuer: c.issuer,
-            issuedAt: c.issuedAt,
-            expiresAt: c.expiresAt,
-            types: c.types,
-            claimKeys: Object.keys(c.decodedClaims),
-            source: c.metadata.source,
-          }))
-
-          if (listSenderTabId) {
-            notifyTab(listSenderTabId, {
-              type: 'LIST_STORED_CREDENTIALS_RESPONSE',
-              payload: { requestId: listReqId, credentials: creds },
-            })
-          } else {
-            console.warn('[Attestto ID] Dropping LIST_STORED_CREDENTIALS_RESPONSE — no originating tabId', { requestId: listReqId })
-          }
+        answerOrFail(readVault().then((vault) => {
+          sendStoredCredentials(listSenderTabId, listReqId, summarizeStoredCredentials(vault))
           sendResponse({ ok: true })
-        })
+        }), 'LIST_STORED_CREDENTIALS')
         break
       }
 
@@ -1623,51 +860,16 @@ export default defineBackground(() => {
         }
         const reshareSenderTabId = sender.tab?.id ?? null
 
-        readVault().then(async (vault) => {
-          if (!vault) {
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'Vault locked')
+        answerOrFail(readVault().then((vault) => {
+          const result = buildResharePresentation(vault, resharePayload)
+          if (!result.ok) {
+            sendReshareError(reshareSenderTabId, resharePayload.requestId, result.error)
             sendResponse({ ok: false })
             return
           }
-
-          const cred = (vault.credentials ?? []).find(
-            (c: StoredCredential) => c.id === resharePayload.credentialId,
-          )
-          if (!cred) {
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'Credential not found')
-            sendResponse({ ok: false })
-            return
-          }
-
-          // Build a filtered claims object for the selected fields
-          const filteredClaims: Record<string, unknown> = {}
-          for (const field of resharePayload.selectedFields) {
-            if (field in cred.decodedClaims) {
-              filteredClaims[field] = cred.decodedClaims[field]
-            }
-          }
-
-          if (reshareSenderTabId) {
-            notifyTab(reshareSenderTabId, {
-              type: 'RESHARE_STORED_VP_RESPONSE',
-              payload: {
-                requestId: resharePayload.requestId,
-                presentation: {
-                  credentialId: cred.id,
-                  format: cred.format,
-                  issuer: cred.issuer,
-                  selectedFields: resharePayload.selectedFields,
-                  claims: filteredClaims,
-                  issuedAt: cred.issuedAt,
-                  expiresAt: cred.expiresAt,
-                },
-              },
-            })
-          } else {
-            console.warn('[Attestto ID] Dropping RESHARE_STORED_VP_RESPONSE — no originating tabId', { requestId: resharePayload.requestId })
-          }
+          sendResharePresentation(reshareSenderTabId, resharePayload.requestId, result.presentation)
           sendResponse({ ok: true })
-        })
+        }), 'RESHARE_STORED_VP')
         break
       }
 
@@ -1682,21 +884,35 @@ export default defineBackground(() => {
         const syncReq = message.payload as DidSyncMessage['payload']
         const senderTabId = sender.tab?.id ?? null
         const senderOrigin = getSenderOrigin(sender)
+
+        // Inline ctx adapter over the real chrome/vault surface (the composition
+        // root, Story 1.13, replaces this + the `as never` boundary cast with the
+        // router's `buildBundle`). The handler returns the DID_SYNC_RESPONSE data;
+        // this case owns transport (`sendDidSyncResponse`) and the runtime ack.
+        const didSyncCtx: Pick<KeyAdminCtx, 'store' | 'keygen' | 'clock'> = {
+          ...keyAdminAdapters,
+          clock: { now: () => Date.now() },
+        }
+
         const runSync = () =>
-          handleDidSync(syncReq, senderTabId).then(() => sendResponse({ ok: true }))
+          MESSAGE_ROUTES.DID_SYNC.handle(syncReq, didSyncCtx as never).then((data) => {
+            const r = data as DidSyncResponseData
+            sendDidSyncResponse(senderTabId, r.requestId, r.publicKeyJwk, r.holderDid, r.error)
+            sendResponse({ ok: true })
+          })
 
         if (isPlatformOrigin(senderOrigin)) {
-          runSync()
+          answerOrFail(runSync(), 'DID_SYNC')
         } else {
-          isOriginTrusted(senderOrigin).then((trusted) => {
+          answerOrFail(isOriginTrusted(senderOrigin).then((trusted) => {
             if (trusted) {
-              runSync()
+              answerOrFail(runSync(), 'DID_SYNC')
             } else {
               console.warn('[Attestto ID] Rejected DID_SYNC from unauthorized origin', senderOrigin)
               sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'origin_not_authorized')
               sendResponse({ ok: false, error: 'origin_not_authorized' })
             }
-          })
+          }), 'DID_SYNC')
         }
         break
       }
@@ -1713,9 +929,11 @@ export default defineBackground(() => {
           break
         }
         const rotateReq = message.payload as KeyRotateMessage['payload']
-        handleKeyRotate(rotateReq, sender.tab?.id ?? null).then(() => {
+        const rotateTabId = sender.tab?.id ?? null
+        answerOrFail(handleKeyRotate(keyAdminAdapters).then((result) => {
+          sendKeyRotateResponse(rotateTabId, rotateReq.requestId, result.newPublicKeyJwk, result.oldPublicKeyJwk, result.error)
           sendResponse({ ok: true })
-        })
+        }), 'KEY_ROTATE')
         break
       }
 
@@ -1726,9 +944,11 @@ export default defineBackground(() => {
           break
         }
         const backupReq = message.payload as KeyBackupMessage['payload']
-        handleKeyBackup(backupReq, sender.tab?.id ?? null).then(() => {
+        const backupTabId = sender.tab?.id ?? null
+        answerOrFail(handleKeyBackup(keyAdminAdapters).then((result) => {
+          sendKeyBackupResponse(backupTabId, backupReq.requestId, result.shares, result.error)
           sendResponse({ ok: true })
-        })
+        }), 'KEY_BACKUP')
         break
       }
 
@@ -1739,9 +959,11 @@ export default defineBackground(() => {
           break
         }
         const restoreReq = message.payload as KeyRestoreMessage['payload']
-        handleKeyRestore(restoreReq, sender.tab?.id ?? null).then(() => {
+        const restoreTabId = sender.tab?.id ?? null
+        answerOrFail(handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminAdapters).then((result) => {
+          sendKeyRestoreResponse(restoreTabId, restoreReq.requestId, result.error)
           sendResponse({ ok: true })
-        })
+        }), 'KEY_RESTORE')
         break
       }
 
@@ -1755,115 +977,68 @@ export default defineBackground(() => {
 
       case 'SIGN_DOCUMENT_REQUEST': {
         const signReq = message.payload as SignDocumentRequestMessage['payload']
-        handleSigningRequest(signReq, sender.tab?.id ?? null).then(() => {
+        answerOrFail(handleSigningRequest(signReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        })
+        }), 'SIGN_DOCUMENT_REQUEST')
         break
       }
 
-      case 'SIGN_DOCUMENT_GET_PENDING': {
-        const signReqId = message.payload?.requestId as string
-        const pendingSign = pendingSigningRequests.get(signReqId)
-        if (pendingSign) {
-          sendResponse({ ok: true, request: pendingSign })
-        } else {
-          sendResponse({ ok: false, error: 'No pending signing request found' })
-        }
-        break
-      }
+      case 'SIGN_DOCUMENT_GET_PENDING':
+        answerOrFail(signingConsent.peek(message.payload?.requestId as string).then(sendResponse), 'SIGN_DOCUMENT_GET_PENDING')
+        return true // async
 
       case 'SIGN_DOCUMENT_APPROVE': {
         const signApproveId = message.payload?.requestId as string
         const selectedSignDid = message.payload?.selectedDid as string
-        const pendingSigning = pendingSigningRequests.get(signApproveId)
+        // Story 1.15/1.16 — `approve` claims the row, marks it consumed, disarms
+        // the window, and only THEN runs this body. The body is an argument, not
+        // something that runs after a check, so there is no way to reach the
+        // effect without the guard having passed. A replay lands on the tombstone
+        // and is rejected as already-processed.
+        answerOrFail(pendingSigningRequests.approve(signApproveId, (pendingSigning) => {
 
-        if (!pendingSigning) {
-          sendResponse({ ok: false, error: 'No pending signing request' })
-          break
-        }
-        pendingSigning.unregister?.()
-        pendingSigningRequests.delete(signApproveId)
+          // Story 1.13 Phase 1b — the extracted signing CORE gets its ctx from the
+          // composition root's `buildBundle('signing')` (AD-3): a fresh bundle whose
+          // ONE gated `crypto.sign` signs with the root key (no provisioning here). The
+          // inline `createGatedSign` adapter is gone. This case still owns the
+          // transport (SW lifecycle state, AD-14).
+          const signDocumentCtx = buildBundle('signing')
 
-        readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
-
-          const holderDid = selectedSignDid || vault.holderDid || vault.did
-
-          if (!holderDid) {
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, 'No DID configured')
-            sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          try {
-            const timestamp = String(Date.now())
-            // Canonical signing payload (must match backend verification)
-            const canonicalPayload = `attestto:sign:${pendingSigning.signReq.signingToken}:${holderDid}:${timestamp}`
-
-            const privateKey = await crypto.subtle.importKey(
-              'jwk',
-              vault.privateKeyJwk,
-              { name: 'ECDSA', namedCurve: 'P-256' },
-              false,
-              ['sign'],
-            )
-
-            const data = new TextEncoder().encode(canonicalPayload)
-            const signatureBuffer = await crypto.subtle.sign(
-              { name: 'ECDSA', hash: 'SHA-256' },
-              privateKey,
-              data,
-            )
-
-            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
-
-            const jwk = vault.privateKeyJwk as Record<string, string>
-            const responseData = {
-              did: holderDid,
-              signature,
-              timestamp,
-              publicKeyJwk: {
-                kty: jwk.kty || 'EC',
-                crv: jwk.crv || 'P-256',
-                x: jwk.x,
-                y: jwk.y,
-              },
+          return handleSignDocumentApprove(
+            { signingToken: pendingSigning.signReq.signingToken, selectedDid: selectedSignDid },
+            signDocumentCtx,
+          ).then((result) => {
+            if (result.ok) {
+              const responseData = {
+                did: result.did,
+                signature: result.signature,
+                timestamp: result.timestamp,
+                publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+              }
+              sendSigningResponseToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
             }
-
-            sendSigningResponseToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Signing failed'
-            sendSigningErrorToTab(pendingSigning.senderTabId, pendingSigning.signReq.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
-          }
-        })
-        break
+          })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending signing request'))
+        }), 'SIGN_DOCUMENT_APPROVE')
+        return true // async
       }
 
-      case 'SIGN_DOCUMENT_DENY': {
-        const signDenyId = message.payload?.requestId as string
-        const pendingSignDeny = pendingSigningRequests.get(signDenyId)
-        if (pendingSignDeny) {
-          pendingSignDeny.unregister?.()
-          pendingSigningRequests.delete(signDenyId)
-          sendSigningErrorToTab(pendingSignDeny.senderTabId, pendingSignDeny.signReq.requestId, 'User declined signing')
-        }
-        sendResponse({ ok: true })
-        break
-      }
+      case 'SIGN_DOCUMENT_DENY':
+        answerOrFail(signingConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true })), 'SIGN_DOCUMENT_DENY')
+        return true // async
 
       // ── DID Authentication Request Handler (login via extension — ATT-123) ──
 
       case 'AUTH_REQUEST': {
         const authReq = message.payload as { requestId: string; nonce: string; timestamp: string; origin: string }
-        handleAuthRequest(authReq, sender.tab?.id ?? null).then(() => {
+        answerOrFail(handleAuthRequest(authReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        })
+        }), 'AUTH_REQUEST')
         return true // async sendResponse
       }
 
@@ -1877,454 +1052,221 @@ export default defineBackground(() => {
           timestamp?: string
           trustedIssuers?: string[]
         }
-        handleCwAuthRequest(cwAuthReq, sender.tab?.id ?? null).then(() => {
+        answerOrFail(handleCwAuthRequest(cwAuthReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        })
+        }), 'CW_AUTH_REQUEST')
         return true // async sendResponse
       }
 
-      case 'AUTH_GET_PENDING': {
-        const authReqId = message.payload?.requestId as string
-        const pendingAuth = pendingAuthRequests.get(authReqId)
-        if (pendingAuth) {
-          sendResponse({ ok: true, request: pendingAuth })
-        } else {
-          sendResponse({ ok: false, error: 'No pending auth request found' })
-        }
-        break
-      }
+      case 'AUTH_GET_PENDING':
+        answerOrFail(authConsent.peek(message.payload?.requestId as string).then(sendResponse), 'AUTH_GET_PENDING')
+        return true // async
 
       case 'AUTH_APPROVE': {
         const authApproveId = message.payload?.requestId as string
         const selectedAuthDid = message.payload?.selectedDid as string | undefined
-        const pendingAuthReq = pendingAuthRequests.get(authApproveId)
+        answerOrFail(pendingAuthRequests.approve(authApproveId, (pendingAuthReq) => {
 
-        if (!pendingAuthReq) {
-          sendResponse({ ok: false, error: 'No pending auth request' })
-          break
-        }
-        pendingAuthReq.unregister?.()
-        pendingAuthRequests.delete(authApproveId)
-
-        const isCwAuth = pendingAuthReq.protocol === 'cw'
-        const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
-
-        readVault().then(async (vault) => {
-          if (!vault) {
-            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
-
-          // Login uses a PAIRWISE DID per origin — find-or-create so this site
-          // can never correlate the user across the web. `selectedDid` from the
-          // popup is intentionally ignored here: identity choice is not a login
-          // concept, a site must request a VC to learn anything about the user.
+          const isCwAuth = pendingAuthReq.protocol === 'cw'
+          const sendAuthErr = isCwAuth ? sendCwAuthErrorToTab : sendAuthErrorToTab
+          // `selectedDid` is intentionally ignored — login uses a pairwise per-origin
+          // DID, not the identity chooser (see handler).
           void selectedAuthDid
 
-          try {
-            const { siteDids, entry } = await findOrCreateSiteDid(
-              vault.siteDids,
-              pendingAuthReq.origin,
-            )
-            // Stamp the visit and persist every time (create or reuse) so the
-            // popup can show created + last-used for this site.
-            entry.lastUsedAt = new Date().toISOString()
-            vault.siteDids = siteDids
-            await writeVault(vault)
-            await syncPublicVault(vault)
+          // Story 1.13 Phase 1b — AUTH login core (`handleAuthApprove`, both protocols)
+          // gets its ctx from `buildBundle('signing')`. The handler calls
+          // `ctx.provisioning.provisionSiteDid(origin)` (find-or-create + stamp + write +
+          // mirror, inside the adapter) which rebinds the bundle's key-slot to the
+          // per-site key; the ONE gated `crypto.sign` then signs with it. Two writers as
+          // named capabilities: `provisioning.provisionSiteDid` + `pin`.
+          const authCtx = buildBundle('signing')
 
-            // Deciding to sign in IS the trust decision — pin the site so its
-            // popup grade reflects it (no separate "Trust this site" step). The
-            // per-origin phishing acknowledgment already gated this choice.
-            try {
-              const trustedHost = new URL(pendingAuthReq.origin).host.toLowerCase().replace(/^www\./, '')
-              if (trustedHost) await pinSite(trustedHost)
-            } catch {
-              // Best-effort: never block sign-in on a pin failure.
-            }
-
-            if (isCwAuth) {
-              // credential-wallet:auth (SOC-71) — sign the adapter's versioned
-              // canonical payload and return a full AuthResponse. A fresh
-              // timestamp is minted now so it lands inside the verifier's
-              // freshness window regardless of how long consent took.
-              const response = await signDidAuth({
-                did: entry.did,
-                nonce: pendingAuthReq.nonce,
-                audience: pendingAuthReq.audience || pendingAuthReq.origin,
-                origin: pendingAuthReq.origin,
-                privateKeyJwk: entry.privateKeyJwk,
-                publicKeyJwk: publicJwkOf(entry) as JsonWebKey,
-              })
-              sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, response)
-              sendResponse({ ok: true, response })
-              return
-            }
-
-            // Legacy `attestto:auth` proof-of-possession — canonical payload
-            // MUST match backend DidAuthController exactly. The page may pass an
-            // explicit `audience`; if it doesn't, we fall back to origin
-            // (matching CORTEX's `audience ?? origin`).
-            //   ${nonce}|${audience||origin}|${origin}|${timestamp}
-            const audience = pendingAuthReq.origin
-            const canonicalPayload = `${pendingAuthReq.nonce}|${audience}|${pendingAuthReq.origin}|${pendingAuthReq.timestamp}`
-
-            const privateKey = await crypto.subtle.importKey(
-              'jwk',
-              entry.privateKeyJwk,
-              { name: 'ECDSA', namedCurve: 'P-256' },
-              false,
-              ['sign'],
-            )
-
-            const data = new TextEncoder().encode(canonicalPayload)
-            const signatureBuffer = await crypto.subtle.sign(
-              { name: 'ECDSA', hash: 'SHA-256' },
-              privateKey,
-              data,
-            )
-
-            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
-
-            // Surface the public-key half so the backend can verify by
-            // stateless proof-of-possession (TOFU) — pairwise did:jwk keys are
-            // never pre-registered.
-            const responseData = {
-              did: entry.did,
-              signature,
+          return handleAuthApprove(
+            {
+              protocol: pendingAuthReq.protocol,
+              origin: pendingAuthReq.origin,
               nonce: pendingAuthReq.nonce,
               timestamp: pendingAuthReq.timestamp,
-              publicKeyJwk: publicJwkOf(entry),
+              audience: pendingAuthReq.audience,
+            },
+            authCtx,
+          ).then((result) => {
+            if (result.ok && result.kind === 'cw') {
+              sendCwAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.response)
+              sendResponse({ ok: true, response: result.response })
+            } else if (result.ok) {
+              const responseData = {
+                did: result.did,
+                signature: result.signature,
+                nonce: result.nonce,
+                timestamp: result.timestamp,
+                publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+              }
+              sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
             }
-            sendAuthResponseToTab(pendingAuthReq.senderTabId, pendingAuthReq.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Auth signing failed'
-            sendAuthErr(pendingAuthReq.senderTabId, pendingAuthReq.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
-          }
-        })
+          })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending auth request'))
+        }), 'AUTH_APPROVE')
         return true // async sendResponse
       }
 
-      case 'AUTH_DENY': {
-        const authDenyId = message.payload?.requestId as string
-        const pendingAuthDeny = pendingAuthRequests.get(authDenyId)
-        if (pendingAuthDeny) {
-          pendingAuthDeny.unregister?.()
-          pendingAuthRequests.delete(authDenyId)
-          // Route the denial back on the SAME protocol the request arrived on.
-          // A cw (credential-wallet:auth) request must get a CW_AUTH_RESPONSE so
-          // the MAIN-world listener resolves requestAuth immediately; sending the
-          // legacy AUTH_RESPONSE would leave it hanging until its 120s timeout.
-          const denyErr =
-            pendingAuthDeny.protocol === 'cw' ? sendCwAuthErrorToTab : sendAuthErrorToTab
-          denyErr(pendingAuthDeny.senderTabId, pendingAuthDeny.requestId, 'User declined')
-        }
-        sendResponse({ ok: true })
-        break
-      }
+      case 'AUTH_DENY':
+        answerOrFail(authConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true })), 'AUTH_DENY')
+        return true // async
 
       // ── Attestto self-attested PDF signing (ATT-364) ───────────────
 
       case 'SIGN_ATTESTTO_PDF_REQUEST': {
         const apdfReq = message.payload as SignAttesttoPdfRequestMessage['payload']
-        handleAttesttoPdfRequest(apdfReq, sender.tab?.id ?? null).then(() => {
+        answerOrFail(handleAttesttoPdfRequest(apdfReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        })
+        }), 'SIGN_ATTESTTO_PDF_REQUEST')
         break
       }
 
-      case 'SIGN_ATTESTTO_PDF_GET_PENDING': {
-        const apdfId = message.payload?.requestId as string
-        const pendingApdf = pendingAttesttoPdfRequests.get(apdfId)
-        if (pendingApdf) {
-          sendResponse({ ok: true, request: pendingApdf })
-        } else {
-          sendResponse({ ok: false, error: 'No pending Attestto PDF sign request found' })
-        }
-        break
-      }
+      case 'SIGN_ATTESTTO_PDF_GET_PENDING':
+        answerOrFail(attesttoPdfConsent.peek(message.payload?.requestId as string).then(sendResponse), 'SIGN_ATTESTTO_PDF_GET_PENDING')
+        return true // async
 
       case 'SIGN_ATTESTTO_PDF_APPROVE': {
         const apdfApproveId = message.payload?.requestId as string
         const selectedApdfDid = message.payload?.selectedDid as string
-        const pendingApdf = pendingAttesttoPdfRequests.get(apdfApproveId)
+        answerOrFail(pendingAttesttoPdfRequests.approve(apdfApproveId, (pendingApdf) => {
 
-        if (!pendingApdf) {
-          sendResponse({ ok: false, error: 'No pending Attestto PDF sign request' })
-          break
-        }
-        pendingApdf.unregister?.()
-        pendingAttesttoPdfRequests.delete(apdfApproveId)
+          // Story 1.13 Phase 1b — APDF signing core (`handleSignAttesttoPdfApprove`) gets
+          // its ctx from `buildBundle('signing')`. The handler calls
+          // `ctx.provisioning.provisionEd25519()` (lazy mint + write + mirror, inside the
+          // adapter) which rebinds the bundle's key-slot to the Ed25519 key; the ONE gated
+          // `crypto.sign` signs with it. This case keeps the transport.
+          const apdfCtx = buildBundle('signing')
 
-        ;(async () => {
-          try {
-            const vault = await readVault()
-            if (!vault) {
-              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, 'Vault not ready')
-              sendResponse({ ok: false, error: 'Vault not ready' })
-              return
+          return handleSignAttesttoPdfApprove(
+            { payloadB64: pendingApdf.req.payloadB64, selectedDid: selectedApdfDid },
+            apdfCtx,
+          ).then((result) => {
+            if (result.ok) {
+              const responseData = { did: result.did, signature: result.signature, publicKey: result.publicKey }
+              sendAttesttoPdfResponseToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
             }
-
-            const ed = await getOrCreateEd25519Key()
-            if (!ed) {
-              sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, 'Could not load Ed25519 key')
-              sendResponse({ ok: false, error: 'Could not load Ed25519 key' })
-              return
-            }
-
-            // Decode the canonical payload bytes the page sent. The
-            // background does NOT inspect or re-canonicalize them —
-            // the verify-side composable is the single source of
-            // truth for the canonical shape (lockstep contract).
-            const payloadBytes = Uint8Array.from(atob(pendingApdf.req.payloadB64), (c) => c.charCodeAt(0))
-
-            const sigBuf = await crypto.subtle.sign(
-              { name: 'Ed25519' },
-              ed.privateKey,
-              payloadBytes as BufferSource,
-            )
-            const sigBytes = new Uint8Array(sigBuf)
-            if (sigBytes.length !== 64) {
-              throw new Error(`Unexpected Ed25519 signature length: ${sigBytes.length}`)
-            }
-            const signatureB64 = btoa(String.fromCharCode(...sigBytes))
-
-            // Issuer DID — honestly labels what this key actually is.
-            // Not a fake did:key. The verifier doesn't resolve DIDs;
-            // it uses the embedded raw publicKey for verification.
-            const holderDid = selectedApdfDid
-              || vault.holderDid
-              || `did:key-vault:ed25519-${ed.publicKeyB64.slice(0, 12)}`
-
-            const responseData = {
-              did: holderDid,
-              signature: signatureB64,
-              publicKey: ed.publicKeyB64,
-            }
-
-            sendAttesttoPdfResponseToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Attestto PDF signing failed'
-            sendAttesttoPdfErrorToTab(pendingApdf.senderTabId, pendingApdf.req.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
-          }
-        })()
-        break
+          })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending Attestto PDF sign request'))
+        }), 'SIGN_ATTESTTO_PDF_APPROVE')
+        return true // async
       }
 
-      case 'SIGN_ATTESTTO_PDF_DENY': {
-        const apdfDenyId = message.payload?.requestId as string
-        const pendingApdfDeny = pendingAttesttoPdfRequests.get(apdfDenyId)
-        if (pendingApdfDeny) {
-          pendingApdfDeny.unregister?.()
-          pendingAttesttoPdfRequests.delete(apdfDenyId)
-          sendAttesttoPdfErrorToTab(pendingApdfDeny.senderTabId, pendingApdfDeny.req.requestId, 'User declined signing')
-        }
-        sendResponse({ ok: true })
-        break
-      }
+      case 'SIGN_ATTESTTO_PDF_DENY':
+        answerOrFail(attesttoPdfConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true })), 'SIGN_ATTESTTO_PDF_DENY')
+        return true // async
 
       // ── Payment Request Handler ──
 
       case 'PAYMENT_REQUEST': {
         const payReq = message.payload as PaymentRequestMessage['payload']
-        handlePaymentRequest(payReq, sender.tab?.id ?? null).then(() => {
+        answerOrFail(handlePaymentRequest(payReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        })
+        }), 'PAYMENT_REQUEST')
         break
       }
 
       // ── Payment Popup Handlers (DID-authenticated payment flow) ──
 
-      case 'PAYMENT_GET_PENDING': {
-        const payReqId = message.payload?.requestId as string
-        const pendingPay = pendingPaymentRequests.get(payReqId)
-        if (pendingPay) {
-          sendResponse({ ok: true, request: pendingPay })
-        } else {
-          sendResponse({ ok: false, error: 'No pending payment request found' })
-        }
-        break
-      }
+      case 'PAYMENT_GET_PENDING':
+        answerOrFail(paymentConsent.peek(message.payload?.requestId as string).then(sendResponse), 'PAYMENT_GET_PENDING')
+        return true // async
 
       case 'PAYMENT_APPROVE': {
         const payApproveId = message.payload?.requestId as string
         const selectedDid = message.payload?.selectedDid as string
-        const pendingPayment = pendingPaymentRequests.get(payApproveId)
+        answerOrFail(pendingPaymentRequests.approve(payApproveId, (pendingPayment) => {
 
-        if (!pendingPayment) {
-          sendResponse({ ok: false, error: 'No pending payment request' })
-          break
-        }
-        pendingPayment.unregister?.()
-        pendingPaymentRequests.delete(payApproveId)
+          // Story 1.13 Phase 1b — PAYMENT signing core (`handlePaymentApprove`), the twin
+          // of SIGN_DOCUMENT: ctx from `buildBundle('signing')`, signs with the root key
+          // through the ONE gated primitive. The case keeps the transport.
+          const paymentCtx = buildBundle('signing')
 
-        readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
-
-          const holderDid = selectedDid
-            || vault.holderDid
-            || vault.did
-
-          if (!holderDid) {
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, 'No DID configured')
-            sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          try {
-            // Build canonical payment payload (must match backend DidPaymentResolver.buildPaymentPayload)
-            const canonicalPayload = `attestto:pay:${pendingPayment.payReq.paymentRequestUuid}:${holderDid}:${pendingPayment.payReq.amount.toFixed(2)}`
-
-            // Sign with vault's P-256 private key
-            const privateKey = await crypto.subtle.importKey(
-              'jwk',
-              vault.privateKeyJwk,
-              { name: 'ECDSA', namedCurve: 'P-256' },
-              false,
-              ['sign'],
-            )
-
-            const data = new TextEncoder().encode(canonicalPayload)
-            const signatureBuffer = await crypto.subtle.sign(
-              { name: 'ECDSA', hash: 'SHA-256' },
-              privateKey,
-              data,
-            )
-
-            const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)))
-
-            // Public key components are already in the JWK (x, y)
-            const jwk = vault.privateKeyJwk as Record<string, string>
-            const responseData = {
-              did: holderDid,
-              signature,
-              publicKeyJwk: {
-                kty: jwk.kty || 'EC',
-                crv: jwk.crv || 'P-256',
-                x: jwk.x,
-                y: jwk.y,
-              },
+          return handlePaymentApprove(
+            {
+              paymentRequestUuid: pendingPayment.payReq.paymentRequestUuid,
+              amount: pendingPayment.payReq.amount,
+              selectedDid,
+            },
+            paymentCtx as never,
+          ).then((result) => {
+            if (result.ok) {
+              const responseData = {
+                did: result.did,
+                signature: result.signature,
+                publicKeyJwk: result.publicKeyJwk as unknown as Record<string, string>,
+              }
+              sendPaymentResponseToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, responseData)
+              sendResponse({ ok: true, ...responseData })
+            } else {
+              sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, result.error)
+              sendResponse({ ok: false, error: result.error })
             }
-
-            sendPaymentResponseToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, responseData)
-            sendResponse({ ok: true, ...responseData })
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : 'Signing failed'
-            sendPaymentErrorToTab(pendingPayment.senderTabId, pendingPayment.payReq.requestId, errMsg)
-            sendResponse({ ok: false, error: errMsg })
-          }
-        })
-        break
+          })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending payment request'))
+        }), 'PAYMENT_APPROVE')
+        return true // async
       }
 
-      case 'PAYMENT_DENY': {
-        const payDenyId = message.payload?.requestId as string
-        const pendingPayDeny = pendingPaymentRequests.get(payDenyId)
-        if (pendingPayDeny) {
-          pendingPayDeny.unregister?.()
-          pendingPaymentRequests.delete(payDenyId)
-          sendPaymentErrorToTab(pendingPayDeny.senderTabId, pendingPayDeny.payReq.requestId, 'User declined payment')
-        }
-        sendResponse({ ok: true })
-        break
-      }
+      case 'PAYMENT_DENY':
+        answerOrFail(paymentConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true })), 'PAYMENT_DENY')
+        return true // async
 
       // ── CHAPI Popup Handlers (Phantom-style approval flow) ──
 
-      case 'CHAPI_GET_PENDING': {
-        const chapiReqId = message.payload?.requestId as string
-        const rawReq = pendingChapiRawRequests.get(chapiReqId)
-        if (rawReq) {
-          sendResponse({ ok: true, request: rawReq })
-        } else {
-          sendResponse({ ok: false, error: 'No pending request found' })
-        }
-        break
-      }
+      case 'CHAPI_GET_PENDING':
+        answerOrFail(chapiConsent.peek(message.payload?.requestId as string).then(sendResponse), 'CHAPI_GET_PENDING')
+        return true // async
 
       case 'CHAPI_APPROVE': {
         const approveReqId = message.payload?.requestId as string
-        const pending = pendingChapiRawRequests.get(approveReqId)
-        if (!pending) {
-          sendResponse({ ok: false, error: 'No pending request' })
-          break
-        }
-        pending.unregister?.()
-        pendingChapiRawRequests.delete(approveReqId)
+        answerOrFail(pendingChapiRawRequests.approve(approveReqId, (pending) => {
 
-        readVault().then(async (vault) => {
-          if (!vault || !vault.privateKeyJwk) {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Vault not ready')
-            sendResponse({ ok: false, error: 'Vault not ready' })
-            return
-          }
+          // Story 1.13 Phase 1b — CHAPI presentation core (`handleChapiApprove`) gets its
+          // ctx from `buildBundle('signing')`; it builds the VP through the ONE gated
+          // primitive and returns it as DATA. This case owns the transport.
+          const chapiCtx = buildBundle('signing')
 
-          const holderDid = vault.holderDid
-            ?? vault.did
-            ?? (vault.linkedSolanaAddress
-              ? `did:pkh:solana:${vault.linkedSolanaAddress}`
-              : null)
-
-          if (!holderDid) {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'No DID configured')
-            sendResponse({ ok: false, error: 'No DID configured' })
-            return
-          }
-
-          const credentials = (vault.credentials ?? []) as StoredCredential[]
-          const vcs = credentials
-            .filter((c) => c.format === 'json-ld')
-            .map((c) => JSON.parse(c.raw) as Record<string, unknown>)
-
-          const challenge = pending.apiReq.challenge ?? pending.apiReq.nonce ?? ''
-          const domain = pending.apiReq.domain ?? pending.apiReq.origin ?? ''
-
-          try {
-            const vp = await createChapiVp({
-              credentials: vcs,
-              holderDid,
-              holderPrivateKey: vault.privateKeyJwk,
-              challenge,
-              domain,
-              verificationMethod: vault.verificationMethod,
-            })
-
-            // Send VP back to the original requesting tab (not the popup)
-            if (pending.senderTabId) {
-              notifyTab(pending.senderTabId, {
-                type: 'CREDENTIAL_API_RESPONSE',
-                payload: { requestId: pending.apiReq.requestId, presentation: vp },
-              })
+          return handleChapiApprove(
+            {
+              challenge: pending.apiReq.challenge,
+              nonce: pending.apiReq.nonce,
+              domain: pending.apiReq.domain,
+              origin: pending.apiReq.origin,
+            },
+            chapiCtx as never,
+          ).then((result) => {
+            if (result.ok) {
+              // Send VP back to the original requesting tab (not the popup)
+              sendChapiPresentation(pending.senderTabId, pending.apiReq.requestId, result.presentation)
+              sendResponse({ ok: true, holderDid: result.holderDid })
+            } else {
+              sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, result.tabError ?? result.error)
+              sendResponse({ ok: false, error: result.error })
             }
-            sendResponse({ ok: true, holderDid })
-          } catch {
-            sendChapiErrorToTab(pending.senderTabId, pending.apiReq.requestId, 'Failed to build presentation')
-            sendResponse({ ok: false, error: 'VP build failed' })
-          }
-        })
-        break
+          })
+        }).then((outcome) => {
+          if (!outcome.ok) sendResponse(approveRejection(outcome.reason, 'No pending request'))
+        }), 'CHAPI_APPROVE')
+        return true // async
       }
 
-      case 'CHAPI_DENY': {
-        const denyReqId = message.payload?.requestId as string
-        const pendingDeny = pendingChapiRawRequests.get(denyReqId)
-        if (pendingDeny) {
-          pendingDeny.unregister?.()
-          pendingChapiRawRequests.delete(denyReqId)
-          sendChapiErrorToTab(pendingDeny.senderTabId, pendingDeny.apiReq.requestId, 'User declined')
-        }
-        sendResponse({ ok: true })
-        break
-      }
+      case 'CHAPI_DENY':
+        answerOrFail(chapiConsent.deny(message.payload?.requestId as string).then(() => sendResponse({ ok: true })), 'CHAPI_DENY')
+        return true // async
 
       // ── Backend scan + report ──────────────────────────────────────────────
 
@@ -2356,19 +1298,19 @@ export default defineBackground(() => {
   // ── Lifecycle ──────────────────────────────────────
 
   chrome.runtime.onStartup.addListener(() => {
-    ensureOffscreenDocument()
+    fireAndForget(ensureOffscreenDocument(), 'offscreen bootstrap')
   })
 
   chrome.runtime.onInstalled.addListener((details) => {
-    ensureOffscreenDocument()
+    fireAndForget(ensureOffscreenDocument(), 'offscreen bootstrap')
     // First-install landing — open the Settings tab directly so the user sees
     // the welcome / what-this-does on a real surface they can self-explore.
     // No multi-step tour (see ATT-726: bar-removal + popup-as-sole-trust-surface
     // decision; the multi-step onboarding was superseded by the wireframes).
-    if (details.reason === 'install') {
-      chrome.tabs.create({
+    if (details.reason === ('install' as chrome.runtime.OnInstalledReason)) {
+      fireAndForget(chrome.tabs.create({
         url: chrome.runtime.getURL('options.html'),
-      })
+      }), 'first-install settings tab')
     }
   })
 })

@@ -159,8 +159,7 @@ async function handleReset(): Promise<void> {
   <div class="flex min-h-[400px] flex-col">
     <ExtensionHeader :is-unlocked="false" minimal />
     <div class="flex flex-1 flex-col items-center justify-center px-6 py-6">
-
-    <!-- Loading -->
+<!-- Loading -->
     <div v-if="loading" class="text-xs text-slate-500">Loading...</div>
 
     <!-- Action UI -->

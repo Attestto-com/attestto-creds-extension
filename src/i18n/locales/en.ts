@@ -117,7 +117,7 @@ export default {
     noDataShared: 'No data was shared with {name}',
     backToCredentials: 'Back to Credentials',
     transport: {
-      didcomm: 'DIDComm v2 (P2P encrypted)',
+      didcomm: 'DIDComm v2',
       pushToVault: 'Push to Vault',
       platform: 'Attestto Platform',
     },
@@ -324,6 +324,12 @@ export default {
       auto:  { label: 'Add right away',  desc: 'No confirmation. Fastest; least guard-rail.' },
       never: { label: 'Disable',         desc: 'Hide the action everywhere. Maximum caution.' },
       always: 'Attestto always asks before adding a site to your trusted list.',
+    },
+    autoLock: {
+      title: 'Lock the wallet when I stop using it',
+      description: 'After this much time with no activity from you, Attestto locks itself and asks for your passkey again. Time with a page open in the background does not count — only what you actually do.',
+      minutes: '1 minute | {count} minutes',
+      noNeverNote: 'There is no "never". Locking when you walk away is the point.',
     },
     notifications: {
       title: 'Notifications',

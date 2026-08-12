@@ -30,7 +30,7 @@ function formatDate(iso: string): string {
 
 const claimCount = Object.keys(props.credential.decodedClaims).length
 
-const mintAddress = (props.credential.decodedClaims as Record<string, unknown>).mintAddress as string | undefined
+const mintAddress = (props.credential.decodedClaims).mintAddress as string | undefined
 
 /**
  * Carnet background. Each credential gets a deterministic gradient (recognizable
@@ -54,7 +54,7 @@ function hashHue(s: string): number {
 }
 
 const cardBackground = computed<string>(() => {
-  const raw = (props.credential.decodedClaims as Record<string, unknown>).background
+  const raw = (props.credential.decodedClaims).background
   if (typeof raw === 'string' && HEX_COLOUR.test(raw.trim())) return raw.trim()
   const h = hashHue(`${props.credential.types.join()}|${props.credential.issuer}`)
   return `linear-gradient(135deg, hsl(${h} 68% 44%), hsl(${(h + 42) % 360} 68% 34%))`

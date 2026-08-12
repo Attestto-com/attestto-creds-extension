@@ -11,6 +11,9 @@ import { useCredentialsStore } from '@/stores/credentials'
 import { useWalletStore } from '@/stores/wallet'
 import { parseSdJwt, decodeDisclosures, createSdJwtPresentation } from '@/services/sdjwt'
 import { createJsonLdVp } from '@/services/jsonld-vp'
+import { es256KeySigner } from '@/services/jws'
+import { disclosureTierFor } from '@/policies/identity-disclosure'
+import type { DisclosureTier } from '@/policies/identity-disclosure'
 import type { StoredCredential } from '@/types/credential'
 
 const route = useRoute()
@@ -19,7 +22,7 @@ const credentialsStore = useCredentialsStore()
 const walletStore = useWalletStore()
 
 const credential = ref<StoredCredential | null>(null)
-const disclosureItems = ref<Array<{ salt: string; claimName: string; claimValue: unknown; selected: boolean }>>([])
+const disclosureItems = ref<Array<{ salt: string; claimName: string; claimValue: unknown; selected: boolean; tier: DisclosureTier }>>([])
 const nonce = ref('')
 const audience = ref('')
 const generatedVp = ref('')
@@ -31,29 +34,41 @@ const showPreview = ref(false)
 const isReady = computed(() => {
   if (!credential.value) return false
   if (!nonce.value.trim()) return false
-  if (credential.value.format === 'sd-jwt') {
-    return disclosureItems.value.some((d) => d.selected)
-  }
-  return true
+  // Both formats now require at least one claim. Story 1.17: JSON-LD used to be
+  // unconditionally ready because it shared everything.
+  return disclosureItems.value.some((d) => d.selected)
 })
 
+const selectedNames = computed(() =>
+  disclosureItems.value.filter((d) => d.selected).map((d) => d.claimName),
+)
+
 const selectedClaims = computed(() => {
-  if (!credential.value) return {}
-  if (credential.value.format === 'sd-jwt') {
-    const selected: Record<string, unknown> = {}
-    disclosureItems.value.filter((d) => d.selected).forEach((d) => {
-      selected[d.claimName] = d.claimValue
-    })
-    return selected
-  }
-  return credential.value.decodedClaims
+  const selected: Record<string, unknown> = {}
+  disclosureItems.value.filter((d) => d.selected).forEach((d) => {
+    selected[d.claimName] = d.claimValue
+  })
+  return selected
 })
+
+/**
+ * A JSON-LD credential is signed as one document, so withholding a claim
+ * invalidates the issuer's signature and what goes out is holder-attested
+ * instead. The user has to be told BEFORE they choose it — a silently weaker
+ * credential is its own kind of over-share.
+ */
+const dropsIssuerProof = computed(
+  () =>
+    credential.value?.format === 'json-ld' &&
+    disclosureItems.value.length > 0 &&
+    disclosureItems.value.some((d) => !d.selected),
+)
 
 onMounted(async () => {
   const id = route.params.id as string
   const found = credentialsStore.getById(id)
   if (!found) {
-    router.replace('/credentials')
+    void router.replace('/credentials')
     return
   }
   credential.value = found
@@ -62,10 +77,28 @@ onMounted(async () => {
     try {
       const parsed = await parseSdJwt(found.raw)
       const decoded = decodeDisclosures(parsed.disclosures)
-      disclosureItems.value = decoded.map((d) => ({ ...d, selected: true }))
+      disclosureItems.value = decoded.map((d) => ({
+        ...d,
+        selected: true,
+        tier: disclosureTierFor(d.claimName),
+      }))
     } catch {
       disclosureItems.value = []
     }
+  } else {
+    // Story 1.17 — JSON-LD gets the same per-claim choice. `decodedClaims` for
+    // this format IS the credentialSubject, so its keys are exactly the names
+    // `deriveDisclosedCredential` filters on. `id` is excluded from the list: it
+    // is the holder binding, kept automatically and not a claim to trade away.
+    disclosureItems.value = Object.entries(found.decodedClaims)
+      .filter(([key]) => key !== 'id')
+      .map(([claimName, claimValue]) => ({
+        salt: '',
+        claimName,
+        claimValue,
+        selected: true,
+        tier: disclosureTierFor(claimName),
+      }))
   }
 })
 
@@ -81,15 +114,14 @@ async function generate(): Promise<void> {
       return
     }
 
-    if (credential.value.format === 'sd-jwt') {
-      const selectedNames = disclosureItems.value
-        .filter((d) => d.selected)
-        .map((d) => d.claimName)
+    // Popup-side signing (post-unlock): a local key signer.
+    const sign = es256KeySigner(privateKey)
 
+    if (credential.value.format === 'sd-jwt') {
       generatedVp.value = await createSdJwtPresentation(
         credential.value.raw,
-        selectedNames,
-        privateKey,
+        selectedNames.value,
+        sign,
         nonce.value,
         audience.value || 'verifier',
       )
@@ -97,8 +129,9 @@ async function generate(): Promise<void> {
       generatedVp.value = await createJsonLdVp({
         credential: credential.value.raw,
         holderDid: walletStore.did,
-        holderPrivateKey: privateKey,
+        sign,
         nonce: nonce.value,
+        selectedFields: selectedNames.value,
       })
     }
   } catch (err) {
@@ -146,9 +179,9 @@ async function copyToClipboard(): Promise<void> {
         </div>
       </div>
 
-      <!-- SD-JWT: Claim checkboxes -->
+      <!-- Claim checkboxes — both formats (Story 1.17) -->
       <div
-        v-if="credential.format === 'sd-jwt' && disclosureItems.length > 0"
+        v-if="disclosureItems.length > 0"
         class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2"
       >
         <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider">
@@ -165,28 +198,33 @@ async function copyToClipboard(): Promise<void> {
             class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0"
           />
           <span class="text-[11px] text-slate-300">{{ item.claimName }}</span>
+          <span
+            v-if="item.tier === 'sensitive'"
+            data-testid="sensitive-badge"
+            class="text-[9px] font-semibold uppercase tracking-wide text-amber-400 border border-amber-500/40 rounded px-1 py-px"
+            :aria-label="`${item.claimName} is a sensitive field`"
+          >
+            Sensitive
+          </span>
           <span class="text-[10px] text-slate-500 ml-auto truncate max-w-[120px]">
             {{ String(item.claimValue) }}
           </span>
         </label>
       </div>
 
-      <!-- JSON-LD: All claims (read-only) -->
+      <!-- What withholding a claim costs on this format -->
       <div
-        v-if="credential.format === 'json-ld'"
-        class="rounded-lg border border-slate-700 bg-slate-900 p-3"
+        v-if="dropsIssuerProof"
+        data-testid="derived-warning"
+        class="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3"
+        role="status"
       >
-        <p class="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">
-          All claims will be shared
+        <p class="text-[11px] leading-relaxed text-amber-200">
+          Leaving out a claim means this credential can no longer carry the issuer's
+          signature. The verifier will see the claims you chose, signed by you, and
+          will not be able to confirm the issuer stands behind them. Share every
+          claim to keep the issuer's signature.
         </p>
-        <div
-          v-for="(value, key) in credential.decodedClaims"
-          :key="String(key)"
-          class="flex justify-between py-0.5 text-[11px]"
-        >
-          <span class="text-slate-400">{{ String(key) }}</span>
-          <span class="text-slate-200 truncate max-w-[160px]">{{ String(value) }}</span>
-        </div>
       </div>
 
       <!-- Nonce + Audience -->

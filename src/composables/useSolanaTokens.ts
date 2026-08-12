@@ -94,7 +94,7 @@ export function useSolanaTokens(walletAddress: Ref<string | null>) {
 
   watch(walletAddress, (newAddr) => {
     if (newAddr) {
-      refresh()
+      void refresh()
     } else {
       tokens.value = []
       error.value = null

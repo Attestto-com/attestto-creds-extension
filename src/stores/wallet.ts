@@ -3,9 +3,10 @@ import { ref } from 'vue'
 import { encryptVault } from '@/utils/crypto'
 import { readVault, writeVault, readPublicVault, syncPublicVault } from '@/utils/vault'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
-import { setupPasskey, unlockWithPasskey, hasPasskey, getKdfMethod } from '@/utils/webauthn'
+import { setupPasskey, unlockWithPasskey, hasPasskey } from '@/utils/webauthn'
 import { STORAGE_KEYS } from '@/config/app'
 import { isValidSolanaAddress } from '@/utils/solana-address'
+import { extractDidLabel } from '@/utils/did-label'
 import type { StoredCredential, StoredKeyShare, ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 import type { SiteDidEntry } from '@/utils/site-did'
 
@@ -91,17 +92,6 @@ export function migrateVaultToMultiIdentity(vault: VaultData): VaultData {
   }
 
   return vault
-}
-
-/** Extract a human-readable label from a DID string. */
-function extractDidLabel(did: string): string {
-  const snsMatch = did.match(/^did:sns:(.+)$/)
-  if (snsMatch) return snsMatch[1]
-
-  const webMatch = did.match(/^did:web:(.+)$/)
-  if (webMatch) return webMatch[1].replace(/:/g, '/')
-
-  return did
 }
 
 export const useWalletStore = defineStore('wallet', () => {
@@ -339,7 +329,7 @@ export const useWalletStore = defineStore('wallet', () => {
 
     // Clear the session key so private key can't be read without re-auth
     // Public data (did, credentials, identities) stays accessible
-    chrome.storage.session.remove(STORAGE_KEYS.SESSION_KEY)
+    void chrome.storage.session.remove(STORAGE_KEYS.SESSION_KEY)
   }
 
   /**
