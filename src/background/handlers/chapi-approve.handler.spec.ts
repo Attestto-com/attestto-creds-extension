@@ -42,7 +42,7 @@ function makeVault(overrides: Partial<VaultData> = {}): VaultData {
     did: 'did:jwk:root',
     holderDid: 'did:sns:alice.attestto.sol',
     privateKeyJwk: { kty: 'EC', crv: 'P-256', x: 'X', y: 'Y', d: 'ROOT_SECRET' },
-    verificationMethod: 'did:sns:alice.attestto.sol#key-1',
+    verificationMethod: 'did:sns:alice.attestto.sol#solana-key',
     credentials: [],
     linkedSolanaAddress: null,
     keyShares: [],
@@ -96,13 +96,18 @@ describe('handleChapiApprove — characterization (parity-to-legacy)', () => {
   })
 
   it('holderDid fallback: holderDid absent → vault.did', async () => {
-    const { ctx } = makeCtx(makeVault({ holderDid: undefined, did: 'did:jwk:root' }))
+    const { ctx } = makeCtx(makeVault({ holderDid: undefined, did: 'did:jwk:root', verificationMethod: 'did:jwk:root#0' }))
     const result = await handleChapiApprove(input, ctx)
     expect(result.ok && result.holderDid).toBe('did:jwk:root')
   })
 
   it('holderDid fallback: holderDid + did absent → did:pkh:solana', async () => {
-    const { ctx } = makeCtx(makeVault({ holderDid: undefined, did: undefined, linkedSolanaAddress: 'SoLaNaAddr' }))
+    const { ctx } = makeCtx(makeVault({
+      holderDid: undefined,
+      did: undefined,
+      linkedSolanaAddress: 'SoLaNaAddr',
+      verificationMethod: 'did:pkh:solana:SoLaNaAddr#blockchainAccountId',
+    }))
     const result = await handleChapiApprove(input, ctx)
     expect(result.ok && result.holderDid).toBe('did:pkh:solana:SoLaNaAddr')
   })

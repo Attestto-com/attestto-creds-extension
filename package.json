@@ -24,7 +24,7 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
-    "@attestto/tls-audit": "file:../attestto-tls-audit",
+    "@attestto/tls-audit": "^0.1.0",
     "@noble/hashes": "^1.8.0",
     "@sd-jwt/decode": "^0.19.0",
     "@sd-jwt/present": "^0.19.0",

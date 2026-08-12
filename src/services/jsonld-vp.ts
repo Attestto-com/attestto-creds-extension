@@ -42,8 +42,45 @@ export interface ChapiVpOptions {
   challenge: string
   /** CHAPI domain — maps to JWT audience claim */
   domain: string
-  /** Verification method URI in the holder's DID Document */
-  verificationMethod?: string
+  /**
+   * Verification method URI in the holder's DID Document — REQUIRED.
+   *
+   * SOC-174: this used to be optional, defaulting to `${holderDid}#key-1`.
+   * `#key-1` is one method's convention, not a universal fragment: `did:sns`
+   * §8.5 names the owner key `#solana-key`, and this wallet's own `did:jwk`
+   * identities use `#0`. The default therefore produced a well-formed VP naming
+   * a key the holder's DID Document does not contain, which a verifier reports
+   * as an ordinary signature failure — indistinguishable from a wrong key.
+   *
+   * There is no case where guessing beats refusing. The wallet knows its
+   * verification method whenever it is entitled to sign: `wallet.ts` sets it at
+   * did:jwk creation, `did-sync.handler.ts` writes the one the platform sends.
+   * If neither ran, this wallet cannot produce a verifiable presentation for
+   * that DID yet, and saying so is the honest outcome.
+   */
+  verificationMethod: string
+}
+
+/**
+ * The verification method must name a key INSIDE the holder's own document.
+ *
+ * Two ways it can fail to. A bare DID with no fragment names a document rather
+ * than a key, leaving the verifier to pick one — the guessing this ticket
+ * exists to remove. A fragment under someone else's DID points the proof at a
+ * key the holder does not control.
+ */
+function assertVerificationMethod(verificationMethod: string, holderDid: string): void {
+  const hash = verificationMethod.indexOf('#')
+  if (hash < 0 || hash === verificationMethod.length - 1) {
+    throw new Error(
+      `verification method has no fragment: ${verificationMethod} — it names a document, not a key`,
+    )
+  }
+  if (verificationMethod.slice(0, hash) !== holderDid) {
+    throw new Error(
+      `verification method does not belong to the holder: ${verificationMethod} vs ${holderDid}`,
+    )
+  }
 }
 
 /**
@@ -110,7 +147,13 @@ export async function createChapiVp(options: ChapiVpOptions): Promise<Record<str
     verificationMethod,
   } = options
 
-  const kid = verificationMethod ?? `${holderDid}#key-1`
+  if (!verificationMethod) {
+    throw new Error(
+      'no verification method for this holder DID — refusing to guess a key fragment',
+    )
+  }
+  assertVerificationMethod(verificationMethod, holderDid)
+  const kid = verificationMethod
 
   // Build the VP envelope without proof (the "to-be-signed" document)
   const vpWithoutProof = {
