@@ -40,7 +40,15 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,vue}'],
-      exclude: ['src/**/*.spec.ts'],
+      /**
+       * `*.test-d.ts` are type-level tests. They are test code, not shipped
+       * source, but only `*.spec.ts` was excluded — so six of them were counted
+       * as uncovered application files and dragged every number down. A floor
+       * derived from a denominator that includes the tests themselves measures
+       * something nobody meant to measure, and "coverage went up" could then be
+       * achieved by deleting a type test.
+       */
+      exclude: ['src/**/*.spec.ts', 'src/**/*.test-d.ts'],
       /**
        * Coverage was computed and never enforced — `test:coverage` existed, no
        * CI step ran it, no threshold read it. So "is this tested?" could only
@@ -62,13 +70,15 @@ export default defineConfig({
        */
       thresholds: {
         // Global: stops overall regression without demanding UI tests.
-        // Ratcheted 45→50→52→54→56 as the entrypoints came under test:
+        // Ratcheted 45→50→52→54→56→59 as the entrypoints came under test:
         // background.ts 0→66%, credential-api.content.ts 26→87%,
-        // credential-handler.content.ts 0→73%, trust-bar.content.ts 13→83%.
-        statements: 56,
-        branches: 48,
-        functions: 54,
-        lines: 56,
+        // credential-handler.content.ts 0→73%, trust-bar.content.ts 13→83%,
+        // approval/App.vue 0→53%. The last step also came from excluding
+        // `*.test-d.ts` above, which had been counted as uncovered source.
+        statements: 59,
+        branches: 50,
+        functions: 55,
+        lines: 60,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
@@ -79,6 +89,14 @@ export default defineConfig({
         // ZERO: nothing had ever imported the module. Floored so the reachability
         // spec cannot be quietly deleted without a red build.
         'src/entrypoints/background.ts': { statements: 60, branches: 50, functions: 44, lines: 60 },
+        // The consent window — the only thing between a site asking for a
+        // signature and the signature happening. Measured 52.7%, up from ZERO:
+        // it had no spec and, unlike every other area here, no floor either, so
+        // it could have rotted to nothing without reddening a build. The tested
+        // half is the half that matters (the ATT-1098 verification gate, the
+        // PRF skip, the pairwise-auth payload, deny routing); the untested
+        // remainder is template and recovery-flow branches.
+        'src/entrypoints/approval/**': { statements: 50, branches: 22, functions: 24, lines: 52 },
         // The untrusted boundary — runs on every https page. Measured 87.4%.
         // Floored so the origin invariant cannot lose its only assertion.
         'src/entrypoints/credential-api.content.ts': { statements: 80, branches: 78, functions: 90, lines: 80 },
