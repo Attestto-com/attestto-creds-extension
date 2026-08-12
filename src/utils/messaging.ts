@@ -168,8 +168,25 @@ export interface KeyRotateMessage {
  * Key Backup — extension splits its private key into 2-of-3 Shamir sub-shares
  * for social recovery. Returns the 3 shares (device, cloud, guardian) as base64url.
  *
- * The private key is encrypted with AES-256-GCM using a derived key before splitting,
- * so each sub-share is a share of the encrypted key, not the raw private key.
+ * ## Each share is a piece of the RAW private key (SOC-241)
+ *
+ * This comment used to claim the key was AES-256-GCM encrypted before splitting,
+ * so that a share was a piece of ciphertext. `key-backup.handler.ts` has never
+ * done that: it serializes `vault.privateKeyJwk` and splits the bytes, and
+ * `key-restore.handler.ts` reconstructs and parses a JWK directly. The code is
+ * the decided design (Eduardo, 2026-08-12); the comment was the error, and is
+ * corrected rather than used to justify changing the code.
+ *
+ * The property that follows, stated plainly because a reader was previously
+ * told the opposite: **any TWO shares reconstruct the signing key.** No
+ * passphrase, no second factor, no key derivation — `combine2of3` and a JSON
+ * parse. Two share-holders colluding, or two compromised at once, is a full
+ * identity compromise.
+ *
+ * That is what makes share PLACEMENT a security control rather than a storage
+ * detail. Nobody may end up holding two, and no single party's breach may yield
+ * two. Whoever wires the recovery UI owns that invariant; it is not enforced
+ * here, and this type cannot enforce it.
  */
 export interface KeyBackupMessage {
   type: 'KEY_BACKUP'
