@@ -31,8 +31,15 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # NOT `|| true`. It was, and it hid a hard failure: `wxt prepare` aborts
+      # when two files in src/entrypoints/ resolve to the same entrypoint name,
+      # which is what four co-located `*.spec.ts` files did. Types were never
+      # generated, so the Type-check step below failed with 46 errors about
+      # `defineContentScript`, `node:fs` and `Buffer` — none of which was the
+      # real problem. Swallowing the exit code moved the failure to a step that
+      # could not explain it.
       - name: Prepare WXT
-        run: npx wxt prepare || true
+        run: npx wxt prepare
 
       # Story 1.18 — every gate below is BLOCKING. `continue-on-error` used to sit
       # on Lint because `eslint .` exited 2 with no config: a step that could
