@@ -11,24 +11,14 @@
  */
 
 import { PLATFORM_URL } from '@/config/app'
+import { normalizeOrigin } from '@/utils/origin'
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1'])
-
-/** Reduce a URL/origin string to its `protocol//host` origin, or null. */
-function toOrigin(url: string | null | undefined): string | null {
-  if (!url) return null
-  try {
-    const u = new URL(url)
-    return `${u.protocol}//${u.host}`
-  } catch {
-    return null
-  }
-}
 
 /** Origins allowed to drive DID_SYNC without per-origin user approval. */
 export function platformOrigins(): string[] {
   const origins: string[] = []
-  const platform = toOrigin(PLATFORM_URL)
+  const platform = normalizeOrigin(PLATFORM_URL)
   if (platform) origins.push(platform)
   return origins
 }
@@ -38,7 +28,7 @@ export function platformOrigins(): string[] {
  * port is accepted only in dev builds so local platform development works.
  */
 export function isPlatformOrigin(origin: string | null | undefined): boolean {
-  const key = toOrigin(origin)
+  const key = normalizeOrigin(origin)
   if (!key) return false
   if (platformOrigins().includes(key)) return true
 

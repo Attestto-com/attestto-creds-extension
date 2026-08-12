@@ -70,7 +70,7 @@ export default defineContentScript({
               origin: window.location.origin,
             },
           },
-          (response) => {
+          (_response) => {
             if (chrome.runtime.lastError) {
               window.postMessage({
                 type: 'ATTESTTO_VP_RESPONSE',
@@ -274,6 +274,22 @@ export default defineContentScript({
       if (msgType === 'ATTESTTO_CREDENTIAL_PUSH') {
         const { requestId, credential } = event.data
         console.log('[Attestto ID] CREDENTIAL_PUSH received in content script', { requestId, credential })
+
+        // Any page on the web can post this. Reading `credential.format` off an
+        // absent object threw a TypeError out of the message listener, so the
+        // page got no response and the failure was visible only in a console
+        // nobody is watching. Answer instead: a rejected request the caller can
+        // see beats a silent throw on the untrusted boundary.
+        if (!credential || typeof credential !== 'object') {
+          window.postMessage({
+            type: 'ATTESTTO_CREDENTIAL_PUSH_RESPONSE',
+            requestId,
+            success: false,
+            error: 'CREDENTIAL_PUSH requires a `credential` object',
+          }, window.location.origin)
+          return
+        }
+
         chrome.runtime.sendMessage(
           {
             type: 'CREDENTIAL_OFFER',

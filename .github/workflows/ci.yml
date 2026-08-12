@@ -1,8 +1,15 @@
 name: CI
 
+# CI ran only on `develop` and on PRs targeting it. This branch has 37 commits
+# pushed to a PUBLIC repo with no PR open, so not one of them has ever been
+# through a gate — the type-check, lint, test and gate-self-test steps below all
+# existed and none had run against this work.
+#
+# Running on every branch closes that: work is checked when it is pushed, not
+# when someone remembers to open a PR.
 on:
   push:
-    branches: [develop]
+    branches: ['**']
   pull_request:
     branches: [develop]
 
@@ -24,18 +31,46 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # NOT `|| true`. It was, and it hid a hard failure: `wxt prepare` aborts
+      # when two files in src/entrypoints/ resolve to the same entrypoint name,
+      # which is what four co-located `*.spec.ts` files did. Types were never
+      # generated, so the Type-check step below failed with 46 errors about
+      # `defineContentScript`, `node:fs` and `Buffer` — none of which was the
+      # real problem. Swallowing the exit code moved the failure to a step that
+      # could not explain it.
       - name: Prepare WXT
-        run: npx wxt prepare || true
+        run: npx wxt prepare
 
-      # ESLint is not yet installed/configured in this repo (no eslint dep, no
-      # flat config) — tracked as infra debt under SOC-13. Keep the step visible
-      # but non-blocking so Test + Build gate the PR until lint is set up.
+      # Story 1.18 — every gate below is BLOCKING. `continue-on-error` used to sit
+      # on Lint because `eslint .` exited 2 with no config: a step that could
+      # neither pass nor fail, which is a green tick that means nothing.
+
+      # Type-check was missing from CI entirely, so Story 1.1's repair (the
+      # solution-style tsconfig that checked an EMPTY file set without `-b`) was
+      # never enforced on a PR.
+      - name: Type-check
+        run: npm run type-check
+
       - name: Lint
         run: npm run lint:check
-        continue-on-error: true
 
       - name: Test
         run: npm run test:run
+
+      # `test:coverage` existed and nothing ran it, so coverage was computed and
+      # never enforced. Floors live in vitest.config.ts and are per-area, not one
+      # global number: a threshold low enough for the untested Vue views to pass
+      # would let src/services rot from 95% to 50% without a red build.
+      - name: Coverage
+        run: npm run test:coverage
+
+      # The gate self-test runs LAST and is the reason to believe the three above.
+      # For each of type-check / lint / test it seeds a deliberate violation,
+      # asserts the gate goes red, removes it, and asserts the gate goes green.
+      # Without it, a gate that silently stops checking looks exactly like a gate
+      # that is passing — the failure mode this repo has now shipped three times.
+      - name: Gates can fail
+        run: npm run gate-self-test
 
       - name: Build
         run: npm run build

@@ -13,25 +13,16 @@
  *   always carry `sender.tab`; extension pages never do.
  * - `getSenderOrigin` — the trustworthy origin of the sender: the extension
  *   origin for our own pages, else Chrome's `sender.origin` (falling back to the
- *   origin of `sender.url`).
+ *   origin of `sender.url`), normalized via the single `normalizeOrigin` (AD-15).
  */
+
+import { normalizeOrigin } from '@/utils/origin'
 
 /** `chrome-extension://<id>` — no trailing slash. */
 function extensionOrigin(): string | null {
   try {
     // getURL('') → "chrome-extension://<id>/"; strip the trailing slash.
     return chrome.runtime.getURL('').replace(/\/$/, '') || null
-  } catch {
-    return null
-  }
-}
-
-/** Reduce a URL string to its `protocol//host` origin, or null. */
-function toOrigin(url: string | null | undefined): string | null {
-  if (!url) return null
-  try {
-    const u = new URL(url)
-    return `${u.protocol}//${u.host}`
   } catch {
     return null
   }
@@ -62,5 +53,5 @@ export function getSenderOrigin(
   if (isExtensionSender(sender)) return extensionOrigin()
   // Web / content-script sender: Chrome sets `origin` in modern MV3; fall back
   // to deriving it from the frame URL.
-  return toOrigin(sender.origin) ?? toOrigin(sender.url)
+  return normalizeOrigin(sender.origin) ?? normalizeOrigin(sender.url)
 }

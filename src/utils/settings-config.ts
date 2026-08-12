@@ -17,8 +17,41 @@
  */
 export type PinBehavior = 'ask' | 'auto' | 'never'
 
+/**
+ * Idle auto-lock timeout, in minutes (Story 1.14, FR3).
+ *
+ * There is deliberately **no "never"**. The idle lock is the only thing standing
+ * between a walked-away machine and the unlocked vault; an off switch in the
+ * settings page would let a single click disable it permanently, and a control a
+ * user can turn off is not a control. The longest offer is 30 minutes.
+ */
+export const AUTO_LOCK_CHOICES = [1, 5, 15, 30] as const
+export type AutoLockMinutes = (typeof AUTO_LOCK_CHOICES)[number]
+
+/**
+ * The secure default. Five minutes is short enough that an unattended machine
+ * locks before anyone sits down at it, and long enough that a user reading a
+ * document between two signatures is not re-prompted mid-task.
+ *
+ * The previous value was a hard-coded 1 minute that was measured from the last
+ * *service-worker start*, not the last user action — so a background web page
+ * calling the credential API pushed it out while the user's own popup activity
+ * did not. Measured from real activity, 1 minute is unusable; it remains
+ * available as the strictest choice.
+ */
+export const DEFAULT_AUTO_LOCK_MINUTES: AutoLockMinutes = 5
+
+/** Narrow an untrusted stored value to a choice we offer, else the default. */
+export function coerceAutoLockMinutes(value: unknown): AutoLockMinutes {
+  return (AUTO_LOCK_CHOICES as readonly number[]).includes(value as number)
+    ? (value as AutoLockMinutes)
+    : DEFAULT_AUTO_LOCK_MINUTES
+}
+
 export interface SettingsConfig {
   pinBehavior: PinBehavior
+  /** Minutes of user inactivity before the vault re-locks itself. */
+  autoLockMinutes: AutoLockMinutes
   /** OS-level notification when a site is flagged as dangerous (RED state). */
   notifyOnRed: boolean
   /** OS-level notification when a pinned site's cert rotates suspiciously. */
@@ -33,6 +66,7 @@ export interface SettingsConfig {
 
 export const DEFAULT_SETTINGS: SettingsConfig = {
   pinBehavior: 'ask',
+  autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
   notifyOnRed: true,
   notifyOnRotation: true,
   trustBarEnabled: true,
@@ -42,7 +76,20 @@ const STORAGE_KEY = 'attestto_settings'
 
 export async function readSettings(): Promise<SettingsConfig> {
   const result = await chrome.storage.sync.get(STORAGE_KEY)
-  return { ...DEFAULT_SETTINGS, ...(result[STORAGE_KEY] ?? {}) }
+  return normalize(result[STORAGE_KEY])
+}
+
+/**
+ * `chrome.storage.sync` is shared across devices and across versions of this
+ * extension, so a stored value is untrusted input: an older build, a hand-edited
+ * profile, or a half-written sync can leave `autoLockMinutes` as `0`, `null` or
+ * `525600`. Spreading that over the defaults would silently disable the lock,
+ * which is exactly the fail-open this story exists to remove — so the timeout is
+ * narrowed to a value we actually offer on every read.
+ */
+function normalize(stored: unknown): SettingsConfig {
+  const merged = { ...DEFAULT_SETTINGS, ...((stored as Partial<SettingsConfig>) ?? {}) }
+  return { ...merged, autoLockMinutes: coerceAutoLockMinutes(merged.autoLockMinutes) }
 }
 
 export async function writeSettings(patch: Partial<SettingsConfig>): Promise<SettingsConfig> {
@@ -59,7 +106,7 @@ export function onSettingsChanged(cb: (cfg: SettingsConfig) => void): () => void
   ) => {
     if (area !== 'sync') return
     if (!(STORAGE_KEY in changes)) return
-    cb({ ...DEFAULT_SETTINGS, ...(changes[STORAGE_KEY].newValue ?? {}) })
+    cb(normalize(changes[STORAGE_KEY].newValue))
   }
   chrome.storage.onChanged.addListener(handler)
   return () => chrome.storage.onChanged.removeListener(handler)

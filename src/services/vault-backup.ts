@@ -166,7 +166,7 @@ function parseBackupFile(fileText: string, expectMethod?: BackupMethod): BackupF
     throw new Error('Not an Attestto vault backup file')
   }
   if (file.method !== 'passphrase' && file.method !== 'shamir-2of3') {
-    throw new Error(`Unsupported backup method: ${String((file as BackupFile).method)}`)
+    throw new Error(`Unsupported backup method: ${String((file).method)}`)
   }
   if (typeof file.payload !== 'string' || !file.payload) {
     throw new Error('Backup file is missing its encrypted payload')

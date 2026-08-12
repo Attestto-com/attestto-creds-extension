@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, vi } from 'vitest'
 import { createJsonLdVp, createChapiVp } from './jsonld-vp'
 import { decodeJwt, decodeProtectedHeader } from 'jose'
+import { es256KeySigner, base64urlBytes } from './jws'
 
 let testPrivateKey: JsonWebKey
 let testDid: string
@@ -14,6 +15,10 @@ beforeAll(async () => {
   testPrivateKey = await crypto.subtle.exportKey('jwk', keyPair.privateKey)
   testDid = 'did:key:zTestHolder123'
 })
+
+// SOC-174: `createChapiVp` no longer invents a key fragment, so every caller
+// supplies one. did:key's fragment is `#0`, not `#key-1` — which is the point.
+const testVm = 'did:key:zTestHolder123#0'
 
 const sampleVc = JSON.stringify({
   '@context': ['https://www.w3.org/2018/credentials/v1'],
@@ -34,7 +39,7 @@ describe('jsonld-vp service', () => {
     const vp = await createJsonLdVp({
       credential: sampleVc,
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      sign: es256KeySigner(testPrivateKey),
       nonce: 'test-nonce-123',
     })
 
@@ -48,7 +53,7 @@ describe('jsonld-vp service', () => {
     const vp = await createJsonLdVp({
       credential: sampleVc,
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      sign: es256KeySigner(testPrivateKey),
       nonce: 'nonce-abc',
     })
 
@@ -60,7 +65,7 @@ describe('jsonld-vp service', () => {
     const vp = await createJsonLdVp({
       credential: sampleVc,
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      sign: es256KeySigner(testPrivateKey),
       nonce: 'nonce-456',
     })
 
@@ -76,7 +81,7 @@ describe('jsonld-vp service', () => {
     const vp = await createJsonLdVp({
       credential: sampleVc,
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      sign: es256KeySigner(testPrivateKey),
       nonce: 'nonce-789',
     })
 
@@ -92,7 +97,7 @@ describe('jsonld-vp service', () => {
     const vp = await createJsonLdVp({
       credential: sampleVc,
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      sign: es256KeySigner(testPrivateKey),
       nonce: 'nonce-ctx',
     })
 
@@ -109,7 +114,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'chapi-challenge-123',
       domain: 'https://verifier.example.com',
     })
@@ -123,7 +129,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-holder',
       domain: 'https://example.com',
     })
@@ -135,7 +142,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-xyz',
       domain: 'https://verifier.example.com',
     })
@@ -150,7 +158,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-sig',
       domain: 'https://example.com',
     })
@@ -162,17 +171,23 @@ describe('createChapiVp — CHAPI standard VP', () => {
     expect(parts).toHaveLength(3)
   })
 
-  it('uses default verificationMethod when not specified', async () => {
+  // SOC-174 — this test used to be `uses default verificationMethod when not
+  // specified` and asserted `${testDid}#key-1`. It documented the defect: a
+  // did:key holder has no `#key-1`, so the VP named a method its own document
+  // does not contain. The default is gone; the refusal and the belongs-to-holder
+  // checks live in `jsonld-vp.key-fragment.spec.ts`.
+  it('carries the caller-supplied verification method, unchanged', async () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-vm',
       domain: 'https://example.com',
     })
 
     const proof = vp.proof as Record<string, unknown>
-    expect(proof.verificationMethod).toBe(`${testDid}#key-1`)
+    expect(proof.verificationMethod).toBe(testVm)
   })
 
   it('uses custom verificationMethod when specified', async () => {
@@ -180,7 +195,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-custom-vm',
       domain: 'https://example.com',
       verificationMethod: customVm,
@@ -194,7 +209,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-creds',
       domain: 'https://example.com',
     })
@@ -208,7 +224,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-auth-only',
       domain: 'https://example.com',
     })
@@ -222,7 +239,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-aud',
       domain: 'https://myapp.example.com',
     })
@@ -236,7 +254,8 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [],
       holderDid: testDid,
-      holderPrivateKey: testPrivateKey,
+      verificationMethod: testVm,
+      sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-iss',
       domain: 'https://example.com',
     })
@@ -244,5 +263,51 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const proof = vp.proof as Record<string, unknown>
     const jwt = decodeJwt(proof.jws as string)
     expect(jwt.iss).toBe(testDid)
+  })
+})
+
+describe('injected-signer seam (AD-11c) — every VP signature routes through the injected signer', () => {
+  const SENTINEL = new Uint8Array([0xde, 0xad, 0xbe, 0xef])
+  const sentinelSig = base64urlBytes(SENTINEL)
+
+  it('createJsonLdVp: JWS sig === injected-signer output; signer received exactly header.payload', async () => {
+    let received: Uint8Array | null = null
+    const sign = vi.fn(async (input: Uint8Array) => {
+      received = input
+      return SENTINEL
+    })
+    const vp = await createJsonLdVp({ credential: sampleVc, holderDid: testDid, sign, nonce: 'n' })
+    const [h, p, s] = vp.split('.')
+    expect(s).toBe(sentinelSig) // the emitted signature IS what the injected signer produced
+    expect(new TextDecoder().decode(received!)).toBe(`${h}.${p}`) // signed exactly what was emitted
+    expect(sign).toHaveBeenCalledTimes(1)
+  })
+
+  it('createChapiVp: proof.jws signature === injected-signer output', async () => {
+    const sign = vi.fn(async () => SENTINEL)
+    const vp = await createChapiVp({ credentials: [], holderDid: testDid,
+      verificationMethod: testVm, sign, challenge: 'c', domain: 'd' })
+    const jws = (vp.proof as Record<string, unknown>).jws as string
+    expect(jws.split('.')[2]).toBe(sentinelSig)
+    expect(sign).toHaveBeenCalledTimes(1)
+  })
+
+  it('FAIL-CLOSED — createJsonLdVp: a throwing signer yields no VP', async () => {
+    const sign = async () => {
+      throw new Error('gate rejected')
+    }
+    await expect(createJsonLdVp({ credential: sampleVc, holderDid: testDid, sign, nonce: 'n' })).rejects.toThrow(
+      'gate rejected',
+    )
+  })
+
+  it('FAIL-CLOSED — createChapiVp: a throwing signer yields no VP (no partial proof)', async () => {
+    const sign = async () => {
+      throw new Error('gate rejected')
+    }
+    await expect(
+      createChapiVp({ credentials: [], holderDid: testDid,
+      verificationMethod: testVm, sign, challenge: 'c', domain: 'd' }),
+    ).rejects.toThrow('gate rejected')
   })
 })

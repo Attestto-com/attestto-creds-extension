@@ -54,8 +54,10 @@ describe('report-site', () => {
     expect(result.shareError).toBeUndefined()
 
     // Verify payload shape
-    const [url, init] = fetchSpy.mock.calls[0]
-    expect(String(url)).toContain('/v1/anti-phishing/reports')
+    const [url, init] = fetchSpy.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit]
+    // `RequestInfo` covers `Request`, whose default stringification is useless.
+    const requestedUrl = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url
+    expect(requestedUrl).toContain('/v1/anti-phishing/reports')
     expect(init.method).toBe('POST')
     expect(init.credentials).toBe('omit')
     const body = JSON.parse(init.body as string)

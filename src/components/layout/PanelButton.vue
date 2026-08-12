@@ -13,7 +13,9 @@ withDefaults(
     href?: string
     target?: string
   }>(),
-  { variant: 'primary', tone: 'light' },
+  // `href`/`target` default to undefined explicitly: the rule is right that an
+  // optional prop with no declared default reads as an oversight.
+  { variant: 'primary', tone: 'light', href: undefined, target: undefined },
 )
 </script>
 

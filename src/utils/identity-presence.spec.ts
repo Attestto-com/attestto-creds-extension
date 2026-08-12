@@ -30,7 +30,7 @@ describe('hasIdentity', () => {
         base({
           did: null,
           holderDid: null,
-          linkedIdentities: [{ did: 'did:sns:bob.attestto.sol' } as PublicVaultData['linkedIdentities'][number]],
+          linkedIdentities: [{ did: 'did:sns:bob.attestto.sol' } as NonNullable<PublicVaultData['linkedIdentities']>[number]],
         }),
       ),
     ).toBe(true)

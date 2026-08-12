@@ -72,7 +72,7 @@ export async function reportSite(input: ReportInput): Promise<ReportResult> {
       // visible outcome. Backend submission failure is logged for ops
       // but does NOT surface as an error in the popup.
       result.shareError = err instanceof Error ? err.message : 'Submission failed'
-      console.debug('[Attestto ID] Community report submission failed:', err)
+      console.warn('[Attestto ID] Community report submission failed:', err)
     }
   }
 

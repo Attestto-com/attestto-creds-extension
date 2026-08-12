@@ -52,7 +52,7 @@ onMounted(() => {
   const requestId = route.params.id as string
   const found = proofRequestsStore.requests.find((r) => r.id === requestId)
   if (!found || found.status !== 'pending') {
-    router.replace('/credentials')
+    void router.replace('/credentials')
     return
   }
   request.value = found
@@ -168,7 +168,7 @@ function selectNone(): void {
           <span class="text-xs text-white font-medium">{{ credentialLabel }}</span>
         </div>
         <p class="text-[10px] text-slate-500 mt-1">
-          Via {{ request.transport === 'didcomm_v2' ? 'DIDComm v2 (P2P encrypted)' : request.transport === 'push_to_vault' ? 'Push to Vault' : 'Attestto Platform' }}
+          Via {{ request.transport === 'didcomm_v2' ? 'DIDComm v2' : request.transport === 'push_to_vault' ? 'Push to Vault' : 'Attestto Platform' }}
         </p>
       </div>
 

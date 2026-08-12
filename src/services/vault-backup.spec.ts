@@ -26,7 +26,16 @@ function makeVault(): VaultData {
   }
 }
 
-describe('vault-backup — passphrase method', () => {
+/**
+ * Every test in this block runs Argon2id twice (export then import), at the
+ * deliberately memory-hard OWASP parameters — ~380 ms a derivation here, and
+ * slower on a CI runner with fewer cores than a dev machine. Under vitest's
+ * default 5 s they pass alone and fail intermittently in a full run.
+ *
+ * Raise the timeout, never lower the KDF cost: the cost is the security
+ * property. See the note in `src/utils/passphrase-kdf.spec.ts`.
+ */
+describe('vault-backup — passphrase method', { timeout: 30_000 }, () => {
   it('round-trips the full vault including private key material', async () => {
     const vault = makeVault()
     const file = await exportPassphraseBackup(vault, 'correct horse battery staple', FIXED)

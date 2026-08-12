@@ -123,13 +123,19 @@ export interface SiteHealthResult {
 /**
  * Analyze the given document and return site health stats.
  *
- * Designed to be serializable: no module imports, no closures. Pass it directly
- * as `func: analyzeSiteHealth` (no args) to chrome.scripting.executeScript — the
- * `doc` param defaults to the injected page's `document` (args like `document`
- * cannot be serialized across the executeScript boundary). Tests pass an explicit
- * document.
+ * Serializable by contract (no module imports, no closures) so it can be injected
+ * with `chrome.scripting.executeScript({ func: analyzeSiteHealth, args: [[...GOV_TLDS]],
+ * world: 'MAIN' })` (see `SiteProfileView.vue`). The gov-TLD list is threaded in as
+ * `govTlds` DATA from the single source (`gov-host.ts` `GOV_TLDS`) — NOT re-inlined —
+ * so it cannot drift (Story 1.12, FR18/AD-8). `govTlds` is FIRST because
+ * `executeScript` args map positionally and `document` cannot be an arg (it is read
+ * from the page global via the `doc` default). Tests pass both explicitly.
+ *
+ * The internal gov-host predicate re-expresses `gov-host.ts` `isGovHost` EXACTLY
+ * (normalize: trim + lowercase + strip trailing dot, then `endsWith`) — it cannot
+ * import it (closure-free), so `site-health.spec` parity-tests it against `isGovHost`.
  */
-export function analyzeSiteHealth(doc: Document = document): SiteHealthResult {
+export function analyzeSiteHealth(govTlds: readonly string[], doc: Document = document): SiteHealthResult {
   const pageOrigin = doc.location?.origin ?? ''
   const pageProtocol = doc.location?.protocol ?? ''
 
@@ -279,10 +285,8 @@ export function analyzeSiteHealth(doc: Document = document): SiteHealthResult {
 
   // ── Comments ───────────────────────────────────────────────────────────────
 
-  const GOV_TLDS_INLINE = ['.go.cr', '.fi.cr', '.sa.cr', '.ac.cr', '.ed.cr', '.or.cr']
-
   // Walk the document tree for comment nodes
-  const commentWalker = document.createNodeIterator
+  const commentWalker = typeof doc.createNodeIterator === 'function'
     ? doc.createNodeIterator(doc, 128 /* NodeFilter.SHOW_COMMENT */)
     : null
 
@@ -323,8 +327,15 @@ export function analyzeSiteHealth(doc: Document = document): SiteHealthResult {
     try { return new URL(pageOrigin).hostname } catch { return '' }
   })()
 
-  const isGovTld = (host: string): boolean =>
-    GOV_TLDS_INLINE.some((tld) => host === tld.slice(1) || host.endsWith(tld))
+  // Re-expresses gov-host.ts `isGovHost` EXACTLY (it cannot be imported — this
+  // function is serialized into the page's MAIN world). `govTlds` is injected data,
+  // never re-inlined. Parity to `isGovHost` is asserted in the spec.
+  const isGovTld = (host: string): boolean => {
+    if (!host) return false
+    const h = host.trim().toLowerCase().replace(/\.$/, '')
+    if (!h) return false
+    return govTlds.some((tld) => h.endsWith(tld))
+  }
 
   const pageIsGov = isGovTld(pageHost)
 

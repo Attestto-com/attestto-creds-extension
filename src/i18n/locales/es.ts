@@ -117,7 +117,7 @@ export default {
     noDataShared: 'No se compartieron datos con {name}',
     backToCredentials: 'Volver a Credenciales',
     transport: {
-      didcomm: 'DIDComm v2 (P2P cifrado)',
+      didcomm: 'DIDComm v2',
       pushToVault: 'Enviar al Vault',
       platform: 'Plataforma Attestto',
     },
@@ -324,6 +324,12 @@ export default {
       auto:  { label: 'Agregar de inmediato', desc: 'Sin confirmaci\u00f3n. Lo m\u00e1s r\u00e1pido y con menos protecci\u00f3n.' },
       never: { label: 'Desactivar',          desc: 'Oculta la acci\u00f3n en todos lados. M\u00e1xima precauci\u00f3n.' },
       always: 'Attestto siempre pregunta antes de agregar un sitio a su lista de confianza.',
+    },
+    autoLock: {
+      title: 'Bloquear la billetera cuando deje de usarla',
+      description: 'Después de este tiempo sin actividad suya, Attestto se bloquea y vuelve a pedir su llave de acceso. El tiempo con una página abierta en segundo plano no cuenta: solo cuenta lo que usted hace.',
+      minutes: '1 minuto | {count} minutos',
+      noNeverNote: 'No existe la opción "nunca". Bloquearse cuando usted se aleja es justamente el punto.',
     },
     notifications: {
       title: 'Notificaciones',

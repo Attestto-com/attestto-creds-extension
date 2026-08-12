@@ -13,6 +13,12 @@
  */
 
 import { publicJwkToDid } from '@/utils/did-jwk'
+import { normalizeOrigin } from '@/utils/origin'
+
+// Re-exported so existing consumers (`CurrentSiteCard.vue`, this module's
+// `findOrCreateSiteDid`) keep importing `normalizeOrigin` from here. The single
+// implementation lives in `@/utils/origin` (AD-15 / NFR-4).
+export { normalizeOrigin }
 
 /** A pairwise DID owned by the wallet, scoped to a single origin. */
 export interface SiteDidEntry {
@@ -24,20 +30,6 @@ export interface SiteDidEntry {
   createdAt: string
   /** ISO timestamp of the most recent sign-in to this site. */
   lastUsedAt: string
-}
-
-/**
- * Normalize an origin to `protocol//host`, so `https://x.com/a` and
- * `https://x.com/b` share one pairwise DID. Returns null for unusable input.
- */
-export function normalizeOrigin(origin: string | null | undefined): string | null {
-  if (!origin) return null
-  try {
-    const u = new URL(origin)
-    return `${u.protocol}//${u.host}`
-  } catch {
-    return null
-  }
 }
 
 /** Generate a fresh pairwise `did:jwk` keypair for a site. */

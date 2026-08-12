@@ -12,7 +12,14 @@ function formatValue(value: unknown): string {
   if (value === null || value === undefined) return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   if (typeof value === 'number') return String(value)
-  return String(value)
+  if (typeof value === 'string') return value
+  // An object claim rendered with String() is the literal '[object Object]' —
+  // the user sees a placeholder where their data should be.
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return '—'
+  }
 }
 </script>
 

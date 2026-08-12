@@ -34,6 +34,8 @@ apiClient.interceptors.response.use(
         // Background may not be listening yet
       })
     }
-    return Promise.reject(error)
+    // Reject with an Error: `Promise.reject(<non-Error>)` loses the stack, and
+    // every caller here does `err instanceof Error ? err.message : …`.
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)))
   },
 )
