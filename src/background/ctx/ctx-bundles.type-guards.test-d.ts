@@ -15,7 +15,6 @@
  */
 import type { UntrustedCtx, SigningCtx, ConsentCtx, KeyAdminCtx } from './ctx-bundles'
 import type { PendingRow } from '@/background/ports/ports'
-import { normalizeOrigin } from '@/utils/origin'
 
 declare const u: UntrustedCtx
 declare const s: SigningCtx
@@ -56,11 +55,10 @@ void c.counterpartyDid
 // @ts-expect-error — counterpartyDid is router-owned, not in KeyAdminCtx
 void k.counterpartyDid
 
-// ── AC1 (AD-15→AD-11a tie-in): deriveForOrigin requires a CanonicalOrigin.
-// @ts-expect-error — a raw string is not a CanonicalOrigin; derivation must use the normalized form
-void s.crypto.deriveForOrigin('https://x.com')
-const canon = normalizeOrigin('https://x.com')
-if (canon) void s.crypto.deriveForOrigin(canon) // positive control
+// ── AC1: the derivation tie-in is gone (SOC-243) ─────────────────────────────
+// This asserted `deriveForOrigin` demanded a CanonicalOrigin. The method was
+// removed with the design it belonged to; per-site keys are independent and
+// random, so no root-derived surface exists to key on an origin.
 
 // ── AC5 (AD-11c): SigningCtx.crypto and KeyAdminCtx.crypto are the SAME `Crypto`.
 // If KeyAdminCtx.crypto is ever widened to a superset (e.g. an ungated `signRaw`),

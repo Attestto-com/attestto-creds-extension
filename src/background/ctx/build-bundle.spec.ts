@@ -51,7 +51,7 @@ function makeAdapters(overrides: {
     },
     keyAdmin: {
       vault: { read: vi.fn(async () => ({ kind: 'v' })), write: vi.fn(async () => {}) },
-      crypto: { sign: vi.fn(async () => sig(9)), deriveForOrigin: vi.fn(async () => ({ kind: 'd' })) },
+      crypto: { sign: vi.fn(async () => sig(9)) },
       store: { read: vi.fn(async () => null), write: vi.fn(async () => {}), syncPublic: vi.fn(async () => {}) },
       keygen: { generateP256: vi.fn(async () => ({ privateKeyJwk: {}, publicKeyJwk: {} })) },
       clock: { now: vi.fn(() => 0) },
@@ -61,7 +61,6 @@ function makeAdapters(overrides: {
       vault: { read: vi.fn(async () => ({ kind: 'v' })) },
       clock: { now: vi.fn(() => 1234) },
       pin: { pin: vi.fn(async () => {}) },
-      deriveForOrigin: vi.fn(async () => ({ kind: 'd' })),
       assertPresence: gateSpy,
       rootRawSign: overrides.rootRawSign ?? rootSpy,
       provisionEd25519: vi.fn(async () => ({ publicKeyB64: 'ED', rawSign: overrides.edRawSign ?? edSpy })),

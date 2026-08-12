@@ -99,7 +99,7 @@ describe('createSigningAdapters — provisionSiteDid', () => {
   })
 })
 
-describe('createSigningAdapters — pin / store / deriveForOrigin', () => {
+describe('createSigningAdapters — pin / store', () => {
   it('pin routes to the injected pinSite', async () => {
     const { deps, pinSite } = makeDeps()
     await createSigningAdapters(deps).pin.pin('x.com')
@@ -112,10 +112,10 @@ describe('createSigningAdapters — pin / store / deriveForOrigin', () => {
     expect(deps.readVault).toHaveBeenCalled()
   })
 
-  it('deriveForOrigin is not wired (throws) — no signing handler consumes it', async () => {
-    const { deps } = makeDeps()
-    await expect(createSigningAdapters(deps).deriveForOrigin({} as never)).rejects.toThrow(/not wired/i)
-  })
+  // The `deriveForOrigin is not wired (throws)` case was removed with the method
+  // itself (SOC-243). It asserted the shape of a stub for a design that was
+  // rejected: root-derived per-site keys would make the root key a master key
+  // over every relying party. Site keys are independent and random.
 })
 
 describe('es256RawSign — exported for the transitional notification-path signer', () => {
