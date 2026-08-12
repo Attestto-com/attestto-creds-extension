@@ -79,6 +79,25 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/**
+ * Five cases here call `setupPasskey(passphrase)`, which runs Argon2id at
+ * 19 MiB and t=2 — deliberately expensive, and the cost is the point.
+ *
+ * Alone that is a few hundred milliseconds and the 5-second default was never
+ * close. Under a loaded suite it is: adding eight tests elsewhere (SOC-145) was
+ * enough to push "falls back to a passphrase only when PRF is genuinely absent"
+ * past the default and fail it as a timeout, while the file passed on its own.
+ *
+ * That is a latent flake, not a defect this change introduced — a clean run of
+ * `develop` passes twice, and so does this file in isolation. Raising the budget
+ * here rather than making the new tests cheaper, because the slowness is real
+ * and load-dependent: a test on the vault-key path that races the clock is worse
+ * than no test, since it trains people to re-run instead of read.
+ *
+ * Same reasoning and same figure as `webauthn.unlock.spec.ts` (SOC-236).
+ */
+vi.setConfig({ testTimeout: 30_000 })
+
 describe('setupPasskey — a fresh device', () => {
   it('uses PRF when the authenticator supports it', async () => {
     const s = storage()
