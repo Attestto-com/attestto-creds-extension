@@ -423,13 +423,21 @@ export const useWalletStore = defineStore('wallet', () => {
    *                    retry.
    */
   async function createDid(passphrase?: string): Promise<void> {
-    // Obtain the vault key from the passkey. Reuse an already-registered
-    // credential if one exists; otherwise enrol a new one. Both cache the
-    // derived key in session storage, so the encrypt below is under the key
-    // future unlocks reproduce.
-    const aesKeyBase64 = (await hasPasskey())
-      ? await unlockWithPasskey(passphrase)
-      : (await setupPasskey(passphrase)).aesKeyBase64
+    // Obtain the vault key via the SETUP primitive — never unlockWithPasskey.
+    // createDid establishes a BRAND-NEW vault, so setupPasskey is correct: it
+    // probes PRF and, when the authenticator lacks it, routes to Argon2id over a
+    // passphrase, surfacing the RECOVERABLE `PRF_REQUIRES_PASSPHRASE` error that
+    // createDidAndRetry catches to reveal the passphrase field.
+    //
+    // unlockWithPasskey is wrong here: it assumes a pre-existing PRF vault and,
+    // on a non-PRF authenticator (or a partially-set-up vault with no recorded
+    // KDF method), throws the UNRECOVERABLE `PRF_UNAVAILABLE` ("legacy vault must
+    // be reset"). setupPasskey persists the credential ID immediately, so a prior
+    // aborted attempt can leave an orphan credential with no vault/KDF method;
+    // routing that through unlockWithPasskey surfaced that reset error on a fresh
+    // no-DID create screen. setupPasskey instead reuses any such orphan credential
+    // (with the passphrase) rather than stacking a new one.
+    const aesKeyBase64 = (await setupPasskey(passphrase)).aesKeyBase64
 
     const keyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
