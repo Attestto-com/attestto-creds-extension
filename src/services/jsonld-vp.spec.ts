@@ -16,6 +16,10 @@ beforeAll(async () => {
   testDid = 'did:key:zTestHolder123'
 })
 
+// SOC-174: `createChapiVp` no longer invents a key fragment, so every caller
+// supplies one. did:key's fragment is `#0`, not `#key-1` — which is the point.
+const testVm = 'did:key:zTestHolder123#0'
+
 const sampleVc = JSON.stringify({
   '@context': ['https://www.w3.org/2018/credentials/v1'],
   type: ['VerifiableCredential', 'KycCredential'],
@@ -110,6 +114,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'chapi-challenge-123',
       domain: 'https://verifier.example.com',
@@ -124,6 +129,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-holder',
       domain: 'https://example.com',
@@ -136,6 +142,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-xyz',
       domain: 'https://verifier.example.com',
@@ -151,6 +158,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-sig',
       domain: 'https://example.com',
@@ -163,17 +171,23 @@ describe('createChapiVp — CHAPI standard VP', () => {
     expect(parts).toHaveLength(3)
   })
 
-  it('uses default verificationMethod when not specified', async () => {
+  // SOC-174 — this test used to be `uses default verificationMethod when not
+  // specified` and asserted `${testDid}#key-1`. It documented the defect: a
+  // did:key holder has no `#key-1`, so the VP named a method its own document
+  // does not contain. The default is gone; the refusal and the belongs-to-holder
+  // checks live in `jsonld-vp.key-fragment.spec.ts`.
+  it('carries the caller-supplied verification method, unchanged', async () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-vm',
       domain: 'https://example.com',
     })
 
     const proof = vp.proof as Record<string, unknown>
-    expect(proof.verificationMethod).toBe(`${testDid}#key-1`)
+    expect(proof.verificationMethod).toBe(testVm)
   })
 
   it('uses custom verificationMethod when specified', async () => {
@@ -195,6 +209,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [sampleVcParsed],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-creds',
       domain: 'https://example.com',
@@ -209,6 +224,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-auth-only',
       domain: 'https://example.com',
@@ -223,6 +239,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-aud',
       domain: 'https://myapp.example.com',
@@ -237,6 +254,7 @@ describe('createChapiVp — CHAPI standard VP', () => {
     const vp = await createChapiVp({
       credentials: [],
       holderDid: testDid,
+      verificationMethod: testVm,
       sign: es256KeySigner(testPrivateKey),
       challenge: 'challenge-iss',
       domain: 'https://example.com',
@@ -267,7 +285,8 @@ describe('injected-signer seam (AD-11c) — every VP signature routes through th
 
   it('createChapiVp: proof.jws signature === injected-signer output', async () => {
     const sign = vi.fn(async () => SENTINEL)
-    const vp = await createChapiVp({ credentials: [], holderDid: testDid, sign, challenge: 'c', domain: 'd' })
+    const vp = await createChapiVp({ credentials: [], holderDid: testDid,
+      verificationMethod: testVm, sign, challenge: 'c', domain: 'd' })
     const jws = (vp.proof as Record<string, unknown>).jws as string
     expect(jws.split('.')[2]).toBe(sentinelSig)
     expect(sign).toHaveBeenCalledTimes(1)
@@ -287,7 +306,8 @@ describe('injected-signer seam (AD-11c) — every VP signature routes through th
       throw new Error('gate rejected')
     }
     await expect(
-      createChapiVp({ credentials: [], holderDid: testDid, sign, challenge: 'c', domain: 'd' }),
+      createChapiVp({ credentials: [], holderDid: testDid,
+      verificationMethod: testVm, sign, challenge: 'c', domain: 'd' }),
     ).rejects.toThrow('gate rejected')
   })
 })

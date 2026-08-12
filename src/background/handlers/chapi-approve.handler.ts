@@ -50,6 +50,27 @@ export async function handleChapiApprove(
     return { ok: false, error: 'No DID configured' }
   }
 
+  // SOC-174 — refuse rather than guess the key fragment.
+  //
+  // `createChapiVp` used to fall back to `${holderDid}#key-1`. That is one DID
+  // method's convention, not a universal one: `did:sns` §8.5 names the owner key
+  // `#solana-key` and this wallet's `did:jwk` identities use `#0`. The fallback
+  // produced a well-formed VP naming a key the holder's document does not
+  // contain, and the verifier could only report it as a signature failure.
+  //
+  // The vault carries the real value whenever this wallet may sign at all —
+  // `wallet.ts` sets it at did:jwk creation, `did-sync.handler.ts` writes the
+  // one the platform sends. Its absence means this identity is not ready to
+  // present, which is a different fact from "the signature was wrong" and
+  // deserves to be reported as itself.
+  if (!vault.verificationMethod) {
+    return {
+      ok: false,
+      error: 'This identity has no verification method yet',
+      tabError: 'Failed to build presentation',
+    }
+  }
+
   const credentials = (vault.credentials ?? [])
   const vcs = credentials
     .filter((c) => c.format === 'json-ld')
