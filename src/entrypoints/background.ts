@@ -21,11 +21,9 @@ import { createBuildBundle } from '@/background/ctx/build-bundle'
 import { createSigningAdapters } from '@/background/adapters/signing-adapters'
 import { createKeyAdminAdapters, createUntrustedAdapters } from '@/background/adapters/chrome-adapters'
 import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
-import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
-import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { VaultData } from '@/stores/wallet'
-import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
+import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
@@ -53,8 +51,6 @@ import {
   sendResharePresentation,
   sendDidSyncResponse,
   sendKeyRotateResponse,
-  sendKeyBackupResponse,
-  sendKeyRestoreResponse,
   sendReshareError,
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
@@ -937,35 +933,27 @@ export default defineBackground(() => {
         break
       }
 
-      case 'KEY_BACKUP': {
-        if (!isExtensionSender(sender)) {
-          console.warn('[Attestto ID] Rejected KEY_BACKUP from non-extension sender', getSenderOrigin(sender))
-          sendResponse({ ok: false, error: 'forbidden_sender' })
-          break
-        }
-        const backupReq = message.payload as KeyBackupMessage['payload']
-        const backupTabId = sender.tab?.id ?? null
-        answerOrFail(handleKeyBackup(keyAdminAdapters).then((result) => {
-          sendKeyBackupResponse(backupTabId, backupReq.requestId, result.shares, result.error)
-          sendResponse({ ok: true })
-        }), 'KEY_BACKUP')
-        break
-      }
-
-      case 'KEY_RESTORE': {
-        if (!isExtensionSender(sender)) {
-          console.warn('[Attestto ID] Rejected KEY_RESTORE from non-extension sender', getSenderOrigin(sender))
-          sendResponse({ ok: false, error: 'forbidden_sender' })
-          break
-        }
-        const restoreReq = message.payload as KeyRestoreMessage['payload']
-        const restoreTabId = sender.tab?.id ?? null
-        answerOrFail(handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminAdapters).then((result) => {
-          sendKeyRestoreResponse(restoreTabId, restoreReq.requestId, result.error)
-          sendResponse({ ok: true })
-        }), 'KEY_RESTORE')
-        break
-      }
+      // `KEY_BACKUP` and `KEY_RESTORE` were removed here (SOC-144).
+      //
+      // They split the RAW private key 2-of-3 and reassembled it. Two problems,
+      // and the second is why they went rather than got a UI:
+      //
+      // 1. Two shares reconstructed the signing key outright — no passphrase,
+      //    no ciphertext in between. A guardian held a piece of a key.
+      // 2. They recovered the key and NOTHING ELSE. Credentials hang off
+      //    `LinkedIdentity`, so a user who completed this recovery got a signer
+      //    back with nothing to present.
+      //
+      // `services/vault-backup.ts` already had the version that works:
+      // `exportShamirBackup` encrypts the WHOLE vault and splits the content
+      // key, so two shares are useless without the file and a restore returns
+      // credentials, identities and site DIDs. Its restore half was already
+      // wired into the lock screen; only the export button was missing, and
+      // this change adds it. Two implementations of one feature, and the
+      // unreachable one was the weaker one.
+      //
+      // `KEY_ROTATE` stays: replacing a compromised signing key is a different
+      // job from surviving device loss.
 
       case 'CREDENTIAL_ACCEPTED':
       case 'CREDENTIAL_REJECTED':

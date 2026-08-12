@@ -95,8 +95,6 @@ export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   RESHARE_STORED_VP: stubRoute('signing'),
   DID_SYNC: didSyncRoute,
   KEY_ROTATE: stubRoute('keyAdmin'),
-  KEY_BACKUP: stubRoute('keyAdmin'),
-  KEY_RESTORE: stubRoute('keyAdmin'),
   CREDENTIAL_ACCEPTED: stubRoute('untrusted'),
   CREDENTIAL_REJECTED: stubRoute('untrusted'),
   SIGN_DOCUMENT_REQUEST: stubRoute('signing'),

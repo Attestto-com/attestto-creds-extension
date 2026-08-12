@@ -123,11 +123,11 @@ export default defineContentScript({
         return
       }
 
-      // Key rotation / backup / restore are intentionally NOT bridged from web
-      // pages. These operations mutate or export the vault signing key and are
-      // Options-UI-only (SOC-2 / SOC-3 / SOC-8). A page posting
-      // ATTESTTO_KEY_ROTATE / _BACKUP / _RESTORE is ignored here and never
-      // reaches the background service worker.
+      // Key rotation is intentionally NOT bridged from web pages: it mutates the
+      // vault signing key and is Options-UI-only (SOC-2 / SOC-3 / SOC-8). A page
+      // posting ATTESTTO_KEY_ROTATE is ignored here and never reaches the
+      // background service worker. Backup and restore no longer exist as
+      // messages at all (SOC-144).
 
       // Payment Request — page asks extension to approve + sign a payment
       if (msgType === 'ATTESTTO_PAYMENT_REQUEST') {
@@ -386,8 +386,9 @@ export default defineContentScript({
         }, window.location.origin)
       }
 
-      // No KEY_ROTATE / KEY_BACKUP / KEY_RESTORE response bridges: those ops are
-      // Options-UI-only and never round-trip through a web page (SOC-2/3/8).
+      // No KEY_ROTATE response bridge: that op is Options-UI-only and never
+      // round-trips through a web page (SOC-2/3/8). KEY_BACKUP / KEY_RESTORE are
+      // gone entirely (SOC-144) — recovery lives in `services/vault-backup.ts`.
 
       if (message.type === 'AUTH_RESPONSE') {
         window.postMessage({

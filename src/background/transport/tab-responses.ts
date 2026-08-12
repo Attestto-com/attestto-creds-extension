@@ -16,7 +16,6 @@
  * extension page, which has no tab). There is nowhere to deliver, so the send is
  * dropped — loudly for the request/response flows where the caller is waiting.
  */
-import type { KeyBackupShares } from '@/background/handlers/key-backup.handler'
 import type { WalletAuthResponse } from '@/services/did-auth'
 
 /**
@@ -183,7 +182,7 @@ export function sendDidSyncResponse(
 // real caller of these three and the send is always dropped. The content script
 // deliberately has no bridge for them either (SOC-2/3/8). They are kept at
 // parity with the pre-extraction behaviour; see SOC ticket on the dead
-// KEY_ROTATE / KEY_BACKUP / KEY_RESTORE surface.
+// KEY_ROTATE surface.
 
 export function sendKeyRotateResponse(
   tabId: number | null,
@@ -199,27 +198,12 @@ export function sendKeyRotateResponse(
   })
 }
 
-export function sendKeyBackupResponse(
-  tabId: number | null,
-  requestId: string,
-  shares: KeyBackupShares | null,
-  error: string | null,
-): void {
-  if (!deliverable(tabId, 'KEY_BACKUP_RESPONSE', requestId)) return
-  notifyTab(tabId, { type: 'KEY_BACKUP_RESPONSE', payload: { requestId, shares, error } })
-}
-
-export function sendKeyRestoreResponse(
-  tabId: number | null,
-  requestId: string,
-  error: string | null,
-): void {
-  if (!deliverable(tabId, 'KEY_RESTORE_RESPONSE', requestId)) return
-  notifyTab(tabId, {
-    type: 'KEY_RESTORE_RESPONSE',
-    payload: { requestId, success: error === null, error },
-  })
-}
+// `sendKeyBackupResponse` / `sendKeyRestoreResponse` were removed with the
+// operations they served (SOC-144). `sendKeyRotateResponse` above is kept
+// because KEY_ROTATE remains — though note it shares the defect this file
+// documents at `deliverable()`: an extension page has no tab, so a rotate reply
+// is dropped too. That is SOC-144's transport half, fixed separately in the
+// KEY_ROTATE case itself.
 
 // ── Re-share of a stored VP (RESHARE_STORED_VP_RESPONSE) ─────────
 

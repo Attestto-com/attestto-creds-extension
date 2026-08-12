@@ -238,8 +238,6 @@ describe('no originating tab', () => {
     ['sendChapiErrorToTab', () => tx.sendChapiErrorToTab(null, REQ, 'e')],
     ['sendDidSyncResponse', () => tx.sendDidSyncResponse(null, REQ, null, null, 'e')],
     ['sendKeyRotateResponse', () => tx.sendKeyRotateResponse(null, REQ, null, null, 'e')],
-    ['sendKeyBackupResponse', () => tx.sendKeyBackupResponse(null, REQ, null, 'e')],
-    ['sendKeyRestoreResponse', () => tx.sendKeyRestoreResponse(null, REQ, 'e')],
     ['sendReshareError', () => tx.sendReshareError(null, REQ, 'e')],
   ]
 
@@ -259,24 +257,15 @@ describe('no originating tab', () => {
   })
 })
 
-describe('key administration transport (no page bridge by design — SOC-2/3/8)', () => {
-  it('KEY_RESTORE derives success from the absence of an error', () => {
-    sentToTab = []
-    tx.sendKeyRestoreResponse(TAB, REQ, null)
-    tx.sendKeyRestoreResponse(TAB, REQ, 'bad_share')
-    expect(sentToTab).toEqual([
-      { type: 'KEY_RESTORE_RESPONSE', payload: { requestId: REQ, success: true, error: null } },
-      { type: 'KEY_RESTORE_RESPONSE', payload: { requestId: REQ, success: false, error: 'bad_share' } },
-    ])
-  })
-
-  it('the page bridge deliberately forwards none of the key-admin responses', () => {
-    for (const send of [
-      () => tx.sendKeyRotateResponse(TAB, REQ, { kty: 'EC' }, { kty: 'EC' }, null),
-      () => tx.sendKeyBackupResponse(TAB, REQ, null, null),
-      () => tx.sendKeyRestoreResponse(TAB, REQ, null),
-    ]) {
-      expect(roundTrip(send)).toBeUndefined()
-    }
-  })
-})
+/**
+ * The `key administration transport` describe covered `sendKeyBackupResponse`
+ * and `sendKeyRestoreResponse`. Both were removed with the operations they
+ * served (SOC-144): they split the raw private key, recovered nothing but a
+ * signer, and `services/vault-backup.ts` already implemented the version that
+ * encrypts the whole vault and splits its content key.
+ *
+ * Its cases asserted the wire shape of senders that could never deliver — the
+ * permitted caller is an extension page, which has no tab — by calling them with
+ * a synthetic tab id no caller could produce. Green for a transport that had
+ * never carried anything.
+ */

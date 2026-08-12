@@ -31,8 +31,6 @@ import type {
   CredentialApiRequestMessage,
   DidSyncMessage,
   KeyRotateMessage,
-  KeyBackupMessage,
-  KeyRestoreMessage,
   PaymentRequestMessage,
   SignDocumentRequestMessage,
   SignAttesttoPdfRequestMessage,
@@ -61,8 +59,6 @@ export const MESSAGE_TYPES = [
   'RESHARE_STORED_VP',
   'DID_SYNC',
   'KEY_ROTATE',
-  'KEY_BACKUP',
-  'KEY_RESTORE',
   'CREDENTIAL_ACCEPTED',
   'CREDENTIAL_REJECTED',
   'SIGN_DOCUMENT_REQUEST',
@@ -157,8 +153,6 @@ export interface MessagePayloads {
   RESHARE_STORED_VP: ReshareStoredVpPayload
   DID_SYNC: DidSyncMessage['payload']
   KEY_ROTATE: KeyRotateMessage['payload']
-  KEY_BACKUP: KeyBackupMessage['payload']
-  KEY_RESTORE: KeyRestoreMessage['payload']
   CREDENTIAL_ACCEPTED: CredentialAcceptedMessage['payload']
   CREDENTIAL_REJECTED: CredentialRejectedMessage['payload']
   SIGN_DOCUMENT_REQUEST: SignDocumentRequestMessage['payload']
