@@ -73,18 +73,21 @@ export default defineConfig({
         // Ratcheted 45→50→52→54→56→59 as the entrypoints came under test:
         // background.ts 0→66%, credential-api.content.ts 26→87%,
         // credential-handler.content.ts 0→73%, trust-bar.content.ts 13→83%,
-        // approval/App.vue 0→53%. The last step also came from excluding
-        // `*.test-d.ts` above, which had been counted as uncovered source.
-        statements: 59,
-        branches: 50,
+        // approval/App.vue 0→53%, webauthn.ts 64→94% (SOC-236). Part of the
+        // 56→59 step also came from excluding `*.test-d.ts` above, which had
+        // been counted as uncovered source rather than as test code.
+        statements: 60,
+        branches: 51,
         functions: 55,
-        lines: 60,
+        lines: 61,
         // Vault backup, Shamir recovery, credential handling. Measured 94.6%.
         'src/services/**': { statements: 90, branches: 85, functions: 88, lines: 90 },
         // DID resolution and document handling. Measured 96.1%.
         'src/background/did/**': { statements: 92, branches: 88, functions: 90, lines: 92 },
-        // Crypto helpers, vault, trusted origins, passphrase KDF. Measured 63.9%.
-        'src/utils/**': { statements: 60, branches: 58, functions: 60, lines: 62 },
+        // Crypto helpers, vault, trusted origins, passphrase KDF. Measured 71.4%,
+        // up from 63.9% now that `unlockWithPasskey` is covered (SOC-236):
+        // webauthn.ts alone went 64.2 -> 93.7% statements, 45.5 -> 84.1% branches.
+        'src/utils/**': { statements: 69, branches: 65, functions: 68, lines: 73 },
         // The composition root — the 42-case dispatch. Measured 66.1%, up from
         // ZERO: nothing had ever imported the module. Floored so the reachability
         // spec cannot be quietly deleted without a red build.
