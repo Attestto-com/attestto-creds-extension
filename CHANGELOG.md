@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **8 Dependabot advisories closed, one critical.** `shell-quote` (command
+  injection, critical, plus a second high), `adm-zip` (high), `tmp` (high),
+  `vite` (high and medium), `uuid` (medium) and `esbuild` (low).
+- **None of them reaches a user.** All eight are dev-only transitives, and the
+  first four sit under the `web-ext-run` / `fx-runner` / `firefox-profile`
+  chain that WXT uses to launch a local browser during `wxt dev`. The built
+  bundle is byte-identical before and after at 664.44 kB, for both the Chrome
+  MV3 and Firefox MV2 targets, which is what makes that claim checkable rather
+  than asserted.
+- **`vite` was not an override problem, it was a pin.** The root declared
+  `"vite": "7.3.2"` exactly, and that exact pin was the vulnerable copy.
+  Relaxed to `^7.3.6`, which stays inside the major that `wxt`,
+  `@tailwindcss/vite` and `@vitejs/plugin-vue` all accept. `vite-node` keeps
+  its own 8.1.0, already above its own floor, and was deliberately left alone:
+  a single unbounded `vite` override would have dragged both copies onto one
+  line.
+- The other five are held by `overrides` bounded to their own major line, since
+  an open-ended floor adopts the next major while still satisfying the
+  advisory. Each resolved version was compared against its own advisory floor
+  rather than inferred from `npm audit` reporting zero.
+
 ### Added
 
 - **Per-site (pairwise) sign-in identity.** Each origin gets its own locally
