@@ -25,7 +25,7 @@ import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
 import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { VaultData } from '@/stores/wallet'
-import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
+import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
@@ -52,9 +52,6 @@ import {
   sendStoredCredentials,
   sendResharePresentation,
   sendDidSyncResponse,
-  sendKeyRotateResponse,
-  sendKeyBackupResponse,
-  sendKeyRestoreResponse,
   sendReshareError,
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
@@ -817,28 +814,27 @@ export default defineBackground(() => {
       case 'CREDENTIAL_API_REQUEST': {
         const apiReq = message.payload as CredentialApiRequestMessage['payload']
 
-        if (apiReq.protocol === 'chapi') {
-          // CHAPI standard — open popup for user consent (Phantom-style)
-          answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
-            sendResponse({ ok: true })
-          }), 'CREDENTIAL_API_REQUEST')
-        } else {
-          // Attestto proprietary — forward to popup consent UI
-          chrome.notifications.create(`cred-api-${apiReq.requestId}`, {
-            type: 'basic',
-            iconUrl: chrome.runtime.getURL('icon/48.png'),
-            title: 'Identity Verification',
-            message: `${apiReq.origin} is requesting identity verification.`,
-            buttons: [{ title: 'Review' }, { title: 'Decline' }],
-            requireInteraction: true,
-          })
-
-          answerOrFail(chrome.runtime.sendMessage({
-            type: 'CREDENTIAL_API_REQUEST_FORWARD',
-            payload: apiReq,
-          }), 'CREDENTIAL_API_REQUEST')
+        // SOC-145 — BOTH protocols go through the approval window.
+        //
+        // The proprietary protocol is what `navigator.credentials.get` uses
+        // unless a relying party explicitly asks for CHAPI, and it used to take
+        // a different exit: an OS notification plus a
+        // `CREDENTIAL_API_REQUEST_FORWARD` broadcast. Nothing listened to that
+        // broadcast, and the notification's buttons reached a listener that was
+        // removed (see the note above `chrome.notifications` in this file). So
+        // the default path of a public API completed for nobody: the page's
+        // promise sat until its own 300s timeout and rejected with
+        // `NotAllowedError: User did not respond in time`, which is exactly what
+        // a user ignoring the prompt looks like. A relying party had no way to
+        // tell "the wallet has no handler" from "the human walked away".
+        //
+        // `handleChapiRequest` was already protocol-agnostic — it stores the raw
+        // request with its sender tab and opens the window — so the fix is to
+        // stop branching here. The protocol difference lives where it belongs,
+        // in what CHAPI_APPROVE builds.
+        answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        }
+        }), 'CREDENTIAL_API_REQUEST')
         break
       }
 
@@ -922,19 +918,35 @@ export default defineBackground(() => {
       // invoke them. A web page always carries sender.tab and is rejected here
       // (SOC-2 / SOC-3 / SOC-8). The page bridge no longer forwards these types,
       // so this guard is defense-in-depth for any future/internal caller.
+      //
+      // SOC-144 — these three answer over `sendResponse`, not `chrome.tabs`.
+      //
+      // They used to hand their result to `sendKey*Response(tabId, …)`, which
+      // posts with `chrome.tabs.sendMessage`. The only sender permitted here is
+      // an extension page, and an extension page carries no `sender.tab`, so
+      // `tabId` was `null` on every real call and the transport dropped the
+      // result with a console warning. The permitted caller and the answerable
+      // caller were disjoint sets: a tab-based reply for an Options-UI-only
+      // operation is a category error.
+      //
+      // The result now travels on the channel the caller is already awaiting.
+      // The `return true` is for consistency with every other async case here;
+      // it is not load-bearing, because the listener returns `true`
+      // unconditionally at the end regardless. Only the transport was broken.
       case 'KEY_ROTATE': {
         if (!isExtensionSender(sender)) {
           console.warn('[Attestto ID] Rejected KEY_ROTATE from non-extension sender', getSenderOrigin(sender))
           sendResponse({ ok: false, error: 'forbidden_sender' })
           break
         }
-        const rotateReq = message.payload as KeyRotateMessage['payload']
-        const rotateTabId = sender.tab?.id ?? null
         answerOrFail(handleKeyRotate(keyAdminAdapters).then((result) => {
-          sendKeyRotateResponse(rotateTabId, rotateReq.requestId, result.newPublicKeyJwk, result.oldPublicKeyJwk, result.error)
-          sendResponse({ ok: true })
+          sendResponse(
+            result.error
+              ? { ok: false, error: result.error }
+              : { ok: true, newPublicKeyJwk: result.newPublicKeyJwk, oldPublicKeyJwk: result.oldPublicKeyJwk },
+          )
         }), 'KEY_ROTATE')
-        break
+        return true // async
       }
 
       case 'KEY_BACKUP': {
@@ -943,13 +955,12 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: 'forbidden_sender' })
           break
         }
-        const backupReq = message.payload as KeyBackupMessage['payload']
-        const backupTabId = sender.tab?.id ?? null
         answerOrFail(handleKeyBackup(keyAdminAdapters).then((result) => {
-          sendKeyBackupResponse(backupTabId, backupReq.requestId, result.shares, result.error)
-          sendResponse({ ok: true })
+          sendResponse(
+            result.error ? { ok: false, error: result.error } : { ok: true, shares: result.shares },
+          )
         }), 'KEY_BACKUP')
-        break
+        return true // async
       }
 
       case 'KEY_RESTORE': {
@@ -959,12 +970,10 @@ export default defineBackground(() => {
           break
         }
         const restoreReq = message.payload as KeyRestoreMessage['payload']
-        const restoreTabId = sender.tab?.id ?? null
         answerOrFail(handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminAdapters).then((result) => {
-          sendKeyRestoreResponse(restoreTabId, restoreReq.requestId, result.error)
-          sendResponse({ ok: true })
+          sendResponse(result.error ? { ok: false, error: result.error } : { ok: true })
         }), 'KEY_RESTORE')
-        break
+        return true // async
       }
 
       case 'CREDENTIAL_ACCEPTED':
@@ -1244,8 +1253,13 @@ export default defineBackground(() => {
             {
               challenge: pending.apiReq.challenge,
               nonce: pending.apiReq.nonce,
-              domain: pending.apiReq.domain,
+              // SOC-145 — the proprietary protocol names the verifier in
+              // `audience` where CHAPI uses `domain`. Mapped here so the handler
+              // sees one shape; `domain` still wins when both are present, which
+              // is only ever a CHAPI request.
+              domain: pending.apiReq.domain ?? pending.apiReq.audience ?? null,
               origin: pending.apiReq.origin,
+              requestedFields: pending.apiReq.requestedFields ?? null,
             },
             chapiCtx as never,
           ).then((result) => {
