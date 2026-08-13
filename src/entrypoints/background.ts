@@ -817,28 +817,27 @@ export default defineBackground(() => {
       case 'CREDENTIAL_API_REQUEST': {
         const apiReq = message.payload as CredentialApiRequestMessage['payload']
 
-        if (apiReq.protocol === 'chapi') {
-          // CHAPI standard — open popup for user consent (Phantom-style)
-          answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
-            sendResponse({ ok: true })
-          }), 'CREDENTIAL_API_REQUEST')
-        } else {
-          // Attestto proprietary — forward to popup consent UI
-          chrome.notifications.create(`cred-api-${apiReq.requestId}`, {
-            type: 'basic',
-            iconUrl: chrome.runtime.getURL('icon/48.png'),
-            title: 'Identity Verification',
-            message: `${apiReq.origin} is requesting identity verification.`,
-            buttons: [{ title: 'Review' }, { title: 'Decline' }],
-            requireInteraction: true,
-          })
-
-          answerOrFail(chrome.runtime.sendMessage({
-            type: 'CREDENTIAL_API_REQUEST_FORWARD',
-            payload: apiReq,
-          }), 'CREDENTIAL_API_REQUEST')
+        // SOC-145 — BOTH protocols go through the approval window.
+        //
+        // The proprietary protocol is what `navigator.credentials.get` uses
+        // unless a relying party explicitly asks for CHAPI, and it used to take
+        // a different exit: an OS notification plus a
+        // `CREDENTIAL_API_REQUEST_FORWARD` broadcast. Nothing listened to that
+        // broadcast, and the notification's buttons reached a listener that was
+        // removed (see the note above `chrome.notifications` in this file). So
+        // the default path of a public API completed for nobody: the page's
+        // promise sat until its own 300s timeout and rejected with
+        // `NotAllowedError: User did not respond in time`, which is exactly what
+        // a user ignoring the prompt looks like. A relying party had no way to
+        // tell "the wallet has no handler" from "the human walked away".
+        //
+        // `handleChapiRequest` was already protocol-agnostic — it stores the raw
+        // request with its sender tab and opens the window — so the fix is to
+        // stop branching here. The protocol difference lives where it belongs,
+        // in what CHAPI_APPROVE builds.
+        answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        }
+        }), 'CREDENTIAL_API_REQUEST')
         break
       }
 
@@ -1244,8 +1243,13 @@ export default defineBackground(() => {
             {
               challenge: pending.apiReq.challenge,
               nonce: pending.apiReq.nonce,
-              domain: pending.apiReq.domain,
+              // SOC-145 — the proprietary protocol names the verifier in
+              // `audience` where CHAPI uses `domain`. Mapped here so the handler
+              // sees one shape; `domain` still wins when both are present, which
+              // is only ever a CHAPI request.
+              domain: pending.apiReq.domain ?? pending.apiReq.audience ?? null,
               origin: pending.apiReq.origin,
+              requestedFields: pending.apiReq.requestedFields ?? null,
             },
             chapiCtx as never,
           ).then((result) => {
