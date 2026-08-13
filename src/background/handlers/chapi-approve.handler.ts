@@ -24,6 +24,70 @@ export interface ChapiApproveInput {
   nonce: string
   domain: string | null
   origin: string
+  /**
+   * SOC-145 — the Attestto-proprietary protocol's `requestedFields`.
+   *
+   * Absent for CHAPI, which has no equivalent. Present, and possibly a strict
+   * subset of the credential's subject keys, for the proprietary protocol that
+   * `navigator.credentials.get` uses by default.
+   *
+   * See `assertNoSilentReduction` below for why a strict subset is refused
+   * rather than served.
+   */
+  requestedFields?: readonly string[] | null
+}
+
+/** Subject keys a verifier could be asking for, across every credential presented. */
+function subjectKeys(vcs: Array<Record<string, unknown>>): Set<string> {
+  const keys = new Set<string>()
+  for (const vc of vcs) {
+    const subject = vc.credentialSubject
+    if (subject && typeof subject === 'object' && !Array.isArray(subject)) {
+      for (const k of Object.keys(subject)) keys.add(k)
+    }
+  }
+  return keys
+}
+
+/**
+ * SOC-145 — refuse a partial disclosure rather than perform one silently.
+ *
+ * The proprietary protocol lets a page name the claims it wants. Two ways to
+ * honour that are both wrong today, which is why this refuses instead:
+ *
+ * - **Ignore the list and present whole.** A page asking for a birth year gets
+ *   the entire identity credential. The field exists precisely to prevent that,
+ *   so ignoring it turns a routing bug into a disclosure bug.
+ * - **Reduce and present anyway.** `createChapiVp`'s `selectedFields` can do it,
+ *   but a strict subset produces a HOLDER-attested derivation: the issuer's
+ *   proof is dropped, because it no longer covers the reduced document
+ *   (`jsonld-vp.ts:26`). The response carries nothing that tells the relying
+ *   party this happened, so they would verify a holder's word about themselves
+ *   believing they had verified the issuer's.
+ *
+ * Refusing is the only option that cannot make a verifier believe something
+ * false. It is also honest about capability: the caller learns the wallet will
+ * not do this yet, instead of receiving a weaker credential that looks the same.
+ *
+ * A list naming every subject key requests no reduction at all, so it is served
+ * normally — that is a full presentation by another spelling, not a subset.
+ */
+function assertNoSilentReduction(
+  requestedFields: readonly string[] | null | undefined,
+  vcs: Array<Record<string, unknown>>,
+): string | null {
+  if (!requestedFields || requestedFields.length === 0) return null
+
+  const available = subjectKeys(vcs)
+  const withheld = [...available].filter((k) => !requestedFields.includes(k))
+  if (withheld.length === 0) return null
+
+  return (
+    'This wallet cannot present a subset of a credential yet. Reducing the claims ' +
+    'would drop the issuer proof, leaving a holder-attested document that a ' +
+    'verifier could not tell apart from an issuer-attested one. Request the ' +
+    'credential whole, or use a credential whose subject is only the claims you need.'
+  )
 }
 
 export type ChapiApproveResult =
@@ -76,6 +140,17 @@ export async function handleChapiApprove(
     .filter((c) => c.format === 'json-ld')
     .map((c) => JSON.parse(c.raw) as Record<string, unknown>)
 
+  // SOC-145. Checked after the vault read, because the answer depends on which
+  // claims this holder actually carries: the same request is a full
+  // presentation against one credential and a reduction against another.
+  const reductionRefusal = assertNoSilentReduction(input.requestedFields, vcs)
+  if (reductionRefusal) {
+    return { ok: false, error: reductionRefusal, tabError: reductionRefusal }
+  }
+
+  // The proprietary protocol carries `nonce` and `audience` where CHAPI carries
+  // `challenge` and `domain`; the case maps `audience` onto `domain` before
+  // calling, so both arrive here in the same shape.
   const challenge = input.challenge ?? input.nonce ?? ''
   const domain = input.domain ?? input.origin ?? ''
 
