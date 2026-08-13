@@ -112,13 +112,16 @@ export default defineConfig({
         // spec cannot be quietly deleted without a red build.
         'src/entrypoints/background.ts': { statements: 60, branches: 50, functions: 44, lines: 60 },
         // The consent window — the only thing between a site asking for a
-        // signature and the signature happening. Measured 52.7%, up from ZERO:
+        // signature and the signature happening. Measured 63.7%, from ZERO:
         // it had no spec and, unlike every other area here, no floor either, so
-        // it could have rotted to nothing without reddening a build. The tested
-        // half is the half that matters (the ATT-1098 verification gate, the
-        // PRF skip, the pairwise-auth payload, deny routing); the untested
-        // remainder is template and recovery-flow branches.
-        'src/entrypoints/approval/**': { statements: 50, branches: 22, functions: 24, lines: 52 },
+        // it could have rotted to nothing without reddening a build.
+        //
+        // What is covered is chosen, not incidental: the ATT-1098 verification
+        // gate, the PRF skip, the pairwise-auth payload, deny routing, and the
+        // recovery paths — including vault reset, which calls
+        // `chrome.storage.local.clear()` and is reachable from a window a
+        // website caused to open. The uncovered remainder is template.
+        'src/entrypoints/approval/**': { statements: 61, branches: 28, functions: 37, lines: 63 },
         // The untrusted boundary — runs on every https page. Measured 87.4%.
         // Floored so the origin invariant cannot lose its only assertion.
         'src/entrypoints/credential-api.content.ts': { statements: 80, branches: 78, functions: 90, lines: 80 },
