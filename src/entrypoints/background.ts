@@ -315,13 +315,34 @@ export default defineBackground(() => {
   })
 
   /**
+   * SOC-278 — the requester picks the `requestId`, and it is also the pending
+   * row's storage key. Refuse to proceed when that id is already live.
+   *
+   * Without this, a page could open an approval window for document A and then
+   * re-send with the same id and document B: `put` replaced the row underneath
+   * the window, and the user approved B while reading A. The window renders
+   * from the URL it was opened with; the effect runs against the stored row;
+   * the id joining them was attacker-controlled.
+   *
+   * Throwing rather than returning is deliberate — every call site is already
+   * wrapped in `answerOrFail`, which turns this into an `{ ok: false }` answer
+   * to the page. A silently-ignored duplicate would leave the caller waiting.
+   */
+  const claimPendingId = (stored: boolean, requestId: string): void => {
+    if (!stored) {
+      console.warn('[Attestto ID] Rejected duplicate pending request id', requestId)
+      throw new Error('A request with this id is already awaiting approval')
+    }
+  }
+
+  /**
    * Open the approval popup for a document signing request.
    */
   async function handleSigningRequest(
     signReq: SignDocumentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    await pendingSigningRequests.put(signReq.requestId, { signReq, senderTabId })
+    claimPendingId(await pendingSigningRequests.put(signReq.requestId, { signReq, senderTabId }), signReq.requestId)
     await approvalWindows.open({
       id: signReq.requestId,
       params: approvalParams.signing({
@@ -393,7 +414,7 @@ export default defineBackground(() => {
     // earlier fail-fast replaced that flow with a dead-end error message on the
     // page — the popup is fully actionable (Create DID / Cancel), so there is no
     // empty-list hang.
-    await pendingAuthRequests.put(authReq.requestId, { ...authReq, senderTabId })
+    claimPendingId(await pendingAuthRequests.put(authReq.requestId, { ...authReq, senderTabId }), authReq.requestId)
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendAuthErrorToTab)
   }
 
@@ -458,7 +479,7 @@ export default defineBackground(() => {
     // No fail-fast on missing identity — open the popup so its "Create DID"
     // flow can mint one and complete the sign-in in one step (see
     // handleAuthRequest). The popup is fully actionable, so no empty-list hang.
-    await pendingAuthRequests.put(authReq.requestId, {
+    claimPendingId(await pendingAuthRequests.put(authReq.requestId, {
       requestId: authReq.requestId,
       nonce: authReq.nonce,
       // The signed timestamp is minted at approval time (fresh per the verifier's
@@ -470,7 +491,7 @@ export default defineBackground(() => {
       audience: authReq.audience,
       envelopeNonce: authReq.requestId,
       trustedIssuers: authReq.trustedIssuers,
-    })
+    }), authReq.requestId)
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendCwAuthErrorToTab)
   }
 
@@ -483,7 +504,7 @@ export default defineBackground(() => {
     req: SignAttesttoPdfRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    await pendingAttesttoPdfRequests.put(req.requestId, { req, senderTabId })
+    claimPendingId(await pendingAttesttoPdfRequests.put(req.requestId, { req, senderTabId }), req.requestId)
     await approvalWindows.open({
       id: req.requestId,
       params: approvalParams.attesttoPdf({
@@ -511,7 +532,7 @@ export default defineBackground(() => {
     payReq: PaymentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    await pendingPaymentRequests.put(payReq.requestId, { payReq, senderTabId })
+    claimPendingId(await pendingPaymentRequests.put(payReq.requestId, { payReq, senderTabId }), payReq.requestId)
     await approvalWindows.open({
       id: payReq.requestId,
       params: approvalParams.payment({
@@ -586,7 +607,7 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     // Store the raw request + sender tab for the approval page to use
-    await pendingChapiRawRequests.put(apiReq.requestId, { apiReq, senderTabId })
+    claimPendingId(await pendingChapiRawRequests.put(apiReq.requestId, { apiReq, senderTabId }), apiReq.requestId)
     await approvalWindows.open({
       id: apiReq.requestId,
       params: approvalParams.chapi({ id: apiReq.requestId, origin: apiReq.origin }),
@@ -648,6 +669,38 @@ export default defineBackground(() => {
         console.error(`[Attestto ID] ${label} failed:`, err)
         answer({ ok: false, error: err instanceof Error ? err.message : 'Internal error' })
       })
+    }
+
+    /**
+     * SOC-277 — may this sender READ the vault?
+     *
+     * `LIST_STORED_CREDENTIALS` and `RESHARE_STORED_VP` project stored
+     * credentials out to a caller: the first returns metadata and claim key
+     * NAMES, the second returns claim VALUES. Both were reachable from the
+     * `https://*\/*` content-script bridge with no check at all, so any page the
+     * holder had open could enumerate the wallet and then read the cédula out of
+     * it while the vault was unlocked — with no notification and, because
+     * neither message counts as a user gesture, no visible activity.
+     *
+     * The gate is the one already used by `DID_SYNC` and `CREDENTIAL_OFFER`:
+     * resolve the origin from the unspoofable `sender`, never from
+     * `payload.origin`. Extension pages pass (the popup reads its own vault),
+     * the platform passes, a user-approved origin passes, everything else is
+     * refused.
+     *
+     * NOT the whole story, deliberately: releasing claim VALUES should also
+     * require a per-request approval naming the origin and the fields, the way
+     * signing does. Trust-on-first-use was designed for identity sync, not for
+     * disclosure. That remains open on SOC-277; this closes the arbitrary-origin
+     * hole, which is the exploitable half.
+     */
+    const isVaultReadAuthorized = async (
+      s: chrome.runtime.MessageSender,
+    ): Promise<boolean> => {
+      if (isExtensionSender(s)) return true
+      const senderOrigin = getSenderOrigin(s)
+      if (isPlatformOrigin(senderOrigin)) return true
+      return isOriginTrusted(senderOrigin)
     }
 
     // Story 1.14 — only a user gesture may move the idle deadline. The predicate
@@ -725,7 +778,12 @@ export default defineBackground(() => {
         // identity-sync format AND the origin was approved before.
         answerOrFail(handleCredentialOffer(offer, senderOrigin, {
           isOriginTrusted,
-          stage: (notifId, staged, origin) => pendingOffers.put(notifId, { offer: staged, origin }),
+          // The offer's `notifId` is minted here, not supplied by the page, so a
+          // duplicate is a clock collision rather than an attack — nothing to
+          // reject, and the `Promise<void>` the port wants is the right shape.
+          stage: async (notifId, staged, origin) => {
+            await pendingOffers.put(notifId, { offer: staged, origin })
+          },
           accept: acceptCredentialOffer,
           requestConsent: openCredentialOfferApprovalWindow,
           newNotifId: () => `credential-offer-${Date.now()}`,
@@ -838,10 +896,22 @@ export default defineBackground(() => {
         break
       }
 
+      // SOC-277 — origin-gated (see `isVaultReadAuthorized`). An unauthorized
+      // caller is answered with an EMPTY list rather than an error: the handler
+      // already treats "I hold nothing you can see" as the honest answer to a
+      // caller with no standing, and it does not leak whether the wallet is
+      // locked, empty, or refusing.
       case 'LIST_STORED_CREDENTIALS': {
         const listReqId = message.payload?.requestId as string
         const listSenderTabId = sender.tab?.id ?? null
-        answerOrFail(readVault().then((vault) => {
+        answerOrFail(isVaultReadAuthorized(sender).then(async (allowed) => {
+          if (!allowed) {
+            console.warn('[Attestto ID] Rejected LIST_STORED_CREDENTIALS from unauthorized origin', getSenderOrigin(sender))
+            sendStoredCredentials(listSenderTabId, listReqId, [])
+            sendResponse({ ok: false, error: 'origin_not_authorized' })
+            return
+          }
+          const vault = await readVault()
           sendStoredCredentials(listSenderTabId, listReqId, summarizeStoredCredentials(vault))
           sendResponse({ ok: true })
         }), 'LIST_STORED_CREDENTIALS')
@@ -856,7 +926,17 @@ export default defineBackground(() => {
         }
         const reshareSenderTabId = sender.tab?.id ?? null
 
-        answerOrFail(readVault().then((vault) => {
+        // SOC-277 — this path returns claim VALUES. Refuse before touching the
+        // vault, and say so explicitly rather than returning an empty
+        // presentation, so a legitimate integrator sees why.
+        answerOrFail(isVaultReadAuthorized(sender).then(async (allowed) => {
+          if (!allowed) {
+            console.warn('[Attestto ID] Rejected RESHARE_STORED_VP from unauthorized origin', getSenderOrigin(sender))
+            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'origin_not_authorized')
+            sendResponse({ ok: false, error: 'origin_not_authorized' })
+            return
+          }
+          const vault = await readVault()
           const result = buildResharePresentation(vault, resharePayload)
           if (!result.ok) {
             sendReshareError(reshareSenderTabId, resharePayload.requestId, result.error)

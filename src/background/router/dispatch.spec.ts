@@ -444,7 +444,7 @@ describe('dispatch — stage 8 idempotency seam (mutation iv: replay)', () => {
     return {
       get: vi.fn(async (id: string) => ({ id, consumed, payload: {} })),
       markConsumed: vi.fn(async () => { consumed = true }),
-      put: vi.fn(async () => {}),
+      put: vi.fn(async () => true),
       takePending: vi.fn(async () => null), // dispatch doesn't use it; present to satisfy the port
       claimForProcessing: vi.fn(async () => ({ status: 'missing' as const })), // ditto (Story 1.16)
     }
@@ -465,7 +465,7 @@ describe('dispatch — stage 8 idempotency seam (mutation iv: replay)', () => {
     const pending = {
       get: vi.fn(async () => { throw new Error('store down') }),
       markConsumed: vi.fn(async () => {}),
-      put: vi.fn(async () => {}),
+      put: vi.fn(async () => true),
       takePending: vi.fn(async () => null),
       claimForProcessing: vi.fn(async () => ({ status: 'missing' as const })),
     }

@@ -123,11 +123,18 @@ export function createPendingStore(options: PendingStoreOptions): Pending {
   }
 
   return {
+    // SOC-278 — first writer wins. Inside the same queued operation as the
+    // read, so two concurrent puts for one id cannot both see it free.
     put: (row) =>
       serialize(async () => {
         const rows = withoutStale(await readAll())
+        const existing = rows[row.id]
+        // A live row owns its id until it is taken or consumed. A consumed row
+        // is a spent tombstone and does not block a genuinely new request.
+        if (existing && !existing.consumed) return false
         rows[row.id] = { ...row, createdAt: now() }
         await storage.set({ [key]: rows })
+        return true
       }),
 
     get: (id) =>
