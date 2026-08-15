@@ -130,8 +130,13 @@ const SECURITY_MUTATIONS = [
   {
     name: 'DID_SYNC requires a trusted origin (SOC-9)',
     file: 'src/entrypoints/background.ts',
-    find: 'if (trusted) {',
-    replace: 'if (!trusted) {',
+    // SOC-280 moved this gate off the switch case and into the router's
+    // `originPolicy` port, so the anchor moved with it. The old anchor was
+    // `if (trusted) {` inside the DID_SYNC case; that case no longer decides
+    // authorization. The guard-the-guard caught the stale anchor rather than
+    // reporting the invariant as covered — which is the whole reason it exists.
+    find: 'isPlatformOrigin(origin) || isOriginTrusted(origin)',
+    replace: 'true || isPlatformOrigin(origin) || isOriginTrusted(origin)',
     spec: 'src/__tests__/entrypoints/background.sender-authz.spec.ts',
   },
   {

@@ -9,7 +9,9 @@
  * 5. Keep the offscreen document alive via alarms
  */
 
-import { MESSAGE_ROUTES } from '@/background/router/routes'
+import { dispatch } from '@/background/router/dispatch'
+import { createCounterpartyDidResolver } from '@/background/did/did-resolver'
+import { createDidWebFetch } from '@/background/did/did-web-fetch.adapter'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
@@ -23,7 +25,7 @@ import { createKeyAdminAdapters, createUntrustedAdapters } from '@/background/ad
 import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { VaultData } from '@/stores/wallet'
-import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
+import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DidSyncMessage, KeyRotateMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
@@ -381,6 +383,31 @@ export default defineBackground(() => {
   // F1 capability fence forbids.
   const keyAdminAdapters = createKeyAdminAdapters({ readVault, writeVault, syncPublicVault })
   const untrustedAdapters = createUntrustedAdapters()
+
+  /**
+   * SOC-280 — the router's own dependencies. Both are ROUTER-OWNED: they are
+   * passed to dispatch and never enter a ctx bundle, so no handler can reach
+   * them.
+   *
+   * `originPolicy` binds the SAME predicate the DID_SYNC case applied inline
+   * (`isPlatformOrigin || isOriginTrusted`) — the trust-on-first-use flow the
+   * product has always had. It moves behind the chokepoint rather than being
+   * reimplemented there; this is now the only place it is spelled out.
+   */
+  const originPolicy = {
+    isAuthorized: async (origin: string): Promise<boolean> =>
+      isPlatformOrigin(origin) || isOriginTrusted(origin),
+  }
+  const peerResolver = createCounterpartyDidResolver({
+    http: createDidWebFetch(),
+    clock: { now: () => Date.now() },
+  })
+
+  /** Every dispatch goes through here, so no call site can omit a dependency. */
+  const routeMessage = (
+    message: { type: string; payload?: unknown; id?: string },
+    sender: chrome.runtime.MessageSender | undefined,
+  ) => dispatch(message, sender, { buildBundle, originPolicy, peerResolver })
 
   const buildBundle = createBuildBundle({
     signing: createSigningAdapters({
@@ -864,20 +891,12 @@ export default defineBackground(() => {
       }
 
       case 'DIDCOMM_INBOUND': {
-        // Story 1.9 — extracted to the DIDCOMM_INBOUND route (parity-tested in
-        // didcomm-inbound.handler.spec). Delegates DIRECTLY to `handle` (not
-        // through `dispatch`, whose empty `allowFrom` would reject — the legacy
-        // case did no sender-auth). Effects fire-and-forget, response stays sync —
-        // same as before.
-        //
-        // SOC-280 — the `as never` cast that used to sit on this argument is
-        // gone. It existed only because `UntrustedCtx` declared `notify` and
-        // `http` that nothing supplied and nothing used; with those removed the
-        // adapters ARE the bundle, and the compiler now checks this call.
-        void MESSAGE_ROUTES.DIDCOMM_INBOUND.handle(
-          (message as DIDCommInboundMessage).payload,
-          buildBundle('untrusted'),
-        )
+        // SOC-280 — routed through `dispatch`, so stage 6 actually runs the
+        // `senderResolvable` check this route has always declared. Effects stay
+        // fire-and-forget and the ack stays synchronous: the page gets no
+        // presentation back from this channel, and a slow DID resolution must
+        // not hold the message port open.
+        void routeMessage(message as { type: string; payload?: unknown }, sender)
         sendResponse({ ok: true })
         break
       }
@@ -963,43 +982,44 @@ export default defineBackground(() => {
         break
       }
 
-      // DID_SYNC writes holderDid / verificationMethod into the vault. It is a
-      // legitimate platform→extension flow, so it is not hard-rejected — but the
-      // sender origin MUST be authorized, resolved from the unspoofable `sender`
-      // (never the page-supplied payload.origin). Platform origins pass silently;
-      // previously user-trusted origins pass; everything else is rejected
-      // (SOC-9). Trust-on-first-use approval UX for unknown origins is a
-      // follow-up (no current origin needs it — the platform is allowlisted).
+      // DID_SYNC writes holderDid / verificationMethod into the vault — a
+      // legitimate platform→extension flow, but only from an authorized origin.
+      //
+      // SOC-280 — the origin gate that used to live here is GONE from this case.
+      // It is now `allowFrom: { policy: 'platform-or-trusted' }` on the route,
+      // evaluated by the router's `originPolicy` port against the unspoofable
+      // `sender`. Same predicate, one home. Stage 6 also runs `vmBinding` for
+      // the first time, so a page can no longer name a verification method the
+      // claimed DID's document does not authorise.
+      //
+      // What stays here is transport: the router returns the response envelope,
+      // this case turns it into a DID_SYNC_RESPONSE on the originating tab.
       case 'DID_SYNC': {
         const syncReq = message.payload as DidSyncMessage['payload']
         const senderTabId = sender.tab?.id ?? null
-        const senderOrigin = getSenderOrigin(sender)
 
-        // SOC-280 — the inline ctx adapter and its `as never` boundary cast are
-        // gone: the handler now takes the router's real `buildBundle('keyAdmin')`.
-        // The handler returns the DID_SYNC_RESPONSE data; this case still owns
-        // transport (`sendDidSyncResponse`) and the runtime ack.
-
-        const runSync = () =>
-          MESSAGE_ROUTES.DID_SYNC.handle(syncReq, buildBundle('keyAdmin')).then((data) => {
-            const r = data as DidSyncResponseData
+        answerOrFail(
+          routeMessage(message as { type: string; payload?: unknown }, sender).then((res) => {
+            if (!res.ok) {
+              console.warn('[Attestto ID] Rejected DID_SYNC', res.error, getSenderOrigin(sender))
+              // The page keeps the error vocabulary it already knew: an
+              // authorization refusal reads as `origin_not_authorized`
+              // regardless of which stage refused, and everything else is a
+              // generic failure. Router error codes are internal.
+              const wire =
+                res.error === 'forbidden-origin' || res.error === 'forbidden-sender'
+                  ? 'origin_not_authorized'
+                  : 'sync_failed'
+              sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, wire)
+              sendResponse({ ok: false, error: wire })
+              return
+            }
+            const r = res.data as DidSyncResponseData
             sendDidSyncResponse(senderTabId, r.requestId, r.publicKeyJwk, r.holderDid, r.error)
             sendResponse({ ok: true })
-          })
-
-        if (isPlatformOrigin(senderOrigin)) {
-          answerOrFail(runSync(), 'DID_SYNC')
-        } else {
-          answerOrFail(isOriginTrusted(senderOrigin).then((trusted) => {
-            if (trusted) {
-              answerOrFail(runSync(), 'DID_SYNC')
-            } else {
-              console.warn('[Attestto ID] Rejected DID_SYNC from unauthorized origin', senderOrigin)
-              sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'origin_not_authorized')
-              sendResponse({ ok: false, error: 'origin_not_authorized' })
-            }
-          }), 'DID_SYNC')
-        }
+          }),
+          'DID_SYNC',
+        )
         break
       }
 
