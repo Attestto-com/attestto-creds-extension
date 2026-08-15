@@ -13,8 +13,8 @@
  * file is the ONLY importer of `dispatch` in this story.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { dispatch, type DispatchDeps, type InboundMessage } from './dispatch'
-import type { Route, CtxBundleTag } from './route'
+import { dispatch, type DispatchDeps, type InboundMessage, type ResolvedSender } from './dispatch'
+import type { Route, CtxBundleTag, AllowFromDescriptor } from './route'
 import type { MessageType } from './message-types'
 import { MESSAGE_ROUTES } from './routes'
 
@@ -46,7 +46,8 @@ function makeBuildBundle(s: Spies) {
       notify: { show: s.notify },
       clock: { now: s.clockNow },
     },
-    keyAdmin: { vault: { read: s.vaultRead, write: s.vaultWrite }, crypto },
+    // SOC-280 — KeyAdmin's surface is store/keygen/clock; no vault, no crypto.
+    keyAdmin: { store: { read: s.vaultRead, write: s.vaultWrite, syncPublic: vi.fn(async () => {}) }, clock: { now: s.clockNow } },
   }
   // A generic `<T>(tag:T)=>CtxFor<T>` signature is not satisfiable by a Mock, so the
   // impl is typed loosely and cast where it enters `DispatchDeps` (in `deps()`).
@@ -78,7 +79,7 @@ function keyAdminRoute(over: Partial<Route<'DID_SYNC', 'keyAdmin'>> = {}): Route
     allowFrom: { origins: [GOOD], senders: ['web'] },
     validate: objPayload,
     async handle(_p, ctx) {
-      await ctx.vault.write({ kind: 'rec' })
+      await ctx.store.write({ kind: 'rec' } as never)
       return { synced: true }
     },
     ...over,
@@ -494,5 +495,90 @@ describe('dispatch — purity (not the pipeline proof, just the MV3/CSP guard)',
     } finally {
       if (had) g.chrome = saved
     }
+  })
+})
+
+/**
+ * SOC-280 — stage 3 can express the authorization the wallet actually uses.
+ *
+ * `allowFrom.origins` was a literal list checked synchronously. The origin policy
+ * this product has always had is not a list: a site is approved by the USER, at
+ * runtime, and the approved set lives in `chrome.storage`. So the one route that
+ * needed it (`DID_SYNC`) could not be routed through the chokepoint, and its
+ * check stayed inline in the legacy case — authorization in two places, which is
+ * what the chokepoint exists to prevent.
+ *
+ * A tagged union keeps AD-7 intact: the route still declares DATA and names a
+ * policy; the router still owns every predicate. What changed is that evaluating
+ * one may need I/O, so the stage is async.
+ */
+describe('SOC-280 — origin policies', () => {
+  const route = (origins: AllowFromDescriptor['origins']): { [K in MessageType]: Route<K> } =>
+    ({ ...MESSAGE_ROUTES, NOTIFICATION_RECEIVED: {
+      bundle: 'untrusted',
+      allowFrom: { origins, senders: ['web'] },
+      validate: (raw: unknown) => raw as never,
+      handle: async () => ({ ok: true }) as never,
+    } } as unknown as { [K in MessageType]: Route<K> })
+
+  const web = { origin: 'https://site.example', kind: 'web' as const }
+  const send = (
+    origins: AllowFromDescriptor['origins'],
+    deps: Partial<DispatchDeps> = {},
+    sender: ResolvedSender = web,
+  ) =>
+    dispatch({ type: 'NOTIFICATION_RECEIVED', payload: {} }, undefined, {
+      buildBundle: () => ({}) as never,
+      routes: route(origins),
+      resolveSender: () => sender,
+      ...deps,
+    })
+
+  it('a literal list still admits a listed origin and refuses an unlisted one', async () => {
+    expect((await send(['https://site.example'])).ok).toBe(true)
+    expect(await send(['https://other.example'])).toEqual({ ok: false, error: 'forbidden-origin' })
+  })
+
+  it("'any' admits a resolvable origin — parity with a channel that never had sender-auth", async () => {
+    expect((await send({ policy: 'any' })).ok).toBe(true)
+  })
+
+  it("'any' still refuses a NULL origin — it is not 'skip stage 3'", async () => {
+    // The distinction the whole policy rests on. A permissive rule must never
+    // coincide with an unresolvable sender and read as allowed.
+    expect(await send({ policy: 'any' }, {}, { origin: null, kind: 'web' })).toEqual({
+      ok: false,
+      error: 'forbidden-origin',
+    })
+  })
+
+  it("'platform-or-trusted' consults the injected port", async () => {
+    const isAuthorized = vi.fn(async () => true)
+    expect((await send({ policy: 'platform-or-trusted' }, { originPolicy: { isAuthorized } })).ok).toBe(true)
+    expect(isAuthorized).toHaveBeenCalledWith('https://site.example')
+
+    expect(
+      await send({ policy: 'platform-or-trusted' }, { originPolicy: { isAuthorized: async () => false } }),
+    ).toEqual({ ok: false, error: 'forbidden-origin' })
+  })
+
+  it("'platform-or-trusted' fails CLOSED when no port is injected", async () => {
+    // Same rule stage 6 applies to a declared check with no resolver: a missing
+    // dependency is an outage, never a downgrade to "allow".
+    expect(await send({ policy: 'platform-or-trusted' })).toEqual({
+      ok: false,
+      error: 'forbidden-origin',
+    })
+  })
+
+  it("'platform-or-trusted' fails CLOSED when the port throws", async () => {
+    // storage unavailable mid-flight must not admit the sender.
+    const isAuthorized = async (): Promise<boolean> => {
+      throw new Error('storage unavailable')
+    }
+    expect(await send({ policy: 'platform-or-trusted' }, { originPolicy: { isAuthorized } })).toEqual({
+      ok: false,
+      error: 'forbidden-origin',
+    })
   })
 })

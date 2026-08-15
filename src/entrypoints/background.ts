@@ -10,7 +10,6 @@
  */
 
 import { MESSAGE_ROUTES } from '@/background/router/routes'
-import type { KeyAdminCtx } from '@/background/ctx/ctx-bundles'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
@@ -374,6 +373,15 @@ export default defineBackground(() => {
         throw new Error(`buildBundle('${tier}') not wired until its routes migrate (Story 1.13, later phase)`)
       },
     }) as T
+
+  // KeyAdmin's concrete surface (store + P-256 keygen) and the untrusted tier's
+  // chrome surface are built in `adapters/chrome-adapters.ts` (Story 1.13
+  // Phase 11). The entrypoint now holds no crypto symbol at all — `generateP256`
+  // used to be a bare `crypto.subtle.generateKey` here, which is exactly what the
+  // F1 capability fence forbids.
+  const keyAdminAdapters = createKeyAdminAdapters({ readVault, writeVault, syncPublicVault })
+  const untrustedAdapters = createUntrustedAdapters()
+
   const buildBundle = createBuildBundle({
     signing: createSigningAdapters({
       // SOC-279 — a no-op, stated rather than defaulted. The real WebAuthn gate
@@ -387,18 +395,16 @@ export default defineBackground(() => {
       publicJwkOf,
       pinSite,
     }),
-    untrusted: unwiredBundle('untrusted'),
+    // SOC-280 — `untrusted` and `keyAdmin` are REAL now. They were throwing
+    // Proxies because their ctx types declared capabilities nothing supplied
+    // (`notify`/`http`, `vault`/`crypto`); those were unused and are gone, so
+    // the adapters satisfy the bundles directly. `consent` stays unwired — no
+    // consent route has migrated, and a Proxy that throws is a louder failure
+    // than a half-built bundle.
+    untrusted: untrustedAdapters,
     consent: unwiredBundle('consent'),
-    keyAdmin: unwiredBundle('keyAdmin'),
+    keyAdmin: { ...keyAdminAdapters, clock: { now: () => Date.now() } },
   })
-
-  // KeyAdmin's concrete surface (store + P-256 keygen) and the untrusted tier's
-  // chrome surface are built in `adapters/chrome-adapters.ts` (Story 1.13
-  // Phase 11). The entrypoint now holds no crypto symbol at all — `generateP256`
-  // used to be a bare `crypto.subtle.generateKey` here, which is exactly what the
-  // F1 capability fence forbids.
-  const keyAdminAdapters = createKeyAdminAdapters({ readVault, writeVault, syncPublicVault })
-  const untrustedAdapters = createUntrustedAdapters()
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
 
@@ -862,12 +868,15 @@ export default defineBackground(() => {
         // didcomm-inbound.handler.spec). Delegates DIRECTLY to `handle` (not
         // through `dispatch`, whose empty `allowFrom` would reject — the legacy
         // case did no sender-auth). Effects fire-and-forget, response stays sync —
-        // same as before. The inline ctx is a thin chrome adapter; the real
-        // capability-scoped bundle is built by the composition root (Story 1.13),
-        // which also removes this cast.
+        // same as before.
+        //
+        // SOC-280 — the `as never` cast that used to sit on this argument is
+        // gone. It existed only because `UntrustedCtx` declared `notify` and
+        // `http` that nothing supplied and nothing used; with those removed the
+        // adapters ARE the bundle, and the compiler now checks this call.
         void MESSAGE_ROUTES.DIDCOMM_INBOUND.handle(
           (message as DIDCommInboundMessage).payload,
-          untrustedAdapters as never,
+          buildBundle('untrusted'),
         )
         sendResponse({ ok: true })
         break
@@ -966,17 +975,13 @@ export default defineBackground(() => {
         const senderTabId = sender.tab?.id ?? null
         const senderOrigin = getSenderOrigin(sender)
 
-        // Inline ctx adapter over the real chrome/vault surface (the composition
-        // root, Story 1.13, replaces this + the `as never` boundary cast with the
-        // router's `buildBundle`). The handler returns the DID_SYNC_RESPONSE data;
-        // this case owns transport (`sendDidSyncResponse`) and the runtime ack.
-        const didSyncCtx: Pick<KeyAdminCtx, 'store' | 'keygen' | 'clock'> = {
-          ...keyAdminAdapters,
-          clock: { now: () => Date.now() },
-        }
+        // SOC-280 — the inline ctx adapter and its `as never` boundary cast are
+        // gone: the handler now takes the router's real `buildBundle('keyAdmin')`.
+        // The handler returns the DID_SYNC_RESPONSE data; this case still owns
+        // transport (`sendDidSyncResponse`) and the runtime ack.
 
         const runSync = () =>
-          MESSAGE_ROUTES.DID_SYNC.handle(syncReq, didSyncCtx as never).then((data) => {
+          MESSAGE_ROUTES.DID_SYNC.handle(syncReq, buildBundle('keyAdmin')).then((data) => {
             const r = data as DidSyncResponseData
             sendDidSyncResponse(senderTabId, r.requestId, r.publicKeyJwk, r.holderDid, r.error)
             sendResponse({ ok: true })

@@ -39,8 +39,6 @@ function makeAdapters(overrides: {
   const gateSpy = vi.fn<PresenceGate>(overrides.assertPresence ?? accept)
   const adapters: BundleAdapters = {
     untrusted: {
-      notify: { show: vi.fn(async () => {}) },
-      http: { fetch: vi.fn(async () => ({})) },
       notifications: { create: vi.fn(async () => {}) },
       runtime: { sendMessage: vi.fn(async () => {}), getURL: vi.fn(() => 'x') },
     },
@@ -50,8 +48,9 @@ function makeAdapters(overrides: {
       clock: { now: vi.fn(() => 0) },
     },
     keyAdmin: {
-      vault: { read: vi.fn(async () => ({ kind: 'v' })), write: vi.fn(async () => {}) },
-      crypto: { sign: vi.fn(async () => sig(9)), deriveForOrigin: vi.fn(async () => ({ kind: 'd' })) },
+      // SOC-280 — `vault` and `crypto` are gone from KeyAdminCtx: nothing used
+      // them, and an unused signing surface on the key tier is a capability
+      // waiting to be picked up by mistake.
       store: { read: vi.fn(async () => null), write: vi.fn(async () => {}), syncPublic: vi.fn(async () => {}) },
       keygen: { generateP256: vi.fn(async () => ({ privateKeyJwk: {}, publicKeyJwk: {} })) },
       clock: { now: vi.fn(() => 0) },
@@ -75,7 +74,7 @@ describe('createBuildBundle — tag → bundle', () => {
   it('returns the right bundle shape per tag', () => {
     const { adapters } = makeAdapters()
     const build = createBuildBundle(adapters)
-    expect(build('untrusted').notify).toBeDefined()
+    expect(build('untrusted').notifications).toBeDefined()
     expect(build('consent').pending).toBeDefined()
     expect(build('keyAdmin').keygen).toBeDefined()
     const s = build('signing')

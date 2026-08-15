@@ -48,12 +48,13 @@ function stubRoute<K extends MessageType>(bundle: CtxBundleTag): Route<K> {
 // the DIDComm envelope parsed here carries no signature, so there is nothing to
 // verify against. `envelope` would have implied otherwise.
 //
-// `allowFrom` stays empty: the case delegates to `handle` directly (parity — no
-// legacy sender-auth), so the empty descriptor is not consulted until the case
-// routes through dispatch.
+// SOC-280 — `allowFrom` now states the policy this route always had. DIDComm is
+// an unauthenticated inbound channel: the legacy case did no sender-auth at all,
+// so `{ policy: 'any' }` is parity, not a loosening. `any` still refuses a null
+// origin — it means "any resolvable origin", never "skip stage 3".
 const didcommInboundRoute: Route<'DIDCOMM_INBOUND', 'untrusted'> = {
   bundle: 'untrusted',
-  allowFrom: { origins: [], senders: [] },
+  allowFrom: { origins: { policy: 'any' }, senders: ['web', 'extension'] },
   validate: (raw) => raw as never,
   handle: handleDidcommInbound,
   verifyPeer: { check: 'senderResolvable' },
@@ -67,12 +68,15 @@ const didcommInboundRoute: Route<'DIDCOMM_INBOUND', 'untrusted'> = {
 // URI for a DID whose document does not contain it. Proof-of-CONTROL (that the
 // sender holds the corresponding private key) still requires a signature over a
 // challenge and remains open as FR26 — the accepted risk, now narrowed.
-// `allowFrom` stays empty: origin authorization is dynamic (`isOriginTrusted`,
-// which a static descriptor cannot express), so the case keeps its inline gate and
-// delegates only the vault work here (parity — one axis of change).
+// SOC-280 — the dynamic authorization this route needs is now expressible.
+// `platform-or-trusted` names the exact predicate the case applied inline
+// (`isPlatformOrigin(o) || isOriginTrusted(o)`); the router evaluates it through
+// its own `originPolicy` port, so the check moved BEHIND the chokepoint instead
+// of living in two places. `senders: ['web']` because the platform reaches us
+// through the content-script bridge — an extension page has no business here.
 const didSyncRoute: Route<'DID_SYNC', 'keyAdmin'> = {
   bundle: 'keyAdmin',
-  allowFrom: { origins: [], senders: [] },
+  allowFrom: { origins: { policy: 'platform-or-trusted' }, senders: ['web'] },
   validate: (raw) => raw as never,
   handle: handleDidSync,
   verifyPeer: { check: 'vmBinding' },
