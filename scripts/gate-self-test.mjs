@@ -152,6 +152,13 @@ const SECURITY_MUTATIONS = [
     command: 'npm run type-check',
   },
   {
+    name: 'the popup signer verifies the user first (SOC-279)',
+    file: 'src/stores/wallet.ts',
+    find: '      await requireUserVerification()\n',
+    replace: '',
+    spec: 'src/stores/wallet.gated-signer.spec.ts',
+  },
+  {
     name: 'a live pending row cannot be replaced (SOC-278)',
     file: 'src/background/consent/pending-store.ts',
     find: 'if (existing && !existing.consumed) return false',

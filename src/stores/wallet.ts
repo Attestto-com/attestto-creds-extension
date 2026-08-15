@@ -3,7 +3,8 @@ import { ref } from 'vue'
 import { encryptVault } from '@/utils/crypto'
 import { readVault, writeVault, readPublicVault, syncPublicVault } from '@/utils/vault'
 import { publicJwkToDid, didJwkVerificationMethod } from '@/utils/did-jwk'
-import { setupPasskey, unlockWithPasskey, hasPasskey } from '@/utils/webauthn'
+import { setupPasskey, unlockWithPasskey, hasPasskey, requireUserVerification } from '@/utils/webauthn'
+import { es256KeySigner, type JwsSigner } from '@/services/jws'
 import { STORAGE_KEYS } from '@/config/app'
 import { isValidSolanaAddress } from '@/utils/solana-address'
 import { extractDidLabel } from '@/utils/did-label'
@@ -475,10 +476,35 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
-   * Get the private key JWK for signing operations.
+   * SOC-279 — the popup's signing surface. The key does not leave this module.
+   *
+   * This replaces `getPrivateKey()`, which returned the raw private JWK to any
+   * caller in the popup context. Two call sites took it and built their own
+   * signer; a third signed inline. AD-11c asks for exactly one signing
+   * primitive per context, and "hand out the key and trust every caller" is the
+   * arrangement it exists to replace — the same shape the background fixed by
+   * keeping the key inside a `rawSign` closure.
+   *
+   * The returned signer performs a WebAuthn user verification before EVERY
+   * signature, which is the per-signature liveness AD-11c/FR19 specify. Note
+   * this is a real UX change: presenting a credential now prompts for the
+   * passkey. That is deliberate — an unlocked vault caches its session key, so
+   * without a per-signature check a presentation can be produced with no human
+   * present. If the prompt proves too heavy, swap the gate rather than the
+   * shape: the key must stay in here either way.
+   *
+   * Unlike the service worker, the popup is a document, so
+   * `requireUserVerification` genuinely works here. The background's gate is
+   * still deferred for exactly that reason — see `DEFERRED_PRESENCE_PASSTHROUGH`
+   * and SOC-279.
    */
-  function getPrivateKey(): JsonWebKey | null {
-    return _privateKeyJwk
+  function createGatedSigner(): JwsSigner {
+    return async (signingInput: Uint8Array): Promise<Uint8Array> => {
+      if (!_privateKeyJwk) throw new Error('Vault is locked')
+      // Fail-closed and BEFORE signing: a rejection here must mean no signature.
+      await requireUserVerification()
+      return es256KeySigner(_privateKeyJwk)(signingInput)
+    }
   }
 
   /**
@@ -544,23 +570,16 @@ export const useWalletStore = defineStore('wallet', () => {
     const timestamp = String(Date.now())
     const payload = `vault-fetch:${identityDid}:${timestamp}`
 
-    // Sign the challenge with vault P-256 key
-    const key = await crypto.subtle.importKey(
-      'jwk',
-      _privateKeyJwk,
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false,
-      ['sign']
-    )
-
-    const data = new TextEncoder().encode(payload)
-    const sigBuffer = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      key,
-      data
-    )
-
-    const signature = btoa(String.fromCharCode(...new Uint8Array(sigBuffer)))
+    // SOC-279 — was a fourth hand-rolled copy of importKey + subtle.sign over
+    // the raw key. Routed through the one ES256 signer instead.
+    //
+    // Deliberately NOT gated, and this is the honest remaining gap: this runs
+    // while loading an identity's detail view, so a per-signature passkey
+    // prompt here would fire on navigation rather than on a user's decision to
+    // sign something. Gating it needs the call to become explicit in the UI
+    // first. Tracked on SOC-279.
+    const sigBytes = await es256KeySigner(_privateKeyJwk)(new TextEncoder().encode(payload))
+    const signature = btoa(String.fromCharCode(...sigBytes))
 
     const publicKeyJwk = getPublicKeyJwk()
     if (!publicKeyJwk) throw new Error('No public key available')
@@ -626,7 +645,7 @@ export const useWalletStore = defineStore('wallet', () => {
     restoreFromBackup,
     archiveSiteDid,
     createDid,
-    getPrivateKey,
+    createGatedSigner,
     getPublicKeyJwk,
     linkSolanaAddress,
     unlinkSolanaAddress,

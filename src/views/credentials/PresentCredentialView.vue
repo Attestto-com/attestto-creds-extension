@@ -11,7 +11,6 @@ import { useCredentialsStore } from '@/stores/credentials'
 import { useWalletStore } from '@/stores/wallet'
 import { parseSdJwt, decodeDisclosures, createSdJwtPresentation } from '@/services/sdjwt'
 import { createJsonLdVp } from '@/services/jsonld-vp'
-import { es256KeySigner } from '@/services/jws'
 import { disclosureTierFor } from '@/policies/identity-disclosure'
 import type { DisclosureTier } from '@/policies/identity-disclosure'
 import type { StoredCredential } from '@/types/credential'
@@ -108,14 +107,14 @@ async function generate(): Promise<void> {
   error.value = ''
 
   try {
-    const privateKey = walletStore.getPrivateKey()
-    if (!privateKey) {
+    if (!walletStore.isUnlocked) {
       error.value = 'Wallet key not available'
       return
     }
 
-    // Popup-side signing (post-unlock): a local key signer.
-    const sign = es256KeySigner(privateKey)
+    // SOC-279 — the store's gated signer. The private key never leaves the
+    // wallet store, and a WebAuthn user verification runs before the signature.
+    const sign = walletStore.createGatedSigner()
 
     if (credential.value.format === 'sd-jwt') {
       generatedVp.value = await createSdJwtPresentation(
