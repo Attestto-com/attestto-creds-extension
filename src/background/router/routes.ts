@@ -95,8 +95,6 @@ export const MESSAGE_ROUTES: { [K in MessageType]: Route<K> } = {
   PUSH_PRESENTATION: stubRoute('signing'),
   DIDCOMM_INBOUND: didcommInboundRoute,
   CREDENTIAL_API_REQUEST: stubRoute('signing'),
-  LIST_STORED_CREDENTIALS: stubRoute('signing'),
-  RESHARE_STORED_VP: stubRoute('signing'),
   DID_SYNC: didSyncRoute,
   KEY_ROTATE: stubRoute('keyAdmin'),
   CREDENTIAL_ACCEPTED: stubRoute('untrusted'),

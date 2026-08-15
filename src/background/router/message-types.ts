@@ -55,8 +55,6 @@ export const MESSAGE_TYPES = [
   'PUSH_PRESENTATION',
   'DIDCOMM_INBOUND',
   'CREDENTIAL_API_REQUEST',
-  'LIST_STORED_CREDENTIALS',
-  'RESHARE_STORED_VP',
   'DID_SYNC',
   'KEY_ROTATE',
   'CREDENTIAL_ACCEPTED',
@@ -149,8 +147,6 @@ export interface MessagePayloads {
   PUSH_PRESENTATION: PushPresentationMessage['payload']
   DIDCOMM_INBOUND: DIDCommInboundMessage['payload']
   CREDENTIAL_API_REQUEST: CredentialApiRequestMessage['payload']
-  LIST_STORED_CREDENTIALS: RequestIdPayload
-  RESHARE_STORED_VP: ReshareStoredVpPayload
   DID_SYNC: DidSyncMessage['payload']
   KEY_ROTATE: KeyRotateMessage['payload']
   CREDENTIAL_ACCEPTED: CredentialAcceptedMessage['payload']

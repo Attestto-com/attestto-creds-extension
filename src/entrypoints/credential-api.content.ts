@@ -83,24 +83,6 @@ export default defineContentScript({
         return
       }
 
-      // List stored credentials (dashboard → extension)
-      if (msgType === 'ATTESTTO_LIST_CREDENTIALS') {
-        const { requestId } = event.data
-        chrome.runtime.sendMessage(
-          { type: 'LIST_STORED_CREDENTIALS', payload: { requestId, origin: window.location.origin } },
-          () => {
-            if (chrome.runtime.lastError) {
-              window.postMessage({
-                type: 'ATTESTTO_LIST_CREDENTIALS_RESPONSE',
-                requestId,
-                error: 'Extension not available',
-                credentials: [],
-              }, window.location.origin)
-            }
-          },
-        )
-        return
-      }
 
       // DID Sync — platform pushes holderDid + verificationMethod to extension
       if (msgType === 'ATTESTTO_DID_SYNC') {
@@ -325,26 +307,6 @@ export default defineContentScript({
         return
       }
 
-      // Reshare a stored VP (dashboard → extension)
-      if (msgType === 'ATTESTTO_RESHARE_VP') {
-        const { requestId, credentialId, selectedFields } = event.data
-        chrome.runtime.sendMessage(
-          {
-            type: 'RESHARE_STORED_VP',
-            payload: { requestId, credentialId, selectedFields, origin: window.location.origin },
-          },
-          () => {
-            if (chrome.runtime.lastError) {
-              window.postMessage({
-                type: 'ATTESTTO_RESHARE_VP_RESPONSE',
-                requestId,
-                error: 'Extension not available',
-              }, window.location.origin)
-            }
-          },
-        )
-        return
-      }
     })
 
     // Bridge: extension → page (responses)
@@ -447,6 +409,21 @@ export default defineContentScript({
           error: message.payload.error,
         }, window.location.origin)
       }
+
+      // SOC-277 — `ATTESTTO_LIST_CREDENTIALS` and `ATTESTTO_RESHARE_VP` were
+      // forwarded from here and are GONE.
+      //
+      // They let a page ask the extension "what do you hold?" and then "give me
+      // these fields", and the background answered without consulting the user.
+      // That inverts the product's founding rule: a page presents itself and
+      // asks; the USER decides what, if anything, is presented back. A page
+      // never reads the vault — it cannot even ask for the list.
+      //
+      // Gating them on a trusted origin was not enough either: a site approved
+      // for LOGIN has not been approved to enumerate credentials, and
+      // trust-on-first-use exists for identity sync, not disclosure. Nothing
+      // consumed the responses in this codebase, so they went the way of
+      // KEY_BACKUP (SOC-144) — removed, not fenced.
     })
   },
 })

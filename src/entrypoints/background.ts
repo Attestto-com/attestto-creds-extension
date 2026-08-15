@@ -49,18 +49,14 @@ import {
   sendPaymentResponseToTab,
   sendChapiErrorToTab,
   sendChapiPresentation,
-  sendStoredCredentials,
-  sendResharePresentation,
   sendDidSyncResponse,
   sendKeyRotateResponse,
-  sendReshareError,
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
 import { createPendingConsent } from '@/background/consent/pending-consent'
 import { createPendingFlow, approveRejection } from '@/background/consent/pending-flow'
 import { createPendingStore, chromePendingStorage } from '@/background/consent/pending-store'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
-import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
 import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
 import { recordProofAccessRequest, recordPreparedPresentation, linkWalletAddress } from '@/background/handlers/vault-records.handler'
 import { approvalParams } from '@/utils/approval-params'
@@ -709,37 +705,6 @@ export default defineBackground(() => {
       })
     }
 
-    /**
-     * SOC-277 — may this sender READ the vault?
-     *
-     * `LIST_STORED_CREDENTIALS` and `RESHARE_STORED_VP` project stored
-     * credentials out to a caller: the first returns metadata and claim key
-     * NAMES, the second returns claim VALUES. Both were reachable from the
-     * `https://*\/*` content-script bridge with no check at all, so any page the
-     * holder had open could enumerate the wallet and then read the cédula out of
-     * it while the vault was unlocked — with no notification and, because
-     * neither message counts as a user gesture, no visible activity.
-     *
-     * The gate is the one already used by `DID_SYNC` and `CREDENTIAL_OFFER`:
-     * resolve the origin from the unspoofable `sender`, never from
-     * `payload.origin`. Extension pages pass (the popup reads its own vault),
-     * the platform passes, a user-approved origin passes, everything else is
-     * refused.
-     *
-     * NOT the whole story, deliberately: releasing claim VALUES should also
-     * require a per-request approval naming the origin and the fields, the way
-     * signing does. Trust-on-first-use was designed for identity sync, not for
-     * disclosure. That remains open on SOC-277; this closes the arbitrary-origin
-     * hole, which is the exploitable half.
-     */
-    const isVaultReadAuthorized = async (
-      s: chrome.runtime.MessageSender,
-    ): Promise<boolean> => {
-      if (isExtensionSender(s)) return true
-      const senderOrigin = getSenderOrigin(s)
-      if (isPlatformOrigin(senderOrigin)) return true
-      return isOriginTrusted(senderOrigin)
-    }
 
     // Story 1.14 — only a user gesture may move the idle deadline. The predicate
     // (extension sender AND an allowlisted type) lives in `lock/user-gestures`;
@@ -929,58 +894,7 @@ export default defineBackground(() => {
         break
       }
 
-      // SOC-277 — origin-gated (see `isVaultReadAuthorized`). An unauthorized
-      // caller is answered with an EMPTY list rather than an error: the handler
-      // already treats "I hold nothing you can see" as the honest answer to a
-      // caller with no standing, and it does not leak whether the wallet is
-      // locked, empty, or refusing.
-      case 'LIST_STORED_CREDENTIALS': {
-        const listReqId = message.payload?.requestId as string
-        const listSenderTabId = sender.tab?.id ?? null
-        answerOrFail(isVaultReadAuthorized(sender).then(async (allowed) => {
-          if (!allowed) {
-            console.warn('[Attestto ID] Rejected LIST_STORED_CREDENTIALS from unauthorized origin', getSenderOrigin(sender))
-            sendStoredCredentials(listSenderTabId, listReqId, [])
-            sendResponse({ ok: false, error: 'origin_not_authorized' })
-            return
-          }
-          const vault = await readVault()
-          sendStoredCredentials(listSenderTabId, listReqId, summarizeStoredCredentials(vault))
-          sendResponse({ ok: true })
-        }), 'LIST_STORED_CREDENTIALS')
-        break
-      }
 
-      case 'RESHARE_STORED_VP': {
-        const resharePayload = message.payload as {
-          requestId: string
-          credentialId: string
-          selectedFields: string[]
-        }
-        const reshareSenderTabId = sender.tab?.id ?? null
-
-        // SOC-277 — this path returns claim VALUES. Refuse before touching the
-        // vault, and say so explicitly rather than returning an empty
-        // presentation, so a legitimate integrator sees why.
-        answerOrFail(isVaultReadAuthorized(sender).then(async (allowed) => {
-          if (!allowed) {
-            console.warn('[Attestto ID] Rejected RESHARE_STORED_VP from unauthorized origin', getSenderOrigin(sender))
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, 'origin_not_authorized')
-            sendResponse({ ok: false, error: 'origin_not_authorized' })
-            return
-          }
-          const vault = await readVault()
-          const result = buildResharePresentation(vault, resharePayload)
-          if (!result.ok) {
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, result.error)
-            sendResponse({ ok: false })
-            return
-          }
-          sendResharePresentation(reshareSenderTabId, resharePayload.requestId, result.presentation)
-          sendResponse({ ok: true })
-        }), 'RESHARE_STORED_VP')
-        break
-      }
 
       // DID_SYNC writes holderDid / verificationMethod into the vault — a
       // legitimate platform→extension flow, but only from an authorized origin.

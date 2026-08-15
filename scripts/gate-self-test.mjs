@@ -140,11 +140,17 @@ const SECURITY_MUTATIONS = [
     spec: 'src/__tests__/entrypoints/background.sender-authz.spec.ts',
   },
   {
-    name: 'vault reads are origin-gated (SOC-277)',
-    file: 'src/entrypoints/background.ts',
-    find: 'return isOriginTrusted(senderOrigin)',
-    replace: 'return Promise.resolve(true)',
-    spec: 'src/__tests__/entrypoints/background.vault-read-authz.spec.ts',
+    name: 'a page cannot read the vault (SOC-277)',
+    file: 'src/entrypoints/credential-api.content.ts',
+    // The invariant is now an ABSENCE — the read messages were removed, not
+    // gated — so the mutation puts the forward back rather than opening a gate.
+    // Anchored on the comment that records the removal, which is the thing a
+    // careless re-add would sit next to.
+    find: '      // SOC-277 — `ATTESTTO_LIST_CREDENTIALS` and `ATTESTTO_RESHARE_VP` were',
+    replace:
+      "      if (msgType === 'ATTESTTO_LIST_CREDENTIALS') { return }\n" +
+      '      // SOC-277 — `ATTESTTO_LIST_CREDENTIALS` and `ATTESTTO_RESHARE_VP` were',
+    spec: 'src/__tests__/entrypoints/page-cannot-read-vault.spec.ts',
   },
   {
     name: 'the signing presence gate is REQUIRED (SOC-279)',
