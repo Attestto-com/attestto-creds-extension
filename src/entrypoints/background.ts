@@ -19,6 +19,7 @@ import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestt
 import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
 import { createBuildBundle } from '@/background/ctx/build-bundle'
 import { createSigningAdapters } from '@/background/adapters/signing-adapters'
+import { DEFERRED_PRESENCE_PASSTHROUGH } from '@/background/crypto/gated-sign'
 import { createKeyAdminAdapters, createUntrustedAdapters } from '@/background/adapters/chrome-adapters'
 import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
@@ -375,6 +376,10 @@ export default defineBackground(() => {
     }) as T
   const buildBundle = createBuildBundle({
     signing: createSigningAdapters({
+      // SOC-279 — a no-op, stated rather than defaulted. The real WebAuthn gate
+      // cannot run here (no `navigator.credentials` in a service worker); see
+      // the constant's own comment and the deferred UV-proof design note.
+      assertPresence: DEFERRED_PRESENCE_PASSTHROUGH,
       readVault,
       writeVault,
       syncPublicVault,

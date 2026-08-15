@@ -142,6 +142,16 @@ const SECURITY_MUTATIONS = [
     spec: 'src/__tests__/entrypoints/background.vault-read-authz.spec.ts',
   },
   {
+    name: 'the signing presence gate is REQUIRED (SOC-279)',
+    file: 'src/background/adapters/signing-adapters.ts',
+    find: 'assertPresence: PresenceGate',
+    replace: 'assertPresence?: PresenceGate',
+    // Compile channel, not a spec: making the gate optional restores the
+    // anonymous no-op default the composition root used to take silently, and
+    // `signing-adapters.type-guards.test-d.ts` is what refuses it.
+    command: 'npm run type-check',
+  },
+  {
     name: 'a live pending row cannot be replaced (SOC-278)',
     file: 'src/background/consent/pending-store.ts',
     find: 'if (existing && !existing.consumed) return false',
@@ -155,7 +165,7 @@ let failures = 0
 for (const mutation of SECURITY_MUTATIONS) {
   const path = resolve(ROOT, mutation.file)
   const original = readFileSync(path, 'utf8')
-  const command = `npx vitest run ${mutation.spec}`
+  const command = mutation.command ?? `npx vitest run ${mutation.spec}`
 
   // Guard the guard. If a refactor renames the anchor, the seed silently does
   // nothing, the spec passes on an UNMUTATED tree, and this gate reports a
@@ -183,7 +193,7 @@ for (const mutation of SECURITY_MUTATIONS) {
 
   if (seededExit === 0) {
     console.error(
-      `✗ ${mutation.name} — the guard was INVERTED and ${mutation.spec} still passed.\n` +
+      `✗ ${mutation.name} — the guard was INVERTED and \`${command}\` still passed.\n` +
         `  Nothing holds this control in place; a refactor that drops it ships green.`,
     )
     failures++
@@ -193,7 +203,7 @@ for (const mutation of SECURITY_MUTATIONS) {
   const cleanExit = runGate(command)
   if (cleanExit !== 0) {
     console.error(
-      `✗ ${mutation.name} — ${mutation.spec} fails on a CLEAN tree (exit ${cleanExit}), ` +
+      `✗ ${mutation.name} — \`${command}\` fails on a CLEAN tree (exit ${cleanExit}), ` +
         `so its red says nothing about the guard.`,
     )
     failures++
