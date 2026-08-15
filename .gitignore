@@ -12,3 +12,35 @@ coverage/
 *.crx
 .DS_Store
 .turbo/
+
+# --- secret hygiene (SOC-271) ---
+.env
+.env.*
+!.env.example
+!.env*.example
+.dev.vars
+.dev.vars.*
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.p8
+*keypair*.json
+id.json
+!**/.well-known/*.json
+.npmrc
+!.npmrc.example
+
+# --- solana-keygen grind output (SOC-271 addendum) ---
+# `solana-keygen grind` writes hits as <pubkey>.json holding the secret key.
+# Matches any basename of 47+ chars ending .json (a Solana pubkey is 32-44).
+# If this ever shadows a legitimate long filename, negate it explicitly below.
+??????????????????????????????????????????*.json
+
+# --- BMAD per-developer config ---
+# Installer-managed and scoped to one person (`user_name`, language, skill
+# level). BMAD's own convention treats these as personal; committing them means
+# every teammate's install rewrites them and conflicts on the way through.
+_bmad/config.user.toml
+_bmad/custom/config.user.toml
