@@ -776,28 +776,21 @@ export default defineBackground(() => {
         // The origin comes from the unspoofable `sender`, NEVER from the payload.
         const senderOrigin = sender?.origin ?? sender?.url ?? null
 
-        // The silent-acceptance gate lives in `handlers/credential-offer.handler.ts`
-        // (Story 1.13 Phase 9): an offer skips consent only when it is the
-        // identity-sync format AND the origin was approved before.
+        // Every offer asks the user. The silent-acceptance branch that used to
+        // live in `handlers/credential-offer.handler.ts` is gone — approving an
+        // origin once is not standing consent for what it sends afterwards.
         answerOrFail(handleCredentialOffer(offer, senderOrigin, {
-          isOriginTrusted,
           // The offer's `notifId` is minted here, not supplied by the page, so a
-          // duplicate is a clock collision rather than an attack — nothing to
-          // reject, and the `Promise<void>` the port wants is the right shape.
+          // duplicate is a clock collision rather than an attack.
           stage: async (notifId, staged, origin) => {
             await pendingOffers.put(notifId, { offer: staged, origin })
           },
-          accept: acceptCredentialOffer,
           requestConsent: openCredentialOfferApprovalWindow,
           newNotifId: () => `credential-offer-${Date.now()}`,
-        }).then((outcome) => {
-          sendResponse(
-            outcome.kind === 'autoAccepted'
-              ? { ok: true, autoAccepted: true }
-              : { ok: true, pendingConsent: true },
-          )
+        }).then(() => {
+          sendResponse({ ok: true, pendingConsent: true })
         }), 'CREDENTIAL_OFFER')
-        return true // async: the trust check and the window open are both awaited
+        return true // async: staging and the window open are both awaited
       }
 
       case 'WALLET_LINK': {

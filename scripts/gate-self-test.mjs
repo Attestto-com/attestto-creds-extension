@@ -170,6 +170,15 @@ const SECURITY_MUTATIONS = [
     spec: 'src/stores/wallet.gated-signer.spec.ts',
   },
   {
+    name: 'a credential offer always asks the user (no auto-accept)',
+    file: 'src/background/handlers/credential-offer.handler.ts',
+    // Skip the consent call and return the same outcome — the shape a
+    // reintroduced silent path would take.
+    find: '  await ctx.requestConsent(notifId, offer, origin)\n',
+    replace: '',
+    spec: 'src/background/handlers/credential-offer.handler.spec.ts',
+  },
+  {
     name: 'a live pending row cannot be replaced (SOC-278)',
     file: 'src/background/consent/pending-store.ts',
     find: 'if (existing && !existing.consumed) return false',

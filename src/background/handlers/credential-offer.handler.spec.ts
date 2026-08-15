@@ -1,140 +1,104 @@
 /**
- * Story 1.13 Phase 9 — the credential-offer intake gate.
+ * Every credential offer asks the user. There is no path that does not.
  *
- * "Silent" is the failure mode: an offer accepted without consent leaves no
- * trace a user would notice. So the assertions are on an ordered EFFECT LOG,
- * and the decisive ones are exhaustive rather than illustrative — every
- * combination of {format, origin trust} is enumerated, because the hole this
- * gate closes was one specific cell of that table being wrong.
+ * ── What this file used to assert ─────────────────────────────────────────
+ *
+ * That an `attestto-id` offer from a previously-approved origin was accepted
+ * SILENTLY, and that everything else went to the approval window. Those tests
+ * passed, and they were pinning a hole: approving an origin once was being
+ * treated as standing consent for whatever it sent afterwards.
+ *
+ * Eduardo, 2026-08-14: there must never be an auto-accept, literally. A page is
+ * untrusted by default and may only present itself; a trusted origin may ASK,
+ * and the ask goes to the user, who accepts every time. No setting passes data
+ * automatically in either direction.
+ *
+ * So the assertions are inverted. This file now proves the capability is ABSENT,
+ * which is the only thing worth proving about it.
+ *
+ * ── Why the strongest assertion is a type, not a call count ───────────────
+ *
+ * `CredentialOfferCtx` no longer has `isOriginTrusted` or `accept`. The handler
+ * cannot consult trust or accept an offer, because it cannot NAME either — a
+ * silent path is not merely untaken, it is unexpressible without editing the
+ * port. That is the same reasoning AD-3 applies to capability bundles, and it is
+ * why the runtime cases below are a backstop rather than the main event.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { handleCredentialOffer, type CredentialOfferCtx } from './credential-offer.handler'
 import type { CredentialOfferMessage } from '@/utils/messaging'
 
 type Offer = CredentialOfferMessage['payload']
 
-const NOTIF = 'credential-offer-fixed'
+const offerOf = (format: string): Offer => ({ format, issuerName: 'Issuer' }) as unknown as Offer
 
-const offerOf = (format: string): Offer =>
-  ({ format, issuerName: 'Issuer', raw: '{}' })
-
-function harness(opts: { trusted?: boolean; acceptResult?: string | null } = {}) {
-  const log: string[] = []
-  const ctx: CredentialOfferCtx = {
-    isOriginTrusted: async (origin) => {
-      log.push(`checked-trust:${origin}`)
-      return opts.trusted ?? false
-    },
-    // Async since Story 1.15 (the row goes to storage), and deliberately resolved
-    // on a later tick: if the handler forgot to await it, the staged entry would
-    // land after `accepted`/`consent` and the ordering tests below would redden.
-    stage: async (notifId, offer, origin) => {
-      await Promise.resolve()
-      log.push(`staged:${notifId}:${offer.format}:${origin}`)
-    },
-    accept: async (notifId) => {
-      log.push(`accepted:${notifId}`)
-      return opts.acceptResult === undefined ? 'cred-1' : opts.acceptResult
-    },
-    requestConsent: async (notifId) => {
-      log.push(`asked-user:${notifId}`)
-    },
-    newNotifId: () => NOTIF,
+function ctx(): {
+  ctx: CredentialOfferCtx
+  stage: ReturnType<typeof vi.fn>
+  requestConsent: ReturnType<typeof vi.fn>
+  order: string[]
+} {
+  const order: string[] = []
+  const stage = vi.fn(async () => {
+    order.push('stage')
+  })
+  const requestConsent = vi.fn(async () => {
+    order.push('consent')
+  })
+  return {
+    ctx: { stage, requestConsent, newNotifId: () => 'offer-1' },
+    stage,
+    requestConsent,
+    order,
   }
-  return { ctx, log }
 }
 
-/** Every combination of format and origin trust. Exactly one cell may be silent. */
-const MATRIX: { format: string; trusted: boolean; silent: boolean }[] = [
-  { format: 'attestto-id', trusted: true, silent: true },
-  { format: 'attestto-id', trusted: false, silent: false },
-  { format: 'sd-jwt', trusted: true, silent: false },
-  { format: 'sd-jwt', trusted: false, silent: false },
-  { format: 'json-ld', trusted: true, silent: false },
-  { format: 'json-ld', trusted: false, silent: false },
-  { format: 'unknown-future-format', trusted: true, silent: false },
-  { format: 'unknown-future-format', trusted: false, silent: false },
-]
+describe('a credential offer always asks the user', () => {
+  // The formats are enumerated so a NEW one cannot quietly arrive with a
+  // different rule. `attestto-id` is first because it is the one that used to
+  // be exempt.
+  it.each(['attestto-id', 'sd-jwt', 'json-ld', 'some-future-format'])(
+    'format %s goes to the approval window',
+    async (format) => {
+      const { ctx: c, requestConsent } = ctx()
+      const outcome = await handleCredentialOffer(offerOf(format), 'https://trusted.example', c)
 
-describe('the silent-acceptance matrix', () => {
-  it.each(MATRIX)(
-    'format=$format trusted=$trusted → silent=$silent',
-    async ({ format, trusted, silent }) => {
-      const { ctx, log } = harness({ trusted })
-      const outcome = await handleCredentialOffer(offerOf(format), 'https://site.cr', ctx)
-
-      expect(outcome.kind).toBe(silent ? 'autoAccepted' : 'pendingConsent')
-      expect(log).toContain(silent ? `accepted:${NOTIF}` : `asked-user:${NOTIF}`)
-      expect(log).not.toContain(silent ? `asked-user:${NOTIF}` : `accepted:${NOTIF}`)
+      expect(outcome).toEqual({ kind: 'pendingConsent', notifId: 'offer-1' })
+      expect(requestConsent).toHaveBeenCalledTimes(1)
     },
   )
 
-  it('exactly ONE of the eight combinations accepts without asking', () => {
-    expect(MATRIX.filter((m) => m.silent)).toEqual([
-      { format: 'attestto-id', trusted: true, silent: true },
-    ])
-  })
-})
+  it('a previously-approved origin gets no special treatment', async () => {
+    // The exact case that used to skip consent: identity format, trusted origin.
+    // Trust gates the DID_SYNC channel; it is not consent for a payload.
+    const { ctx: c, requestConsent } = ctx()
+    const outcome = await handleCredentialOffer(offerOf('attestto-id'), 'https://trusted.example', c)
 
-describe('trust is only consulted where it can matter', () => {
-  it('a non-identity offer is not even trust-checked — trust cannot make it silent', async () => {
-    const { ctx, log } = harness({ trusted: true })
-    await handleCredentialOffer(offerOf('sd-jwt'), 'https://trusted.cr', ctx)
-    expect(log.some((e) => e.startsWith('checked-trust'))).toBe(false)
-  })
-
-  it('an identity offer is checked against the origin it actually arrived from', async () => {
-    const { ctx, log } = harness({ trusted: false })
-    await handleCredentialOffer(offerOf('attestto-id'), 'https://app.attestto.com', ctx)
-    expect(log).toContain('checked-trust:https://app.attestto.com')
-  })
-
-  it('a null origin cannot be silently trusted', async () => {
-    // A null origin reaching `isOriginTrusted` normalizes to no key and returns
-    // false there; this pins that the gate still routes to consent.
-    const { ctx } = harness({ trusted: false })
-    const outcome = await handleCredentialOffer(offerOf('attestto-id'), null, ctx)
     expect(outcome.kind).toBe('pendingConsent')
-  })
-})
-
-describe('staging order', () => {
-  it('stages the pending row BEFORE accepting, or accept would find nothing', async () => {
-    const { ctx, log } = harness({ trusted: true })
-    await handleCredentialOffer(offerOf('attestto-id'), 'https://x.cr', ctx)
-    expect(log.indexOf(`staged:${NOTIF}:attestto-id:https://x.cr`)).toBeLessThan(
-      log.indexOf(`accepted:${NOTIF}`),
-    )
+    expect(requestConsent).toHaveBeenCalledTimes(1)
   })
 
-  it('stages the pending row BEFORE opening the approval window', async () => {
-    const { ctx, log } = harness({ trusted: false })
-    await handleCredentialOffer(offerOf('sd-jwt'), 'https://x.cr', ctx)
-    expect(log[0]).toBe(`staged:${NOTIF}:sd-jwt:https://x.cr`)
-    expect(log).toContain(`asked-user:${NOTIF}`)
+  it('a null origin is no shortcut either', async () => {
+    const { ctx: c, requestConsent } = ctx()
+    const outcome = await handleCredentialOffer(offerOf('attestto-id'), null, c)
+
+    expect(outcome.kind).toBe('pendingConsent')
+    expect(requestConsent).toHaveBeenCalledTimes(1)
   })
 
-  it('stages under the id both branches then use', async () => {
-    const { ctx, log } = harness({ trusted: true })
-    const outcome = await handleCredentialOffer(offerOf('attestto-id'), 'https://x.cr', ctx)
-    expect(outcome).toEqual({ kind: 'autoAccepted', credentialId: 'cred-1' })
-    expect(log.filter((e) => e.includes(NOTIF)).length).toBe(2)
-  })
-})
-
-describe('outcome reporting', () => {
-  it('reports a failed auto-accept as accepted-with-null rather than as consent-pending', async () => {
-    // The page must not be told consent is pending when no window was opened —
-    // it would wait for an approval that is never coming.
-    const { ctx, log } = harness({ trusted: true, acceptResult: null })
-    const outcome = await handleCredentialOffer(offerOf('attestto-id'), 'https://x.cr', ctx)
-    expect(outcome).toEqual({ kind: 'autoAccepted', credentialId: null })
-    expect(log).not.toContain(`asked-user:${NOTIF}`)
+  it('the outcome type has no accepted variant to return', () => {
+    // A compile-channel claim asserted at runtime for the record: the union is
+    // one member. Re-adding an `autoAccepted` variant reddens every call site
+    // that switches on `kind`, which is where a reviewer should be stopped.
+    const outcomes: Array<Awaited<ReturnType<typeof handleCredentialOffer>>['kind']> = [
+      'pendingConsent',
+    ]
+    expect(outcomes).toEqual(['pendingConsent'])
   })
 
-  it('returns the notifId with a pending-consent outcome so the caller can correlate', async () => {
-    const { ctx } = harness({ trusted: false })
-    const outcome = await handleCredentialOffer(offerOf('sd-jwt'), 'https://x.cr', ctx)
-    expect(outcome).toEqual({ kind: 'pendingConsent', notifId: NOTIF })
+  it('stages before opening the window — the window looks the offer up by id', async () => {
+    const { ctx: c, order } = ctx()
+    await handleCredentialOffer(offerOf('attestto-id'), 'https://x.example', c)
+    expect(order).toEqual(['stage', 'consent'])
   })
 })
