@@ -21,9 +21,9 @@
  * 3. **A failed reset stays silent.** If the reset throws, the page is NOT told
  *    to abandon the request — the vault still exists, and reporting otherwise
  *    would make a live wallet look destroyed.
- * 4. **The passphrase guards block the call, not just the message.** A guard
- *    that sets `error` and then proceeds anyway looks identical in the UI and
- *    enrols with an empty passphrase.
+ * 4. **A device that cannot do PRF is refused, not downgraded.** There is no
+ *    passphrase to fall back to, so `PRF_UNSUPPORTED` must reach the user as
+ *    "this device cannot secure a wallet" — never as a password field.
  * 5. **The retry path does not bypass the signing gate.** `setupPasskeyAndRetry`
  *    ends by calling `approve()`, so the ATT-1098 verification must still run.
  *    A retry that skipped it would be a bypass reachable by failing once on
@@ -34,7 +34,6 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 const requireUserVerification = vi.fn()
-const getKdfMethod = vi.fn()
 const resetWallet = vi.fn()
 const enrollPasskey = vi.fn()
 const createDid = vi.fn()
@@ -53,7 +52,6 @@ const walletState = {
 vi.mock('@/stores/wallet', () => ({ useWalletStore: () => walletState }))
 vi.mock('@/utils/webauthn', () => ({
   requireUserVerification: (...a: unknown[]) => requireUserVerification(...a),
-  getKdfMethod: (...a: unknown[]) => getKdfMethod(...a),
 }))
 vi.mock('@/utils/trusted-origins', () => ({
   isOriginTrusted: vi.fn(async () => false),
@@ -88,7 +86,6 @@ beforeEach(() => {
   walletState.isUnlocked = true
   walletState.did = null
   requireUserVerification.mockResolvedValue(undefined)
-  getKdfMethod.mockResolvedValue('prf')
   resetWallet.mockResolvedValue(undefined)
   enrollPasskey.mockResolvedValue(undefined)
   createDid.mockResolvedValue(undefined)
@@ -115,10 +112,8 @@ type Vm = {
   createDidAndRetry: () => Promise<void>
   approve: () => Promise<void>
   resetConfirm: boolean
-  showPassphraseField: boolean
-  showCreateDidPassphrase: boolean
-  passphrase: string
   error: string | null
+  showResetVault: boolean
   selectedDid: string
 }
 
@@ -190,53 +185,9 @@ describe('vault reset — the destructive path', () => {
   })
 })
 
-describe('passphrase guards block the call, not just the message', () => {
-  it('refuses to enrol a passkey with a too-short recovery passphrase', async () => {
-    const vm = await mountApproval()
-    // The field is only shown when the authenticator lacks PRF, which is
-    // exactly when the passphrase is the sole recovery route. Enrolling with an
-    // empty one re-mints a passkey, fails PRF again, and reads as "nothing
-    // happened".
-    vm.showPassphraseField = true
-    vm.passphrase = 'short'
-
-    await vm.setupPasskeyAndRetry()
-    await flushPromises()
-
-    expect(enrollPasskey, 'enrolled with a passphrase too weak to recover the vault').not.toHaveBeenCalled()
-    expect(vm.error).toMatch(/8 characters/)
-  })
-
-  it('refuses to create a DID with a too-short recovery passphrase', async () => {
-    const vm = await mountApproval()
-    vm.showCreateDidPassphrase = true
-    vm.passphrase = '1234567'
-
-    await vm.createDidAndRetry()
-    await flushPromises()
-
-    expect(createDid, 'minted a vault whose only recovery secret is 7 characters').not.toHaveBeenCalled()
-    expect(vm.error).toMatch(/8 characters/)
-  })
-
-  it('proceeds once the passphrase is long enough', async () => {
-    const vm = await mountApproval()
-    vm.showCreateDidPassphrase = true
-    vm.passphrase = 'correct horse battery staple'
-
-    await vm.createDidAndRetry()
-    await flushPromises()
-
-    // Control case. Without it, a guard that refused EVERYTHING would satisfy
-    // both tests above and the recovery path would be a dead end.
-    expect(createDid).toHaveBeenCalledWith('correct horse battery staple')
-  })
-})
-
 describe('the retry path does not bypass the signing gate', () => {
   it('still requires fresh user verification after enrolling a passkey', async () => {
     walletState.isUnlocked = true
-    getKdfMethod.mockResolvedValue('passphrase')
     const vm = await mountApproval()
 
     await vm.setupPasskeyAndRetry()
@@ -261,5 +212,70 @@ describe('the retry path does not bypass the signing gate', () => {
 
     expect(sent.filter((m) => APPROVE_TYPES.includes(m.type))).toEqual([])
     expect(closed).toBe(0)
+  })
+})
+
+/**
+ * What a device that cannot do PRF is told, at every place the approval window
+ * can meet one.
+ *
+ * These replace the deleted "passphrase guards" cases. Those guarded a field
+ * that no longer exists; the branches they covered are gone with it. What
+ * matters now is the opposite property — that the refusal is stated as a
+ * refusal, and never reopens a password as an escape hatch. Without these the
+ * new `PRF_UNSUPPORTED` handlers were the only untested branches in this file.
+ */
+describe('an authenticator that cannot secure a wallet', () => {
+  it('🔒 tells the user plainly when enrolling a passkey is impossible here', async () => {
+    enrollPasskey.mockRejectedValue(new Error('PRF_UNSUPPORTED: …'))
+    const vm = await mountApproval()
+
+    await vm.setupPasskeyAndRetry()
+    await flushPromises()
+
+    expect(vm.error).toMatch(/cannot secure a wallet/i)
+    expect(
+      vm.error,
+      'the refusal offered a password instead — the fallback this flow deleted',
+    ).not.toMatch(/passphrase|password/i)
+    expect(sent.filter((m) => APPROVE_TYPES.includes(m.type))).toEqual([])
+  })
+
+  it('🔒 tells the user plainly when creating a DID is impossible here', async () => {
+    createDid.mockRejectedValue(new Error('PRF_UNSUPPORTED: …'))
+    const vm = await mountApproval()
+
+    await vm.createDidAndRetry()
+    await flushPromises()
+
+    expect(vm.error).toMatch(/cannot secure a wallet/i)
+    expect(vm.error).not.toMatch(/passphrase|password/i)
+  })
+
+  it('offers reset, not a password, when the existing vault will not open', async () => {
+    // `PRF_UNAVAILABLE` means the vault exists and this authenticator cannot
+    // reproduce its key. The vault is disposable, so reset is the whole recovery
+    // story — there is nothing else to offer and nothing irreplaceable lost.
+    walletState.isUnlocked = false
+    walletState.unlock.mockRejectedValue(new Error('PRF_UNAVAILABLE: …'))
+    const vm = await mountApproval()
+
+    await vm.approve()
+    await flushPromises()
+
+    expect(vm.showResetVault).toBe(true)
+    expect(vm.error).toMatch(/reset/i)
+    expect(sent.filter((m) => APPROVE_TYPES.includes(m.type))).toEqual([])
+  })
+
+  it('a cancelled authenticator stays retryable rather than becoming an error state', async () => {
+    enrollPasskey.mockRejectedValue(new DOMException('nope', 'NotAllowedError'))
+    const vm = await mountApproval()
+
+    await vm.setupPasskeyAndRetry()
+    await flushPromises()
+
+    expect(vm.error).toMatch(/cancelled/i)
+    expect(vm.error).not.toMatch(/passphrase|password/i)
   })
 })

@@ -165,33 +165,14 @@ export interface KeyRotateMessage {
 }
 
 /**
- * Key Backup — extension splits its private key into 2-of-3 Shamir sub-shares
- * for social recovery. Returns the 3 shares (device, cloud, guardian) as base64url.
+ * Key Backup / Key Restore were removed (SOC-144).
  *
- * The private key is encrypted with AES-256-GCM using a derived key before splitting,
- * so each sub-share is a share of the encrypted key, not the raw private key.
+ * They split the raw private key 2-of-3. `services/vault-backup.ts` does the
+ * job properly — it encrypts the whole vault and splits the CONTENT key, so a
+ * share is worthless without the file and a restore brings back credentials and
+ * identities, not just a signer. Reachable from the Backup options view and the
+ * lock screen's restore panel; it never needed a message type.
  */
-export interface KeyBackupMessage {
-  type: 'KEY_BACKUP'
-  payload: {
-    requestId: string
-    origin: string
-  }
-}
-
-/**
- * Key Restore — extension receives 2 sub-shares and reconstructs the private key.
- * Used after device loss when recovering from cloud+guardian or device+guardian.
- */
-export interface KeyRestoreMessage {
-  type: 'KEY_RESTORE'
-  payload: {
-    requestId: string
-    shareA: { data: string; index: number } // base64url encoded
-    shareB: { data: string; index: number } // base64url encoded
-    origin: string
-  }
-}
 
 /**
  * Payment Request — page sends payment details to extension for approval + signing.
@@ -305,8 +286,6 @@ export type ExtensionMessage =
   | CredentialApiRequestMessage
   | DidSyncMessage
   | KeyRotateMessage
-  | KeyBackupMessage
-  | KeyRestoreMessage
   | PaymentRequestMessage
   | SignDocumentRequestMessage
   | SignAttesttoPdfRequestMessage

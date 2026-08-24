@@ -17,26 +17,19 @@ const loading = ref(true)
 const approving = ref(false)
 const error = ref<string | null>(null)
 
-// Create-DID state. createDid is passkey-first (it enrolls a device passkey),
-// so on a non-PRF authenticator it needs a recovery passphrase.
+// Create-DID state. createDid enrols a device passkey and mints the DID from
+// it — passkey or nothing, no passphrase anywhere in this path.
 const creatingDid = ref(false)
-const showCreateDidPassphrase = ref(false)
-const createPassphrase = ref('')
 
 async function createDid(): Promise<void> {
-  if (showCreateDidPassphrase.value && createPassphrase.value.trim().length < 8) {
-    error.value = 'Enter a recovery passphrase of at least 8 characters, then create your DID.'
-    return
-  }
   creatingDid.value = true
   error.value = null
   try {
-    await wallet.createDid(showCreateDidPassphrase.value ? createPassphrase.value : undefined)
+    await wallet.createDid()
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Could not create your DID'
-    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE') || msg.startsWith('PASSPHRASE_REQUIRED')) {
-      showCreateDidPassphrase.value = true
-      error.value = 'This device needs a recovery passphrase to protect your wallet. Enter one (8+ characters), then create your DID.'
+    if (msg.startsWith('PRF_UNSUPPORTED')) {
+      error.value = 'This device cannot secure a wallet — its passkey does not support the encryption this needs. Try another browser or device.'
     } else if (
       msg.startsWith('Passkey registration cancelled') ||
       (err instanceof DOMException && err.name === 'NotAllowedError')
@@ -138,20 +131,6 @@ async function deny() {
         </p>
       </div>
 
-      <!-- Recovery passphrase — only on non-PRF authenticators -->
-      <div v-if="showCreateDidPassphrase" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
-        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
-          Recovery passphrase
-        </label>
-        <input
-          v-model="createPassphrase"
-          type="password"
-          autocomplete="new-password"
-          placeholder="Min 8 characters"
-          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
-          @keyup.enter="createDid"
-        />
-      </div>
       <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
         <p class="text-xs text-red-300">{{ error }}</p>
       </div>

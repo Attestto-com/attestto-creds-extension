@@ -48,6 +48,21 @@ export interface ResolvedSender {
 }
 
 
+/**
+ * Evaluates the `platform-or-trusted` origin policy (SOC-280). Router-owned like
+ * `peerResolver` — never enters a ctx bundle, so no handler can reach it.
+ *
+ * Exists because this authorization is asynchronous: the user-approved set lives
+ * in `chrome.storage` and changes while the worker runs, so it cannot be a
+ * literal in the route. The composition root binds
+ * `isPlatformOrigin(o) || isOriginTrusted(o)` — the same predicate the legacy
+ * DID_SYNC case applied inline, moved behind the chokepoint rather than
+ * reimplemented.
+ */
+export interface OriginPolicyPort {
+  isAuthorized(origin: string): Promise<boolean>
+}
+
 export interface DispatchDeps {
   /**
    * Builds the capability-scoped ctx for a route's tag. REQUIRED — 1.5 cannot
@@ -70,6 +85,12 @@ export interface DispatchDeps {
    * DOES declare one and finds this absent fails closed rather than skipping.
    */
   peerResolver?: CounterpartyDidResolver
+  /**
+   * Backs the `platform-or-trusted` origin policy. Optional so routes with a
+   * literal origin list need none — but a route that DECLARES the policy and
+   * finds this absent fails closed rather than admitting the sender.
+   */
+  originPolicy?: OriginPolicyPort
 }
 
 /** Default stage-1: trust only Chrome-populated sender fields (never payload). */
@@ -93,11 +114,34 @@ function isKnownType(
  * outright — never allowed to coincide with an empty `origins` list (fail-open).
  * Origin is checked before sender kind; the two produce distinct codes.
  */
-function checkAllowFrom(
+async function checkAllowFrom(
   desc: AllowFromDescriptor,
   s: ResolvedSender,
-): 'ok' | 'forbidden-origin' | 'forbidden-sender' {
-  if (s.origin === null || !desc.origins.includes(s.origin)) return 'forbidden-origin'
+  originPolicy: OriginPolicyPort | undefined,
+): Promise<'ok' | 'forbidden-origin' | 'forbidden-sender'> {
+  // A null origin is refused under EVERY policy, including `any`. It must never
+  // coincide with a permissive rule and read as allowed.
+  if (s.origin === null) return 'forbidden-origin'
+
+  const rule = desc.origins
+  let originOk: boolean
+  if (Array.isArray(rule)) {
+    originOk = (rule as readonly string[]).includes(s.origin)
+  } else if ((rule as { policy: string }).policy === 'any') {
+    originOk = true
+  } else {
+    // 'platform-or-trusted'. A route declaring it with no port injected fails
+    // CLOSED — the same rule stage 6 applies to a declared check with no
+    // resolver. A missing dependency must never soften into "allow".
+    if (!originPolicy) return 'forbidden-origin'
+    try {
+      originOk = await originPolicy.isAuthorized(s.origin)
+    } catch {
+      return 'forbidden-origin'
+    }
+  }
+
+  if (!originOk) return 'forbidden-origin'
   if (!desc.senders.includes(s.kind)) return 'forbidden-sender'
   return 'ok'
 }
@@ -118,7 +162,7 @@ export async function dispatch(
   const route = routes[message.type] as Route<MessageType>
 
   // 3 — allowFrom (per-route data, so it must follow route resolution — AD-7)
-  const authz = checkAllowFrom(route.allowFrom, resolved)
+  const authz = await checkAllowFrom(route.allowFrom, resolved, deps.originPolicy)
   if (authz !== 'ok') return fail(authz)
 
   // idempotency read (FR16d seam): a consumed row is a replay; a store that

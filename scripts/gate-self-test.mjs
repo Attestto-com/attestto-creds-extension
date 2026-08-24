@@ -27,7 +27,7 @@
  * tree behind. Nothing here is imported by the app.
  */
 import { execSync } from 'node:child_process'
-import { writeFileSync, rmSync, existsSync } from 'node:fs'
+import { writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -96,7 +96,149 @@ const GATES = [
   },
 ]
 
+/**
+ * ── Security tier (SOC-281) ───────────────────────────────────────────────
+ *
+ * The four gates above prove the TOOLING bites. Every one of their seeds is a
+ * tooling violation — a type error, a floating promise, a failing assertion, an
+ * uncovered file. None is a security violation, so none of them says anything
+ * about whether a guard in this codebase is enforced.
+ *
+ * Measured 2026-08-14: inverting the `KEY_ROTATE` and `DID_SYNC` origin guards
+ * left all 1293 tests, `type-check` and `lint:check` green. Both July criticals
+ * silently undone, full CI green. The gates were healthy and pointed at the
+ * wrong thing.
+ *
+ * So this tier seeds a PATCH to a real guard instead of a new file, and names
+ * the spec that must catch it. Note the inversions are inversions, not
+ * deletions: deleting a guard orphans its import and trips `no-unused-vars`,
+ * which makes the tooling gates go red for a reason that has nothing to do with
+ * security. That false positive is exactly what this tier exists to avoid.
+ *
+ * Targeted spec runs, not the whole suite: 5 mutations x 2 runs of ~1300 tests
+ * would dominate CI, and "which spec is responsible for this invariant" is a
+ * more useful thing to state than "something, somewhere, noticed".
+ */
+const SECURITY_MUTATIONS = [
+  {
+    name: 'KEY_ROTATE is extension-only (SOC-8)',
+    file: 'src/entrypoints/background.ts',
+    find: 'if (!isExtensionSender(sender)) {',
+    replace: 'if (isExtensionSender(sender)) {',
+    spec: 'src/__tests__/entrypoints/background.sender-authz.spec.ts',
+  },
+  {
+    name: 'DID_SYNC requires a trusted origin (SOC-9)',
+    file: 'src/entrypoints/background.ts',
+    // SOC-280 moved this gate off the switch case and into the router's
+    // `originPolicy` port, so the anchor moved with it. The old anchor was
+    // `if (trusted) {` inside the DID_SYNC case; that case no longer decides
+    // authorization. The guard-the-guard caught the stale anchor rather than
+    // reporting the invariant as covered — which is the whole reason it exists.
+    find: 'isPlatformOrigin(origin) || isOriginTrusted(origin)',
+    replace: 'true || isPlatformOrigin(origin) || isOriginTrusted(origin)',
+    spec: 'src/__tests__/entrypoints/background.sender-authz.spec.ts',
+  },
+  {
+    name: 'a page cannot read the vault (SOC-277)',
+    file: 'src/entrypoints/credential-api.content.ts',
+    // The invariant is now an ABSENCE — the read messages were removed, not
+    // gated — so the mutation puts the forward back rather than opening a gate.
+    // Anchored on the comment that records the removal, which is the thing a
+    // careless re-add would sit next to.
+    find: '      // SOC-277 — `ATTESTTO_LIST_CREDENTIALS` and `ATTESTTO_RESHARE_VP` were',
+    replace:
+      "      if (msgType === 'ATTESTTO_LIST_CREDENTIALS') { return }\n" +
+      '      // SOC-277 — `ATTESTTO_LIST_CREDENTIALS` and `ATTESTTO_RESHARE_VP` were',
+    spec: 'src/__tests__/entrypoints/page-cannot-read-vault.spec.ts',
+  },
+  {
+    name: 'the signing presence gate is REQUIRED (SOC-279)',
+    file: 'src/background/adapters/signing-adapters.ts',
+    find: 'assertPresence: PresenceGate',
+    replace: 'assertPresence?: PresenceGate',
+    // Compile channel, not a spec: making the gate optional restores the
+    // anonymous no-op default the composition root used to take silently, and
+    // `signing-adapters.type-guards.test-d.ts` is what refuses it.
+    command: 'npm run type-check',
+  },
+  {
+    name: 'the popup signer verifies the user first (SOC-279)',
+    file: 'src/stores/wallet.ts',
+    find: '      await requireUserVerification()\n',
+    replace: '',
+    spec: 'src/stores/wallet.gated-signer.spec.ts',
+  },
+  {
+    name: 'a credential offer always asks the user (no auto-accept)',
+    file: 'src/background/handlers/credential-offer.handler.ts',
+    // Skip the consent call and return the same outcome — the shape a
+    // reintroduced silent path would take.
+    find: '  await ctx.requestConsent(notifId, offer, origin)\n',
+    replace: '',
+    spec: 'src/background/handlers/credential-offer.handler.spec.ts',
+  },
+  {
+    name: 'a live pending row cannot be replaced (SOC-278)',
+    file: 'src/background/consent/pending-store.ts',
+    find: 'if (existing && !existing.consumed) return false',
+    replace: 'if (existing && existing.consumed === undefined) return false',
+    spec: 'src/__tests__/entrypoints/background.pending-id-ownership.spec.ts',
+  },
+]
+
 let failures = 0
+
+for (const mutation of SECURITY_MUTATIONS) {
+  const path = resolve(ROOT, mutation.file)
+  const original = readFileSync(path, 'utf8')
+  const command = mutation.command ?? `npx vitest run ${mutation.spec}`
+
+  // Guard the guard. If a refactor renames the anchor, the seed silently does
+  // nothing, the spec passes on an UNMUTATED tree, and this gate reports a
+  // control it never actually tested — the precise failure it exists to catch.
+  const hits = original.split(mutation.find).length - 1
+  if (hits !== 1) {
+    console.error(
+      `✗ ${mutation.name} — anchor matched ${hits} times in ${mutation.file}, expected exactly 1.\n` +
+        `  The mutation could not be applied, so this invariant is UNTESTED.\n` +
+        `  Update the anchor in scripts/gate-self-test.mjs to match the current code.`,
+    )
+    failures++
+    continue
+  }
+
+  let seededExit
+  try {
+    writeFileSync(path, original.replace(mutation.find, mutation.replace))
+    seededExit = runGate(command)
+  } finally {
+    // Restore byte-for-byte, always. A crash here would leave a disabled
+    // security guard in the working tree, which is worse than a failed gate.
+    writeFileSync(path, original)
+  }
+
+  if (seededExit === 0) {
+    console.error(
+      `✗ ${mutation.name} — the guard was INVERTED and \`${command}\` still passed.\n` +
+        `  Nothing holds this control in place; a refactor that drops it ships green.`,
+    )
+    failures++
+    continue
+  }
+
+  const cleanExit = runGate(command)
+  if (cleanExit !== 0) {
+    console.error(
+      `✗ ${mutation.name} — \`${command}\` fails on a CLEAN tree (exit ${cleanExit}), ` +
+        `so its red says nothing about the guard.`,
+    )
+    failures++
+    continue
+  }
+
+  console.log(`✓ ${mutation.name} — red when inverted, green when intact`)
+}
 
 for (const gate of GATES) {
   const seedFile = resolve(ROOT, gate.seedPath)
@@ -140,4 +282,7 @@ if (failures > 0) {
   console.error(`\n${failures} gate(s) cannot be trusted.`)
   process.exit(1)
 }
-console.log(`\nAll ${GATES.length} gates proven to bite.`)
+console.log(
+  `\nAll ${GATES.length} gates proven to bite, ` +
+    `and ${SECURITY_MUTATIONS.length} security guards proven to be held by a test.`,
+)

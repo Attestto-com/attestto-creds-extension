@@ -289,6 +289,7 @@ export default {
   overview: {
     title: 'Bienvenido a Attestto',
     subtitle: 'La protecci\u00f3n contra phishing est\u00e1 activa. La identidad es opcional.',
+    subtitleFirstRun: 'Un solo paso: configure su passkey. Eso es toda la configuraci\u00f3n.',
     protection: {
       title: 'Protecci\u00f3n contra phishing',
       body: 'Attestto revisa los sitios que usted visita y le avisa cuando uno intenta hacerse pasar por otro. Funciona en todos los sitios \u2014 sin configuraci\u00f3n.',
@@ -296,12 +297,17 @@ export default {
       manage: 'Gestionar sus sitios de confianza',
     },
     identity: {
-      title: 'Su Attestto ID',
-      activeBody: 'Su Attestto ID est\u00e1 activo.',
-      upgradeBody: 'Configure su Attestto ID para iniciar sesi\u00f3n en sitios, firmar documentos y guardar credenciales. Se crea en la app de Attestto o en CORTEX. Opcional \u2014 la protecci\u00f3n contra phishing funciona sin esto.',
-      setup: 'Configurar su Attestto ID',
-      alreadyHave: '\u00bfYa tiene una?',
-      signIn: 'Iniciar sesi\u00f3n',
+      title: 'Configure su passkey',
+      activeBody: 'Su Attestto ID est\u00e1 activo. No hay nada m\u00e1s que configurar.',
+      upgradeBody: 'Una passkey crea su Attestto ID y lo protege en este dispositivo. Despu\u00e9s solo inicia sesi\u00f3n \u2014 en cualquier sitio, sin contrase\u00f1as, nunca.',
+      setup: 'Configurar su passkey',
+      working: 'Configurando\u2026',
+      twoPrompts: 'Su dispositivo le pedir\u00e1 verificarse dos veces: una para crear la passkey y otra para proteger su billetera con ella.',
+      doneTitle: 'Todo listo',
+      doneBody: 'Su Attestto ID est\u00e1 listo. Inicie sesi\u00f3n en cualquier sitio con su passkey \u2014 no queda nada por configurar.',
+      done: 'Listo',
+      unsupported: 'Este dispositivo no puede proteger una billetera: su passkey no admite el cifrado necesario. Pruebe Chrome o Safari en un dispositivo con Touch ID, Windows Hello o una llave de seguridad.',
+      cancelled: 'Se cancel\u00f3 la configuraci\u00f3n. Int\u00e9ntelo cuando quiera.',
     },
     cards: {
       security: 'Sitios de confianza, comportamiento de confianza, notificaciones.',

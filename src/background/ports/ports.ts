@@ -74,7 +74,20 @@ export interface PendingRow {
 
 /** Storage-backed pending-request port (survives service-worker restart). */
 export interface Pending {
-  put(row: PendingRow): Promise<void>
+  /**
+   * Store a row. Returns false — writing NOTHING — when a live (un-consumed)
+   * row already holds this id.
+   *
+   * SOC-278: this used to overwrite unconditionally, and the id is chosen by
+   * the requester. A page could open an approval for document A, then re-send
+   * with the same id and document B; the row was replaced underneath the window
+   * and the user approved B while reading A. Refusing the second write is what
+   * makes "what was displayed" and "what is signed" the same row.
+   *
+   * A CONSUMED row does not block: its id is spent, the outcome already
+   * reported, and `takePending` leaves the tombstone behind deliberately.
+   */
+  put(row: PendingRow): Promise<boolean>
   get(id: string): Promise<PendingRow | null>
   markConsumed(id: string): Promise<void>
   /**

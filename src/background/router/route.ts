@@ -28,9 +28,33 @@ import type { VerifyPeerDescriptor } from '@/background/did/peer-verification'
 /** Trust tier a route runs under. Load-bearing since Story 1.4 (see `CtxByTag`). */
 export type CtxBundleTag = 'untrusted' | 'signing' | 'consent' | 'keyAdmin'
 
+/**
+ * A named origin policy the ROUTER evaluates (SOC-280).
+ *
+ * AD-7 says `allowFrom` is declarative data, never a bare function, so the
+ * router owns the sole predicate. A literal origin list satisfies that — until a
+ * route's authorized set is not knowable at module load. `DID_SYNC` admits the
+ * platform origin plus every origin the user has approved, and that second set
+ * lives in `chrome.storage` and changes while the worker runs.
+ *
+ * A tagged union keeps AD-7's actual guarantee. The route still declares DATA;
+ * it names a policy rather than carrying behaviour, the router still holds every
+ * implementation, and an unknown tag is a compile error. What changes is that
+ * evaluating a policy may need I/O, so stage 3 is async — see `OriginPolicyPort`.
+ *
+ * `any` is deliberately narrow in meaning: the route accepts any resolvable
+ * origin, which is what an unauthenticated inbound channel like DIDCOMM already
+ * did before the router existed. It is not "skip authorization" — a null origin
+ * is still refused.
+ */
+export type OriginPolicy =
+  | readonly string[]
+  | { policy: 'any' }
+  | { policy: 'platform-or-trusted' }
+
 /** Declarative sender policy. Empty = admits zero senders (fail-closed). Matched in Story 1.5. */
 export interface AllowFromDescriptor {
-  origins: readonly string[]
+  origins: OriginPolicy
   senders: readonly string[]
 }
 

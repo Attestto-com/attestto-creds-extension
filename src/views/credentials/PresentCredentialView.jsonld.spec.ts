@@ -59,15 +59,21 @@ vi.mock('@/stores/wallet', () => ({
   useWalletStore: () => ({
     isUnlocked: true,
     did: HOLDER,
-    getPrivateKey: () => ({ kty: 'EC', crv: 'P-256', d: 'LEAK-PRIVATE-KEY', x: 'x', y: 'y' }),
+    // SOC-279 — the view no longer receives key material. It asks the store for
+    // a signer; the key stays inside the store. The signer is bound to the same
+    // sentinel so the leak assertions below still have something to catch.
+    createGatedSigner: () => async () => new TextEncoder().encode('LEAK-PRIVATE-KEY'),
+    // The raw-key accessor is gone from the store's surface. If anything still
+    // reaches for it, fail loudly rather than silently yielding undefined —
+    // otherwise this suite would pass because the view broke, not because it
+    // stopped leaking.
+    getPrivateKey: () => {
+      throw new Error('SOC-279: getPrivateKey is no longer part of the wallet store surface')
+    },
   }),
 }))
-// A signer that does not need real WebCrypto. The signature value is irrelevant
-// here; the PAYLOAD is what this suite reads.
-vi.mock('@/services/jws', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/services/jws')>()),
-  es256KeySigner: () => async () => 'test-signature',
-}))
+// The view now takes its signer from the store (mocked above), so `jws` is left
+// real here — nothing in this suite reaches WebCrypto through it any more.
 
 import PresentCredentialView from './PresentCredentialView.vue'
 

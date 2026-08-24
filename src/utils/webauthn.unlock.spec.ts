@@ -227,68 +227,66 @@ describe('unlockWithPasskey — PRF', () => {
 })
 
 /**
- * Argon2id at 19 MiB and t=2 is deliberately expensive, and each round-trip
- * below pays for it twice (once in setup, once in unlock). In isolation that is
- * ~400 ms; inside the full suite, sharing cores with 96 other files, it went
- * past the 5 s default and failed as a timeout.
+ * There is no passphrase branch left to test, so what replaces those cases is
+ * the property the rest of the system now RESTS on.
  *
- * The budget is stated explicitly rather than left to the default, because a
- * test that races the clock under load is a flake, and a flaky test on the
- * vault-key path is worse than no test: it trains people to re-run rather than
- * read. `passphrase-kdf.spec.ts` needs no such allowance because each of its
- * cases derives exactly once.
+ * `approval/App.vue` skips its signing-gate prompt when an unlock just
+ * happened, on the grounds that the unlock already verified the user. That is
+ * only true if the unlock assertion really does demand user verification. If it
+ * ever stopped, the approval window would sign with no human present and no
+ * test elsewhere would notice — the gate would still be "there", just satisfied
+ * by nothing. So it is pinned here, at the source.
  */
-const ARGON2_ROUND_TRIP_MS = 30_000
-
-describe('unlockWithPasskey — passphrase', () => {
-  it('tags PASSPHRASE_REQUIRED rather than prompting for a passkey', async () => {
-    vi.stubGlobal('chrome', storage({ [STORAGE_KEYS.KDF_METHOD]: 'passphrase' }).chrome)
+describe('unlockWithPasskey — the unlock IS the user-verification', () => {
+  it('🔒 demands user verification on the assertion', async () => {
+    const s = storage()
+    vi.stubGlobal('chrome', s.chrome)
     const auth = stubAuthenticator({ prf: true })
+    await setupPasskey()
 
-    await expect(unlockWithPasskey()).rejects.toThrow(/^PASSPHRASE_REQUIRED:/)
+    await unlockWithPasskey()
+
+    const options = (auth.get.mock.calls.at(-1) as unknown[] | undefined)?.[0] as
+      | { publicKey?: { userVerification?: string } }
+      | undefined
     expect(
-      auth.get,
-      'a passphrase vault triggered a WebAuthn prompt — the passkey cannot open it, ' +
-        'so the prompt can only confuse',
-    ).not.toHaveBeenCalled()
+      options?.publicKey?.userVerification,
+      'the approval window skips its own prompt because this assertion verified the ' +
+        'user. Anything but `required` makes that assumption false and lets a ' +
+        'signature be produced with nobody present.',
+    ).toBe('required')
   })
 
-  it('derives from the passphrase and caches the result', async () => {
-    const s = storage()
-    vi.stubGlobal('chrome', s.chrome)
-    // PRF absent at setup forces the passphrase branch, which also writes the
-    // salt this unlock has to read back.
-    stubAuthenticator({ prf: false })
-    const setup = await setupPasskey('correct horse battery staple')
+  it('takes no passphrase argument', () => {
+    // A caller that still passes one would be silently ignored, which is how a
+    // dead fallback survives a refactor. The signature is the contract.
+    expect(unlockWithPasskey.length).toBe(0)
+  })
+})
 
-    const unlocked = await unlockWithPasskey('correct horse battery staple')
-
-    expect(unlocked).toBe(setup.aesKeyBase64)
-    expect(s.session[STORAGE_KEYS.SESSION_KEY]).toBe(unlocked)
-  }, ARGON2_ROUND_TRIP_MS)
-
-  it('derives a different key from a different passphrase', async () => {
-    const s = storage()
-    vi.stubGlobal('chrome', s.chrome)
-    stubAuthenticator({ prf: false })
-    const setup = await setupPasskey('correct horse battery staple')
-
-    // Control case. Without it, a derivation that ignored its input entirely
-    // would satisfy the round-trip test above.
-    const wrong = await unlockWithPasskey('Tr0ub4dor&3')
-    expect(wrong).not.toBe(setup.aesKeyBase64)
-  }, ARGON2_ROUND_TRIP_MS)
-
-  it('treats a vault with no recorded method as PRF, not passphrase', async () => {
+/**
+ * A vault created before the passphrase was removed carries a recorded KDF
+ * method. Nothing reads it any more, and that is deliberate: there is no
+ * Argon2id unlock to route to. Such a vault simply cannot be opened, and the
+ * user resets — which costs them a fresh DID and a re-link, not their data.
+ */
+describe('unlockWithPasskey — a vault from before the passphrase was removed', () => {
+  it('does not resurrect the passphrase path for a legacy passphrase vault', async () => {
+    // The real shape of such a vault: a passkey WAS registered (the credential
+    // id is persisted before PRF support is known), the KDF marker then recorded
+    // 'passphrase' when the PRF probe came back empty. That marker is now inert.
     const s = storage()
     vi.stubGlobal('chrome', s.chrome)
     stubAuthenticator({ prf: true })
     await setupPasskey()
-    // Legacy vaults predate the KDF marker. Reading the absent marker as
-    // 'passphrase' would ask for a passphrase that was never set.
-    delete s.local[STORAGE_KEYS.KDF_METHOD]
+    s.local[STORAGE_KEYS.KDF_METHOD] = 'passphrase'
 
-    await expect(unlockWithPasskey()).resolves.toBeTruthy()
+    const auth = stubAuthenticator({ prf: false })
+
+    // It fails — but as a passkey failure the user can act on (reset), never by
+    // asking for a passphrase that no longer unlocks anything.
+    await expect(unlockWithPasskey()).rejects.toThrow(/^PRF_UNAVAILABLE:/)
+    expect(auth.get, 'the passkey must still be tried').toHaveBeenCalled()
   })
 })
 

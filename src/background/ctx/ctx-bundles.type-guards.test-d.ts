@@ -27,13 +27,15 @@ declare const k: KeyAdminCtx
 void u.vault
 // @ts-expect-error — UntrustedCtx has no crypto capability
 void u.crypto
-void u.notify // positive control — notify IS in the bundle
+void u.notifications // positive control — notifications IS in the bundle
 
 // ── AC3 (LOAD-BEARING): SigningCtx.vault is read-only (`VaultRead`) — no write.
 void s.vault.read() // positive control — read allowed
 // @ts-expect-error — SigningCtx.vault is VaultRead; it cannot mutate the vault
 void s.vault.write({ kind: 'x' })
-void k.vault.write({ kind: 'x' }) // positive control — KeyAdmin has the full Vault
+// SOC-280 — KeyAdmin's vault surface is `store` (the real one the handlers use);
+// the opaque `vault: Vault` it also declared was never wired and is gone.
+void k.store.read() // positive control — KeyAdmin reads the vault
 
 // ── Story 1.11: the SIGNING tier's concrete store is READ-ONLY.
 void s.store.read() // positive control — signing reads the vault to sign
@@ -62,11 +64,10 @@ void s.crypto.deriveForOrigin('https://x.com')
 const canon = normalizeOrigin('https://x.com')
 if (canon) void s.crypto.deriveForOrigin(canon) // positive control
 
-// ── AC5 (AD-11c): SigningCtx.crypto and KeyAdminCtx.crypto are the SAME `Crypto`.
-// If KeyAdminCtx.crypto is ever widened to a superset (e.g. an ungated `signRaw`),
-// SigningCtx.crypto is no longer assignable to it and this reddens.
-const _sameCrypto: (a: SigningCtx['crypto']) => KeyAdminCtx['crypto'] = (a) => a
-void _sameCrypto
+// ── AC5 (AD-11c), SOC-280: KeyAdmin has NO crypto surface to compare against.
+// The identity check is subsumed by absence — see crypto-surface.type-guards.
+// @ts-expect-error — KeyAdmin cannot name a signing capability at all.
+void k.crypto
 
 // ── AC1: `PendingRow` owns `id` + `consumed` (AD-6 idempotency referent).
 const _rowId: string = ({} as PendingRow).id

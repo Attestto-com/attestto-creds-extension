@@ -124,16 +124,23 @@ async function ask(
 }
 
 const ROTATE = { type: 'KEY_ROTATE', payload: { requestId: 'r-1', origin: 'chrome-extension://test' } }
-const BACKUP = { type: 'KEY_BACKUP', payload: { requestId: 'b-1', origin: 'chrome-extension://test' } }
-const RESTORE = {
-  type: 'KEY_RESTORE',
-  payload: {
-    requestId: 's-1',
-    shareA: { data: 'AQ', index: 1 },
-    shareB: { data: 'Ag', index: 2 },
-    origin: 'chrome-extension://test',
-  },
-}
+
+/**
+ * `KEY_BACKUP` and `KEY_RESTORE` were rows here and are deliberately gone.
+ *
+ * This spec arrived with the fix that made key admin answer over `sendResponse`
+ * instead of `chrome.tabs`, and it covered all three operations. On this branch
+ * only rotate still exists: backup and restore were deleted, not re-transported,
+ * because they split the RAW private key 2-of-3 — a guardian held a piece of the
+ * signing key — and a completed recovery returned a signer with no credentials,
+ * since those hang off `LinkedIdentity`. `services/vault-backup.ts` already had
+ * the version that works, encrypting the whole vault and splitting its content
+ * key.
+ *
+ * Re-adding rows for them would not be restoring coverage; it would be asserting
+ * that a deleted capability still answers. If either type ever comes back, it
+ * needs this file AND a reason the raw-key split is no longer what it was.
+ */
 
 beforeEach(() => {
   vi.resetModules()
@@ -143,8 +150,6 @@ beforeEach(() => {
 describe('key admin transport — the permitted caller gets an answer', () => {
   it.each([
     ['KEY_ROTATE', ROTATE],
-    ['KEY_BACKUP', BACKUP],
-    ['KEY_RESTORE', RESTORE],
   ])("%s answers the caller with the handler's own outcome", async (_name, message) => {
     const booted = await bootBackground()
 
@@ -170,8 +175,6 @@ describe('key admin transport — the permitted caller gets an answer', () => {
 
   it.each([
     ['KEY_ROTATE', ROTATE],
-    ['KEY_BACKUP', BACKUP],
-    ['KEY_RESTORE', RESTORE],
   ])('%s sends nothing to a tab', async (_name, message) => {
     const booted = await bootBackground()
 
@@ -186,8 +189,6 @@ describe('key admin transport — the permitted caller gets an answer', () => {
 
   it.each([
     ['KEY_ROTATE', ROTATE],
-    ['KEY_BACKUP', BACKUP],
-    ['KEY_RESTORE', RESTORE],
   ])('%s still refuses a web page', async (_name, message) => {
     const booted = await bootBackground()
 
