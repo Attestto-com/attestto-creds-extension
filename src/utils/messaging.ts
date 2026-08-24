@@ -172,6 +172,28 @@ export interface KeyRotateMessage {
  * share is worthless without the file and a restore brings back credentials and
  * identities, not just a signer. Reachable from the Backup options view and the
  * lock screen's restore panel; it never needed a message type.
+ *
+ * ## What SOC-241 established, kept because it still applies
+ *
+ * This comment once claimed the key was AES-256-GCM encrypted BEFORE splitting,
+ * so that a share was a piece of ciphertext. The deleted handlers never did
+ * that: they serialized `vault.privateKeyJwk` and split the bytes. The comment
+ * was the error, not the code — which is why the fix was to correct the record
+ * and then delete the capability, rather than to trust the record and keep it.
+ *
+ * The property that correction surfaced outlives the handlers, because
+ * `vault-backup.ts` is also 2-of-3: **any TWO shares reconstruct the secret.**
+ * No passphrase, no second factor — `combine2of3` and a parse. What changed is
+ * WHICH secret and what it is worth alone. Two shares of the old scheme handed
+ * over the signing key outright; two shares of the new one yield a content key
+ * that decrypts nothing without the backup file.
+ *
+ * That is a real improvement and not a reason to relax: two share-holders
+ * colluding, or two compromised at once, plus the file, is still a full
+ * compromise. Share PLACEMENT stays a security control rather than a storage
+ * detail — nobody may end up holding two, and no single party's breach may
+ * yield two. Whoever wires the recovery UI owns that invariant; it is not
+ * enforced here, and no type can enforce it.
  */
 
 /**
