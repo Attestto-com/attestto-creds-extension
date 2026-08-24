@@ -289,6 +289,9 @@ export default {
   overview: {
     title: 'Welcome to Attestto',
     subtitle: 'Anti-phishing protection is on. Identity is optional.',
+    // Before setup the page has exactly one job, and the header says so rather
+    // than opening with "identity is optional" above the only thing to do.
+    subtitleFirstRun: 'One step: set up your passkey. That is the whole setup.',
     protection: {
       title: 'Anti-phishing protection',
       body: 'Attestto checks the sites you visit and warns you when one tries to impersonate another. Works on every site — no setup needed.',
@@ -296,12 +299,22 @@ export default {
       manage: 'Manage your trusted sites',
     },
     identity: {
-      title: 'Your Attestto ID',
-      activeBody: 'Your Attestto ID is active.',
-      upgradeBody: 'Set up your Attestto ID to sign in to sites, sign documents, and store credentials. Created in the Attestto app or CORTEX. Optional — anti-phishing works without it.',
-      setup: 'Set up your Attestto ID',
-      alreadyHave: 'Already have one?',
-      signIn: 'Sign in',
+      // The old copy said the ID was "created in the Attestto app or CORTEX",
+      // which is the opposite of how this works: the extension mints the Tier 1
+      // identity itself, with no external service. It is also what made the
+      // first-install page look like a signpost instead of the place setup
+      // happens.
+      title: 'Set up your passkey',
+      activeBody: 'Your Attestto ID is active. Nothing else to set up.',
+      upgradeBody: 'One passkey creates your Attestto ID and secures it on this device. After this you just sign in — on any site, with no password, ever.',
+      setup: 'Set up your passkey',
+      working: 'Setting up…',
+      twoPrompts: 'Your device will ask to verify you twice — once to create the passkey, once to lock your wallet to it.',
+      doneTitle: 'You are all set',
+      doneBody: 'Your Attestto ID is ready. Sign in on any site with your passkey — there is nothing left to set up.',
+      done: 'Done',
+      unsupported: 'This device cannot secure a wallet — its passkey does not support the encryption this needs. Try Chrome or Safari on a device with Touch ID, Windows Hello, or a security key.',
+      cancelled: 'Setup was cancelled. Try again when you are ready.',
     },
     cards: {
       security: 'Trusted sites, pin behavior, notifications.',

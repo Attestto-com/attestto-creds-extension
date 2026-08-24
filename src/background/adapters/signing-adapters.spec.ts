@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { createSigningAdapters, es256RawSign, type SigningAdapterDeps } from './signing-adapters'
 import type { VaultData } from '@/stores/wallet'
 import type { SiteDidEntry } from '@/utils/site-did'
+import { DEFERRED_PRESENCE_PASSTHROUGH } from '@/background/crypto/gated-sign'
 
 let p256Jwk: JsonWebKey
 
@@ -39,6 +40,8 @@ function makeDeps(over: Partial<SigningAdapterDeps> & { vault?: VaultData | null
     }),
     publicJwkOf: vi.fn(() => ({ kty: 'EC', crv: 'P-256', x: 'X', y: 'Y' })),
     pinSite,
+    // SOC-279 — required, no default. Tests that care about the gate override it.
+    assertPresence: DEFERRED_PRESENCE_PASSTHROUGH,
     ...over,
   }
   return { deps, writeVault, syncPublicVault, pinSite }
@@ -99,7 +102,7 @@ describe('createSigningAdapters — provisionSiteDid', () => {
   })
 })
 
-describe('createSigningAdapters — pin / store / deriveForOrigin', () => {
+describe('createSigningAdapters — pin / store', () => {
   it('pin routes to the injected pinSite', async () => {
     const { deps, pinSite } = makeDeps()
     await createSigningAdapters(deps).pin.pin('x.com')
@@ -112,10 +115,10 @@ describe('createSigningAdapters — pin / store / deriveForOrigin', () => {
     expect(deps.readVault).toHaveBeenCalled()
   })
 
-  it('deriveForOrigin is not wired (throws) — no signing handler consumes it', async () => {
-    const { deps } = makeDeps()
-    await expect(createSigningAdapters(deps).deriveForOrigin({} as never)).rejects.toThrow(/not wired/i)
-  })
+  // The `deriveForOrigin is not wired (throws)` case was removed with the method
+  // itself (SOC-243). It asserted the shape of a stub for a design that was
+  // rejected: root-derived per-site keys would make the root key a master key
+  // over every relying party. Site keys are independent and random.
 })
 
 describe('es256RawSign — exported for the transitional notification-path signer', () => {

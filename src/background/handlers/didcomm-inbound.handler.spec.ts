@@ -87,19 +87,29 @@ describe('handleDidcommInbound — null parse (the dropped edge)', () => {
 })
 
 describe('DIDCOMM_INBOUND parity: WHY the case delegates to handle() directly', () => {
-  it('routing through the full dispatch pipeline would REJECT (empty allowFrom) — a regression', async () => {
-    // The legacy case does no sender-auth. dispatch runs the route's allowFrom,
-    // still the fail-closed empty stub, so it rejects every inbound. That is why
-    // the switch case must call route.handle(payload, ctx) directly until Epic 2
-    // fills real allowFrom + the verifyPeer 'envelope' check. If a future edit
-    // wires this route through dispatch prematurely, this expectation flips and
-    // forces a conscious decision.
+  it('dispatch now ADMITS this route at stage 3, and still fails closed at stage 6', async () => {
+    // SOC-280, and this expectation deliberately flipped.
+    //
+    // It used to assert 'forbidden-origin': `allowFrom` was the fail-closed
+    // empty stub, so dispatch rejected every inbound and the case had to call
+    // `route.handle` directly. The comment here said that if anyone wired this
+    // route through dispatch, the assertion would flip and force a conscious
+    // decision. This is that decision.
+    //
+    // `allowFrom` now declares `{ policy: 'any' }`, which is PARITY with the
+    // legacy case — DIDComm is an unauthenticated inbound channel and the case
+    // did no sender-auth at all. So stage 3 no longer refuses.
+    //
+    // What refuses now is stage 6: the route declares `senderResolvable` and no
+    // resolver is injected here, so it fails closed. That is the correct
+    // remaining answer — a declared check with no way to run it is an outage,
+    // never a skip.
     const res = await dispatch(
       { type: 'DIDCOMM_INBOUND', payload: VALID_INBOUND },
       {},
       { buildBundle: (() => ({})) as never, resolveSender: () => ({ origin: 'https://verifier.example', kind: 'web' }) },
     )
-    expect(res).toEqual({ ok: false, error: 'forbidden-origin' })
+    expect(res).toEqual({ ok: false, error: 'peer-verification-failed' })
   })
 
   /**

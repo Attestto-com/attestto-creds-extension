@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { FingerPrintIcon, KeyIcon, TrashIcon, ChevronDownIcon, ChevronUpIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
+import { ref, onMounted } from 'vue'
+import { FingerPrintIcon, TrashIcon, ArrowPathIcon } from '@heroicons/vue/24/outline'
 import { useWalletStore, type VaultData } from '@/stores/wallet'
 import ExtensionHeader from '@/components/layout/ExtensionHeader.vue'
 import RestoreBackupPanel from '@/components/backup/RestoreBackupPanel.vue'
@@ -14,14 +14,6 @@ const error = ref<string | null>(null)
 // from `error` so the red-error styling stays for genuine failures.
 const info = ref<string | null>(null)
 
-const passphrase = ref('')
-const passphraseConfirm = ref('')
-// Setup mode: passphrase fields hidden by default; user opens via the optional
-// disclosure OR they auto-open when PRF is unavailable on this authenticator.
-const showPassphraseSetup = ref(false)
-// Unlock mode: only revealed when the vault was set up with a passphrase and
-// the passkey unlock path returned PASSPHRASE_REQUIRED.
-const showPassphrase = ref(false)
 const showReset = ref(false)
 const resetConfirm = ref(false)
 
@@ -30,14 +22,6 @@ const resetConfirm = ref(false)
 // once setup succeeds we write the restored vault (see handleAction).
 const showRestore = ref(false)
 const pendingRestore = ref<VaultData | null>(null)
-
-const setupValidation = computed<string | null>(() => {
-  if (wallet.isSetUp) return null
-  if (!passphrase.value) return null // optional during setup; required only if PRF unsupported
-  if (passphrase.value.length < 8) return 'Passphrase must be at least 8 characters'
-  if (passphrase.value !== passphraseConfirm.value) return 'Passphrases do not match'
-  return null
-})
 
 onMounted(async () => {
   await wallet.checkSetup()
@@ -51,20 +35,12 @@ async function handleAction(): Promise<void> {
 
   try {
     if (wallet.isSetUp) {
-      await wallet.unlock(showPassphrase.value ? passphrase.value : undefined)
+      await wallet.unlock()
     } else {
-      if (setupValidation.value) {
-        error.value = setupValidation.value
-        return
-      }
-      // Restoring requires a deterministic passphrase so the re-protected vault
-      // can be opened without a device-bound passkey.
-      if (pendingRestore.value && !passphrase.value) {
-        showPassphraseSetup.value = true
-        error.value = 'Set a password to finish restoring on this device'
-        return
-      }
-      await wallet.setup(passphrase.value || undefined)
+      // Setup is one passkey and nothing else. A restored backup is re-protected
+      // under the new device's PRF key, so it needs no secret from the user
+      // either — the backup file's own passphrase was already spent decrypting it.
+      await wallet.setup()
       if (pendingRestore.value) {
         await wallet.restoreFromBackup(pendingRestore.value)
         pendingRestore.value = null
@@ -73,27 +49,17 @@ async function handleAction(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Authentication failed'
 
-    // Vault was set up with passphrase but unlock didn't supply one — prompt for it
-    if (msg.startsWith('PASSPHRASE_REQUIRED')) {
-      showPassphrase.value = true
-      info.value = 'Enter your passphrase to unlock.'
-      return
-    }
-
-    // Vault was set up with PRF but authenticator no longer returns PRF — unrecoverable
+    // The existing vault's key cannot be reproduced here. Reset is the path —
+    // there is no passphrase to fall back to and nothing irreplaceable inside.
     if (msg.startsWith('PRF_UNAVAILABLE')) {
       showReset.value = true
-      error.value = 'This vault cannot be unlocked on this device (PRF unavailable). You must reset.'
+      error.value = 'This wallet cannot be unlocked on this device. Reset it and set it up again.'
       return
     }
 
-    // Setup requires passphrase because PRF unsupported on this authenticator —
-    // reveal the (previously hidden) passphrase fields and prompt the user.
-    // Treated as an informational step, not an error, so the UI doesn't read
-    // as "something broke" when the next step is just "type a passphrase".
-    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE')) {
-      showPassphraseSetup.value = true
-      info.value = 'Your passkey was created, but this device can’t use it as a vault key. Set a recovery passphrase to finish setup.'
+    // This device cannot hold a vault at all. Say so; do not offer a password.
+    if (msg.startsWith('PRF_UNSUPPORTED')) {
+      error.value = 'This device cannot secure a wallet — its passkey does not support the encryption this needs. Try Chrome or Safari on a device with Touch ID, Windows Hello, or a security key.'
       return
     }
 
@@ -116,8 +82,7 @@ async function onDecrypted(vault: VaultData): Promise<void> {
     showRestore.value = false
     await wallet.resetWallet()
     await wallet.checkSetup()
-    showPassphraseSetup.value = true
-    info.value = 'Backup loaded. Set a password to finish restoring on this device.'
+    info.value = 'Backup loaded. Set up your passkey to finish restoring on this device.'
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Restore failed'
     pendingRestore.value = null
@@ -135,11 +100,7 @@ async function handleReset(): Promise<void> {
   try {
     await wallet.resetWallet()
     showReset.value = false
-    showPassphrase.value = false
-    showPassphraseSetup.value = false
     resetConfirm.value = false
-    passphrase.value = ''
-    passphraseConfirm.value = ''
     error.value = null
     info.value = null
     // checkSetup re-evaluates isSetUp (now false) so the view flips to setup mode
@@ -164,76 +125,19 @@ async function handleReset(): Promise<void> {
 
     <!-- Action UI -->
     <template v-else>
-      <!-- Passphrase input — shown on UNLOCK when PASSPHRASE_REQUIRED, or on SETUP
-           after the user opens the optional disclosure or PRF_REQUIRES_PASSPHRASE fires. -->
-      <div
-        v-if="(wallet.isSetUp && showPassphrase) || (!wallet.isSetUp && showPassphraseSetup)"
-        class="w-full max-w-[260px] space-y-2 mb-3"
-      >
-        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
-          {{ wallet.isSetUp ? 'Passphrase' : 'Recovery passphrase' }}
-        </label>
-        <input
-          v-model="passphrase"
-          type="password"
-          autocomplete="current-password"
-          placeholder="Min 8 characters"
-          class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
-        />
-        <input
-          v-if="!wallet.isSetUp"
-          v-model="passphraseConfirm"
-          type="password"
-          autocomplete="new-password"
-          placeholder="Confirm passphrase"
-          class="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
-        />
-        <p v-if="!wallet.isSetUp" class="text-[10px] text-slate-500 leading-relaxed">
-          A recovery passphrase lets you re-open your vault if your passkey is lost or
-          your authenticator doesn't support hardware-backed key derivation (PRF). Write it down.
-        </p>
-      </div>
-
-      <!-- Action button -->
+      <!-- Action button — the whole of setup, and the whole of unlock. -->
       <button
         class="w-full max-w-[260px] rounded-xl bg-indigo-600 px-6 py-3 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-        :disabled="acting || (!wallet.isSetUp && !!setupValidation)"
+        :disabled="acting"
         @click="handleAction"
       >
-        <KeyIcon v-if="wallet.isSetUp && showPassphrase" class="h-4 w-4" />
-        <FingerPrintIcon v-else class="h-4 w-4" />
+        <FingerPrintIcon class="h-4 w-4" />
         <template v-if="acting">
           {{ wallet.isSetUp ? 'Unlocking...' : 'Setting up vault...' }}
         </template>
         <template v-else>
-          {{ wallet.isSetUp
-            ? (showPassphrase ? 'Unlock with Passphrase' : 'Unlock with Passkey')
-            : 'Set Up Vault' }}
+          {{ wallet.isSetUp ? 'Unlock with Passkey' : 'Set Up Vault' }}
         </template>
-      </button>
-
-      <!-- Optional disclosure — only in SETUP mode, only when passphrase fields not yet shown -->
-      <button
-        v-if="!wallet.isSetUp && !showPassphraseSetup"
-        type="button"
-        class="mt-3 text-[11px] text-slate-400 hover:text-indigo-400 transition-colors flex items-center gap-1"
-        @click="showPassphraseSetup = true"
-      >
-        <ChevronDownIcon class="h-3 w-3" />
-        Add a recovery passphrase (optional)
-      </button>
-
-      <!-- Collapse — only in SETUP mode, only when user opened the disclosure proactively
-           (not when PRF_REQUIRES_PASSPHRASE forced it — `info` is set in that case
-           and the passphrase is then required, so hiding would just confuse). -->
-      <button
-        v-if="!wallet.isSetUp && showPassphraseSetup && !info"
-        type="button"
-        class="mt-3 text-[11px] text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1"
-        @click="() => { showPassphraseSetup = false; passphrase = ''; passphraseConfirm = '' }"
-      >
-        <ChevronUpIcon class="h-3 w-3" />
-        Hide recovery passphrase
       </button>
 
       <!-- Info notice — amber, for "next step needed" states (e.g. PRF unsupported) -->

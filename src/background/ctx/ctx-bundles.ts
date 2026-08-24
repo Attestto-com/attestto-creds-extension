@@ -15,12 +15,10 @@
  * route in Story 1.5, handlers are extracted onto them in 1.9+.
  */
 import type {
-  VaultRead,
-  Vault,
   Crypto,
-  Pending,
   Notify,
-  Http,
+  VaultRead,
+  Pending,
   Clock,
   Notifications,
   Runtime,
@@ -37,8 +35,6 @@ import type {
  * 1.9) uses: raise an OS notification and broadcast to the popup.
  */
 export interface UntrustedCtx {
-  notify: Notify
-  http: Http
   notifications: Notifications
   runtime: Runtime
 }
@@ -90,8 +86,6 @@ export interface ConsentCtx {
  * first extracted KeyAdmin handler (`DID_SYNC`, Story 1.10) uses.
  */
 export interface KeyAdminCtx {
-  vault: Vault
-  crypto: Crypto
   store: KeyVaultStore
   keygen: KeyGen
   clock: Clock

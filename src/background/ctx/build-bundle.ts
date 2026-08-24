@@ -35,7 +35,6 @@ export interface SigningAdapters {
   vault: VaultRead
   clock: Clock
   pin: SitePin
-  deriveForOrigin: Crypto['deriveForOrigin']
   assertPresence: PresenceGate
   /** Signs with the root identity key (reads the vault internally). */
   rootRawSign: RawSign
@@ -83,7 +82,6 @@ function buildSigning(a: SigningAdapters): SigningCtx {
   // request-dependent key never widens the sign surface.
   const crypto: Crypto = {
     sign: createGatedSign({ assertPresence: a.assertPresence, rawSign: (p) => activeRawSign(p) }),
-    deriveForOrigin: a.deriveForOrigin,
   }
 
   return { crypto, vault: a.vault, store: a.store, clock: a.clock, provisioning, pin: a.pin }

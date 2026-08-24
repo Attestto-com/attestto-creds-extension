@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useWalletStore } from '@/stores/wallet'
 import { getPreferredIdentity, setPreferredIdentity } from '@/utils/site-identity-prefs'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
-import { requireUserVerification, getKdfMethod } from '@/utils/webauthn'
+import { requireUserVerification } from '@/utils/webauthn'
 import { resolveApprovalMode } from '@/utils/approval-params'
 import { startActivityReporter } from '@/composables/useActivityReporter'
 import SiteIdentityCard from '@/components/SiteIdentityCard.vue'
@@ -27,8 +27,6 @@ const approving = ref(false)
 const error = ref<string | null>(null)
 
 // Unlock flow state — set by the unlock-error catch below.
-const passphrase = ref('')
-const showPassphraseField = ref(false)
 const showResetVault = ref(false)
 const resetConfirm = ref(false)
 
@@ -38,10 +36,9 @@ const resetConfirm = ref(false)
 const showPasskeySetup = ref(false)
 const settingUpPasskey = ref(false)
 
-// Create-DID state — the "No DID yet" branch now enrolls a passkey (createDid
-// is passkey-first), so it may need a recovery passphrase on non-PRF devices.
+// Create-DID state — the "No DID yet" branch enrolls a passkey and mints the
+// DID in place, so the approval is never a dead end.
 const creatingDid = ref(false)
-const showCreateDidPassphrase = ref(false)
 
 /** Payment mode — detected from URL params */
 const isPayment = ref(false)
@@ -263,31 +260,29 @@ async function approve() {
       return
     }
 
-    // Unlock the vault at the moment of signing. Vaults set up with a
-    // passphrase need it passed here; ones using PRF unlock silently.
-    // Track whether the unlock itself verified the user: a PRF unlock performs a
-    // fresh WebAuthn user-verification to derive the key, which already
-    // satisfies the signing gate below (avoids a double biometric prompt).
+    // Unlock the vault at the moment of signing.
+    //
+    // A successful unlock IS a fresh user-verification: it is a WebAuthn
+    // assertion with `userVerification: 'required'`, performed right now, to
+    // derive the key. It therefore already satisfies the signing gate below,
+    // and re-prompting would ask the same human for the same fingerprint twice
+    // in one interaction. This used to be conditional on the vault's KDF being
+    // PRF; with the passphrase gone there is only one kind of unlock and it
+    // always verifies.
     let unlockProvidedFreshUv = false
     if (!wallet.isUnlocked) {
       try {
-        await wallet.unlock(showPassphraseField.value ? passphrase.value : undefined)
-        unlockProvidedFreshUv = (await getKdfMethod()) === 'prf'
+        await wallet.unlock()
+        unlockProvidedFreshUv = true
       } catch (unlockErr) {
         const msg = unlockErr instanceof Error ? unlockErr.message : 'Unlock failed'
 
-        // Vault set up with passphrase KDF — reveal field and let the user retry
-        if (msg.startsWith('PASSPHRASE_REQUIRED')) {
-          showPassphraseField.value = true
-          error.value = 'Enter your recovery passphrase to sign in.'
-          return
-        }
-
-        // PRF-only vault on an authenticator that no longer returns a PRF
-        // secret — unrecoverable. Reset is the only path forward.
-        if (msg.startsWith('PRF_UNAVAILABLE')) {
+        // This authenticator will not reproduce the vault key. There is no
+        // passphrase to fall back to, by design — the vault is disposable, so
+        // reset is the path, not a password field.
+        if (msg.startsWith('PRF_UNAVAILABLE') || msg.startsWith('PRF_UNSUPPORTED')) {
           showResetVault.value = true
-          error.value = 'Your vault cannot be unlocked on this device. Reset and set it up again to continue.'
+          error.value = 'Your wallet cannot be unlocked on this device. Reset it and set it up again to continue.'
           return
         }
 
@@ -367,30 +362,21 @@ async function approve() {
  * preserves any existing vault rather than replacing it.
  */
 async function setupPasskeyAndRetry() {
-  // If the passphrase field is showing, this authenticator lacks PRF and a
-  // recovery passphrase is REQUIRED. Enrolling with an empty passphrase would
-  // just re-create a passkey, fail PRF again, and loop back here (reads as
-  // "nothing happened"). Guard it so the user gets a clear ask instead.
-  if (showPassphraseField.value && passphrase.value.trim().length < 8) {
-    error.value = 'Enter a recovery passphrase of at least 8 characters, then set up the passkey.'
-    return
-  }
-
   settingUpPasskey.value = true
   error.value = null
   try {
-    await wallet.enrollPasskey(showPassphraseField.value ? passphrase.value : undefined)
+    await wallet.enrollPasskey()
     // Passkey now registered — clear the gate state and re-run the approval,
     // which will find the credential and pass requireUserVerification().
     showPasskeySetup.value = false
     await approve()
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Passkey setup failed'
-    // Authenticator lacks PRF — enroll needs a recovery passphrase. Reveal the
-    // existing passphrase field and let the user set one, then retry.
-    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE')) {
-      showPassphraseField.value = true
-      error.value = 'This device needs a recovery passphrase to protect your vault. Enter one, then set up the passkey again.'
+    // This device cannot produce a PRF secret, so it cannot hold a vault. There
+    // is no passphrase to offer instead — say so plainly rather than showing a
+    // field that would silently downgrade the wallet.
+    if (msg.startsWith('PRF_UNSUPPORTED')) {
+      error.value = 'This device cannot secure a wallet — its passkey does not support the encryption this needs. Try another browser or device.'
     } else if (
       msg.startsWith('Passkey registration cancelled') ||
       (err instanceof DOMException && err.name === 'NotAllowedError')
@@ -428,28 +414,17 @@ async function deny() {
 }
 
 async function createDidAndRetry() {
-  // createDid is passkey-first: on a non-PRF authenticator it needs a recovery
-  // passphrase. Once the field is showing, require it rather than looping on an
-  // empty value (which would re-prompt the authenticator and fail PRF again).
-  if (showCreateDidPassphrase.value && passphrase.value.trim().length < 8) {
-    error.value = 'Enter a recovery passphrase of at least 8 characters, then create your DID.'
-    return
-  }
-
   creatingDid.value = true
   error.value = null
   try {
-    await wallet.createDid(showCreateDidPassphrase.value ? passphrase.value : undefined)
+    await wallet.createDid()
     if (wallet.did) {
       selectedDid.value = wallet.did
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Could not create your DID'
-    // Authenticator lacks PRF (or an existing passphrase vault) — reveal the
-    // passphrase field and let the user set/enter one, then retry.
-    if (msg.startsWith('PRF_REQUIRES_PASSPHRASE') || msg.startsWith('PASSPHRASE_REQUIRED')) {
-      showCreateDidPassphrase.value = true
-      error.value = 'This device needs a recovery passphrase to protect your wallet. Enter one (8+ characters), then create your DID.'
+    if (msg.startsWith('PRF_UNSUPPORTED')) {
+      error.value = 'This device cannot secure a wallet — its passkey does not support the encryption this needs. Try another browser or device.'
     } else if (
       msg.startsWith('Passkey registration cancelled') ||
       (err instanceof DOMException && err.name === 'NotAllowedError')
@@ -654,22 +629,6 @@ async function handleResetVault() {
         </p>
       </div>
 
-      <!-- Recovery passphrase — shown when this authenticator lacks PRF and
-           createDid needs a passphrase to protect the vault. -->
-      <div v-if="showCreateDidPassphrase" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
-        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
-          Recovery passphrase
-        </label>
-        <input
-          v-model="passphrase"
-          type="password"
-          autocomplete="new-password"
-          placeholder="Min 8 characters"
-          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
-          @keyup.enter="createDidAndRetry"
-        />
-      </div>
-
       <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
         <p class="text-xs text-red-300">{{ error }}</p>
       </div>
@@ -764,21 +723,6 @@ async function handleResetVault() {
         Your DID will be shared with <strong class="text-slate-300">{{ origin }}</strong> for identity attribution.
         No private keys are disclosed.
       </p>
-
-      <!-- Passphrase field — revealed when unlock returned PASSPHRASE_REQUIRED -->
-      <div v-if="showPassphraseField" class="rounded-lg border border-slate-700 bg-slate-900 p-3 space-y-2">
-        <label class="block text-[10px] font-medium uppercase tracking-wider text-slate-500">
-          Recovery passphrase
-        </label>
-        <input
-          v-model="passphrase"
-          type="password"
-          autocomplete="current-password"
-          placeholder="Enter your passphrase"
-          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-indigo-500 focus:outline-none"
-          @keyup.enter="approve"
-        />
-      </div>
 
       <!-- Error -->
       <div v-if="error" class="rounded-lg border border-red-700/50 bg-red-950/30 p-3">
