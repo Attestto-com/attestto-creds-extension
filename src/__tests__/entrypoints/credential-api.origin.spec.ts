@@ -111,14 +111,12 @@ const REQUESTS: Array<{
   top?: Record<string, unknown>
 }> = [
   { pageType: 'ATTESTTO_VP_REQUEST', payload: { nonce: 'n', requestedFields: [], audience: 'a' } },
-  { pageType: 'ATTESTTO_LIST_CREDENTIALS', payload: {} },
   { pageType: 'ATTESTTO_DID_SYNC', payload: { did: 'did:jwk:x', verificationMethod: 'did:jwk:x#0' } },
   { pageType: 'ATTESTTO_AUTH_REQUEST', payload: { nonce: 'n' } },
   { pageType: 'ATTESTTO_CW_AUTH_REQUEST', payload: { nonce: 'n' } },
   { pageType: 'ATTESTTO_SIGN_REQUEST', payload: { documentHash: 'h' } },
   { pageType: 'ATTESTTO_SIGN_PDF_REQUEST', payload: { documentHash: 'h' } },
   { pageType: 'ATTESTTO_PAYMENT_REQUEST', payload: { amount: '1' } },
-  { pageType: 'ATTESTTO_RESHARE_VP', payload: { credentialId: 'c', selectedFields: [] } },
   // `credential` sits at the TOP level of event.data for this one, not under
   // `payload` — the bridge's shapes are not uniform, and a test that assumed
   // they were would have "passed" by never reaching the forwarder at all.

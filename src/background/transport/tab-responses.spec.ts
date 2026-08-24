@@ -237,9 +237,6 @@ describe('no originating tab', () => {
     ['sendPaymentResponseToTab', () => tx.sendPaymentResponseToTab(null, REQ, { did: 'd', signature: 's', publicKeyJwk: {} })],
     ['sendChapiErrorToTab', () => tx.sendChapiErrorToTab(null, REQ, 'e')],
     ['sendDidSyncResponse', () => tx.sendDidSyncResponse(null, REQ, null, null, 'e')],
-    ['sendKeyRotateResponse', () => tx.sendKeyRotateResponse(null, REQ, null, null, 'e')],
-    ['sendKeyBackupResponse', () => tx.sendKeyBackupResponse(null, REQ, null, 'e')],
-    ['sendKeyRestoreResponse', () => tx.sendKeyRestoreResponse(null, REQ, 'e')],
     ['sendReshareError', () => tx.sendReshareError(null, REQ, 'e')],
   ]
 
@@ -259,24 +256,26 @@ describe('no originating tab', () => {
   })
 })
 
-describe('key administration transport (no page bridge by design — SOC-2/3/8)', () => {
-  it('KEY_RESTORE derives success from the absence of an error', () => {
-    sentToTab = []
-    tx.sendKeyRestoreResponse(TAB, REQ, null)
-    tx.sendKeyRestoreResponse(TAB, REQ, 'bad_share')
-    expect(sentToTab).toEqual([
-      { type: 'KEY_RESTORE_RESPONSE', payload: { requestId: REQ, success: true, error: null } },
-      { type: 'KEY_RESTORE_RESPONSE', payload: { requestId: REQ, success: false, error: 'bad_share' } },
-    ])
-  })
-
-  it('the page bridge deliberately forwards none of the key-admin responses', () => {
-    for (const send of [
-      () => tx.sendKeyRotateResponse(TAB, REQ, { kty: 'EC' }, { kty: 'EC' }, null),
-      () => tx.sendKeyBackupResponse(TAB, REQ, null, null),
-      () => tx.sendKeyRestoreResponse(TAB, REQ, null),
-    ]) {
-      expect(roundTrip(send)).toBeUndefined()
-    }
-  })
-})
+/**
+ * The `key administration transport` describe that lived here is gone, and the
+ * three senders with it (SOC-144).
+ *
+ * Its cases asserted the wire shape of senders that could never deliver — only
+ * an extension page may invoke rotate/backup/restore, and an extension page has
+ * no `sender.tab`, so every real call was dropped. They passed by supplying a
+ * synthetic tab id no caller could produce: green for a transport that had
+ * never carried anything.
+ *
+ * The two halves of the fix came from different branches and both hold:
+ *
+ *   - `KEY_ROTATE` survives and now answers over `sendResponse`, the channel its
+ *     caller already awaits. Reachability is proven end-to-end in
+ *     `__tests__/entrypoints/key-admin-transport.spec.ts`, through the real
+ *     dispatch with an extension-page sender shape.
+ *   - `KEY_BACKUP` and `KEY_RESTORE` are gone entirely, so there is no transport
+ *     left to fix. They split the RAW private key 2-of-3 — a guardian held a
+ *     piece of the signing key — and recovery returned a signer and nothing
+ *     else, because credentials hang off `LinkedIdentity`.
+ *     `services/vault-backup.ts` already had the version that works: it
+ *     encrypts the whole vault and splits its content key.
+ */

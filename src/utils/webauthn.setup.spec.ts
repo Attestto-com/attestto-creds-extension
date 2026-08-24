@@ -3,16 +3,22 @@ import { STORAGE_KEYS } from '@/config/app'
 import { setupPasskey } from './webauthn'
 
 /**
- * Passkey-first, proven.
+ * Passkey-first, proven — and now passkey-ONLY.
  *
  * `setupPasskey` derives the vault encryption key, which makes it the most
- * consequential function in the product. It had NO test coverage: before this
- * file, `webauthn.spec.ts` covered only `requireUserVerification`.
+ * consequential function in the product.
  *
- * The invariant these tests pin: **PRF is attempted before a passphrase is
- * used, always.** A passphrase-derived vault is a deliberate fallback for
- * authenticators that cannot do PRF, never a shortcut taken because a
- * passphrase happened to be available.
+ * The invariant this file pins is no longer "PRF is attempted before a
+ * passphrase" — there is no passphrase. It is stronger:
+ *
+ *   **The registration response is never treated as the last word on PRF.**
+ *
+ * That is the defect these tests exist for. Chrome answers `create()` with
+ * `prf: { enabled: true }` and NO `results` on every platform authenticator;
+ * the secret only ever comes back from an assertion. Reading `results.first`
+ * off the registration response and giving up declared PRF unsupported on
+ * Touch ID, Windows Hello and iCloud Keychain alike — which is how a password
+ * field ended up in a flow that is supposed to have none.
  */
 
 const PRF_BYTES = new Uint8Array(32).fill(7).buffer
@@ -35,6 +41,9 @@ function storage(initial: Record<string, unknown> = {}) {
           set: vi.fn(async (entries: Record<string, unknown>) => {
             Object.assign(local, entries)
           }),
+          remove: vi.fn(async (keys: string | string[]) => {
+            for (const k of Array.isArray(keys) ? keys : [keys]) delete local[k]
+          }),
         },
         session: {
           set: vi.fn(async (entries: Record<string, unknown>) => {
@@ -46,32 +55,37 @@ function storage(initial: Record<string, unknown> = {}) {
   }
 }
 
-/** A credential whose PRF extension either works or does not. */
-function stubCreate(prfWorks: boolean) {
-  const create = vi.fn(async () => ({
-    rawId: new Uint8Array([1, 2, 3, 4]).buffer,
-    getClientExtensionResults: () =>
-      prfWorks ? { prf: { results: { first: PRF_BYTES } } } : {},
-  }))
-  Object.defineProperty(globalThis.navigator, 'credentials', {
-    configurable: true,
-    value: { create, get: vi.fn() },
-  })
-  return create
+/** What `getClientExtensionResults()` hands back, per call. */
+type PrfShape = 'results' | 'enabled-only' | 'enabled-false' | 'silent'
+
+function extResults(shape: PrfShape): Record<string, unknown> {
+  switch (shape) {
+    case 'results': return { prf: { results: { first: PRF_BYTES } } }
+    case 'enabled-only': return { prf: { enabled: true } }
+    case 'enabled-false': return { prf: { enabled: false } }
+    case 'silent': return {}
+  }
 }
 
-/** An assertion against an ALREADY-REGISTERED credential. */
-function stubGet(prfWorks: boolean) {
+/**
+ * Stub both WebAuthn calls independently, because the whole point is that they
+ * report PRF DIFFERENTLY — `create` announces capability, `get` produces the
+ * secret. A helper that forced them to agree could not express the bug.
+ */
+function stubWebAuthn(opts: { onCreate: PrfShape; onGet: PrfShape }) {
+  const create = vi.fn(async () => ({
+    rawId: new Uint8Array([1, 2, 3, 4]).buffer,
+    getClientExtensionResults: () => extResults(opts.onCreate),
+  }))
   const get = vi.fn(async () => ({
     rawId: new Uint8Array([1, 2, 3, 4]).buffer,
-    getClientExtensionResults: () =>
-      prfWorks ? { prf: { results: { first: PRF_BYTES } } } : {},
+    getClientExtensionResults: () => extResults(opts.onGet),
   }))
   Object.defineProperty(globalThis.navigator, 'credentials', {
     configurable: true,
-    value: { create: vi.fn(), get },
+    value: { create, get },
   })
-  return get
+  return { create, get }
 }
 
 afterEach(() => {
@@ -80,108 +94,224 @@ afterEach(() => {
 })
 
 describe('setupPasskey — a fresh device', () => {
-  it('uses PRF when the authenticator supports it', async () => {
+  /**
+   * 🩸 THE REGRESSION. This is exactly what Chrome does on macOS Touch ID:
+   * registration says "PRF works here", and says nothing else. Setup must go
+   * and get the secret rather than concluding the device cannot do PRF.
+   *
+   * Mutation check: delete the `tryPrfAssertion` follow-up in `setupPasskey`
+   * and this test fails with PRF_UNSUPPORTED — the exact user-visible symptom
+   * (a password prompt on hardware that never needed one).
+   */
+  it('🔒 asks for an assertion when registration reports enabled but returns no secret', async () => {
     const s = storage()
     vi.stubGlobal('chrome', s.chrome)
-    stubCreate(true)
+    const { create, get } = stubWebAuthn({ onCreate: 'enabled-only', onGet: 'results' })
 
     const result = await setupPasskey()
 
-    expect(result.method).toBe('prf')
-    expect(s.local[STORAGE_KEYS.KDF_METHOD]).toBe('prf')
+    expect(create).toHaveBeenCalled()
+    expect(get).toHaveBeenCalled() // the follow-up that the old code never made
+    expect(result.aesKeyBase64).toBeTruthy()
+    expect(s.session[STORAGE_KEYS.SESSION_KEY]).toBe(result.aesKeyBase64)
   })
 
-  it('🔒 uses PRF even when a passphrase was also supplied', async () => {
-    // A user may type a passphrase into the setup form on a PRF-capable device.
-    // That must not downgrade the vault: the passphrase is a FALLBACK, not a
-    // preference, and a PRF vault unlocks with the passkey alone.
+  it('probes anyway when registration reports nothing about PRF at all', async () => {
+    // Browsers disagree about whether `enabled` is reported. An absent flag is
+    // "unknown", never "unsupported" — so it must not short-circuit.
     const s = storage()
     vi.stubGlobal('chrome', s.chrome)
-    stubCreate(true)
+    const { get } = stubWebAuthn({ onCreate: 'silent', onGet: 'results' })
 
-    const result = await setupPasskey('a-passphrase-the-user-typed')
+    const result = await setupPasskey()
 
-    expect(result.method).toBe('prf')
+    expect(get).toHaveBeenCalled()
+    expect(result.aesKeyBase64).toBeTruthy()
   })
 
-  it('falls back to a passphrase only when PRF is genuinely absent', async () => {
+  it('takes the secret straight from registration when one is offered', async () => {
+    // An authenticator that DOES evaluate at creation time must not be made to
+    // verify the user a second time for nothing.
     const s = storage()
     vi.stubGlobal('chrome', s.chrome)
-    stubCreate(false)
+    const { get } = stubWebAuthn({ onCreate: 'results', onGet: 'results' })
 
-    const result = await setupPasskey('fallback-passphrase')
+    const result = await setupPasskey()
 
-    expect(result.method).toBe('passphrase')
-    expect(s.local[STORAGE_KEYS.KDF_METHOD]).toBe('passphrase')
+    expect(result.aesKeyBase64).toBeTruthy()
+    expect(get).not.toHaveBeenCalled()
   })
 
-  it('refuses rather than guessing when PRF is absent and no passphrase given', async () => {
+  it('persists the credential id and salt before PRF support is known', async () => {
+    // A cancelled or interrupted attempt must leave enough behind for the retry
+    // path to reuse the credential instead of stacking another one.
     const s = storage()
     vi.stubGlobal('chrome', s.chrome)
-    stubCreate(false)
+    stubWebAuthn({ onCreate: 'enabled-only', onGet: 'results' })
 
-    await expect(setupPasskey()).rejects.toThrow(/PRF_REQUIRES_PASSPHRASE/)
+    await setupPasskey()
+
+    expect(s.local[STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID]).toBeTruthy()
+    expect(s.local[STORAGE_KEYS.PRF_SALT]).toBeTruthy()
   })
 })
 
 /**
- * 🩸 The defect this file was written for.
+ * There is no passphrase, and refusing is the correct behaviour.
  *
- * The credential ID is persisted IMMEDIATELY on creation, before PRF support is
- * known, so a cancelled or interrupted first attempt leaves one behind. The old
- * code then treated "a credential exists AND a passphrase was supplied" as
- * proof that PRF had already been found unsupported, and went straight to
- * passphrase KDF without ever asking the authenticator again.
- *
- * That assumption is wrong whenever the first attempt failed for any other
- * reason. On a PRF-capable device the vault would be permanently downgraded to
- * passphrase mode, and the passkey — still registered, still prompting — would
- * play no part in unlocking it.
+ * A device that cannot produce a PRF secret cannot hold a vault. The old code
+ * met that case with an Argon2id-over-passphrase vault, which unlocked without
+ * any user verification and so made "passkey-protected" a claim nobody could
+ * check. Failing closed is the honest outcome; downgrading silently is not.
+ */
+describe('setupPasskey — an authenticator that genuinely cannot do PRF', () => {
+  it('🔒 fails closed instead of falling back to a passphrase', async () => {
+    const s = storage()
+    vi.stubGlobal('chrome', s.chrome)
+    stubWebAuthn({ onCreate: 'enabled-false', onGet: 'silent' })
+
+    await expect(setupPasskey()).rejects.toThrow(/PRF_UNSUPPORTED/)
+  })
+
+  it('skips the pointless extra prompt when support is explicitly denied', async () => {
+    const s = storage()
+    vi.stubGlobal('chrome', s.chrome)
+    const { get } = stubWebAuthn({ onCreate: 'enabled-false', onGet: 'silent' })
+
+    await expect(setupPasskey()).rejects.toThrow(/PRF_UNSUPPORTED/)
+    expect(get).not.toHaveBeenCalled()
+  })
+
+  it('writes no session key when it refuses', async () => {
+    // A half-finished setup that cached a key would leave the wallet in a state
+    // where something could be encrypted under a key nothing can reproduce.
+    const s = storage()
+    vi.stubGlobal('chrome', s.chrome)
+    stubWebAuthn({ onCreate: 'enabled-false', onGet: 'silent' })
+
+    await expect(setupPasskey()).rejects.toThrow()
+    expect(s.session[STORAGE_KEYS.SESSION_KEY]).toBeUndefined()
+  })
+})
+
+/**
+ * The credential ID is persisted immediately on creation, before PRF support is
+ * known, so a cancelled or interrupted first attempt leaves one behind. The
+ * retry must reuse it — re-registering stacks orphan credentials the user then
+ * sees forever in their password manager.
  */
 describe('setupPasskey — retry after an interrupted attempt', () => {
-  it('🔒 re-probes PRF instead of assuming the passphrase is required', async () => {
-    const s = storage({
-      [STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID]: 'AQIDBA',
-      [STORAGE_KEYS.PRF_SALT]: 'AQIDBA',
-    })
+  const interrupted = {
+    [STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID]: 'AQIDBA',
+    [STORAGE_KEYS.PRF_SALT]: 'AQIDBA',
+  }
+
+  it('re-probes the existing credential and succeeds', async () => {
+    const s = storage(interrupted)
     vi.stubGlobal('chrome', s.chrome)
-    const get = stubGet(true) // this device CAN do PRF
+    const { get } = stubWebAuthn({ onCreate: 'silent', onGet: 'results' })
 
-    const result = await setupPasskey('a-passphrase-the-user-typed')
+    const result = await setupPasskey()
 
-    // The authenticator was consulted...
     expect(get).toHaveBeenCalled()
-    // ...and PRF won, despite a passphrase being available.
-    expect(result.method).toBe('prf')
-    expect(s.local[STORAGE_KEYS.KDF_METHOD]).toBe('prf')
+    expect(result.aesKeyBase64).toBeTruthy()
   })
 
-  it('still falls back to the passphrase when the re-probe finds no PRF', async () => {
-    const s = storage({
-      [STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID]: 'AQIDBA',
-      [STORAGE_KEYS.PRF_SALT]: 'AQIDBA',
-    })
+  it('🔒 does not mint a second passkey on retry', async () => {
+    const s = storage(interrupted)
     vi.stubGlobal('chrome', s.chrome)
-    stubGet(false)
+    const { create } = stubWebAuthn({ onCreate: 'silent', onGet: 'results' })
 
-    const result = await setupPasskey('fallback-passphrase')
-
-    expect(result.method).toBe('passphrase')
-  })
-
-  it('does not mint a second passkey on retry', async () => {
-    // Re-registering would stack orphan credentials in the keychain, which is
-    // why the original shortcut existed. Re-probing must not lose that.
-    const s = storage({
-      [STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID]: 'AQIDBA',
-      [STORAGE_KEYS.PRF_SALT]: 'AQIDBA',
-    })
-    vi.stubGlobal('chrome', s.chrome)
-    stubGet(true)
-    const create = (navigator.credentials as unknown as { create: ReturnType<typeof vi.fn> }).create
-
-    await setupPasskey('a-passphrase')
+    await setupPasskey()
 
     expect(create).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the re-probe finds no PRF', async () => {
+    const s = storage(interrupted)
+    vi.stubGlobal('chrome', s.chrome)
+    stubWebAuthn({ onCreate: 'silent', onGet: 'silent' })
+
+    await expect(setupPasskey()).rejects.toThrow(/PRF_UNSUPPORTED/)
+  })
+
+  /**
+   * 🩸 THE DEAD END, pinned.
+   *
+   * `allowCredentials` pins the assertion to the stored credential, so while
+   * that id remained in storage every retry re-prompted for the ONE passkey
+   * that cannot work — no picker, no other authenticator, no way out of setup
+   * from the UI. Observed in Brave, whose built-in passkey store has no PRF.
+   */
+  it('🔒 forgets a credential that cannot do PRF, so the next attempt can start over', async () => {
+    const s = storage(interrupted)
+    vi.stubGlobal('chrome', s.chrome)
+    stubWebAuthn({ onCreate: 'silent', onGet: 'silent' })
+
+    await expect(setupPasskey()).rejects.toThrow(/PRF_UNSUPPORTED/)
+
+    expect(
+      s.local[STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID],
+      'the unusable credential id survived the failure, so the next attempt pins ' +
+        'the assertion to it again and the user can never reach a working authenticator',
+    ).toBeUndefined()
+    expect(s.local[STORAGE_KEYS.PRF_SALT]).toBeUndefined()
+  })
+
+  it('a retry after that failure creates a new credential instead of re-probing', async () => {
+    // The consequence of forgetting: `create()` runs, so the browser shows its
+    // full picker and the user can choose a phone or security key.
+    const s = storage(interrupted)
+    vi.stubGlobal('chrome', s.chrome)
+    stubWebAuthn({ onCreate: 'silent', onGet: 'silent' })
+    await expect(setupPasskey()).rejects.toThrow(/PRF_UNSUPPORTED/)
+
+    const second = stubWebAuthn({ onCreate: 'enabled-only', onGet: 'results' })
+    const result = await setupPasskey()
+
+    expect(second.create, 'the retry never offered a fresh ceremony').toHaveBeenCalled()
+    expect(result.aesKeyBase64).toBeTruthy()
+  })
+})
+
+/**
+ * The ceremony must not be locked to this device's built-in passkey store.
+ *
+ * It used to pass `authenticatorAttachment: 'platform'`, which is why a browser
+ * with a PRF-less built-in store showed its own prompt immediately and offered
+ * no alternative. Unconstrained, the browser presents its picker — phone over
+ * hybrid, security key — and those do implement hmac-secret.
+ */
+describe('setupPasskey — the user can reach an authenticator that works', () => {
+  it('🔒 does not restrict registration to the platform authenticator', async () => {
+    const s = storage()
+    vi.stubGlobal('chrome', s.chrome)
+    const { create } = stubWebAuthn({ onCreate: 'enabled-only', onGet: 'results' })
+
+    await setupPasskey()
+
+    const opts = (create.mock.calls.at(-1) as unknown[] | undefined)?.[0] as {
+      publicKey?: { authenticatorSelection?: Record<string, unknown> }
+    }
+    const selection = opts?.publicKey?.authenticatorSelection
+    expect(
+      selection?.authenticatorAttachment,
+      'pinning to `platform` leaves a user whose built-in store lacks PRF with no ' +
+        'authenticator they can choose, and therefore no way to finish setup',
+    ).toBeUndefined()
+  })
+
+  it('🔒 still requires user verification whatever the user picks', async () => {
+    // Widening the choice must not weaken the property the signing gate rests on.
+    const s = storage()
+    vi.stubGlobal('chrome', s.chrome)
+    const { create } = stubWebAuthn({ onCreate: 'enabled-only', onGet: 'results' })
+
+    await setupPasskey()
+
+    const opts = (create.mock.calls.at(-1) as unknown[] | undefined)?.[0] as {
+      publicKey?: { authenticatorSelection?: Record<string, unknown> }
+    }
+    expect(opts?.publicKey?.authenticatorSelection?.userVerification).toBe('required')
   })
 })

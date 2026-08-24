@@ -138,7 +138,11 @@ describe('background.ts is a composition root', () => {
 
   it('the switch still routes every message — the rules did not pass by deletion', () => {
     // A file that dispatched nothing would satisfy every rule above. It must not.
+    // 38, down from 40: SOC-277 removed LIST_STORED_CREDENTIALS and
+    // RESHARE_STORED_VP — the two page-facing vault READS. The floor tracks
+    // reality so this stays a real constraint; the intent (a file that
+    // dispatches nothing satisfies every other rule) is unchanged.
     const cases = measureCaseClauses(source)
-    expect(cases.length).toBeGreaterThanOrEqual(40)
+    expect(cases.length).toBeGreaterThanOrEqual(38)
   })
 })

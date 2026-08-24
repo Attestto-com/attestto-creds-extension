@@ -32,8 +32,6 @@ const siteIdentities = ref<SiteIdentity[]>([])
 const pendingRemove = ref<SiteIdentity | null>(null)
 const removing = ref(false)
 const removeError = ref<string | null>(null)
-const needsPass = ref(false)
-const passphrase = ref('')
 
 onMounted(async () => {
   const s = await readSettings()
@@ -80,8 +78,6 @@ function hostOf(origin: string): string {
 
 function askRemove(item: SiteIdentity): void {
   removeError.value = null
-  needsPass.value = false
-  passphrase.value = ''
   pendingRemove.value = item
 }
 
@@ -91,19 +87,13 @@ async function confirmRemove(): Promise<void> {
   removeError.value = null
   try {
     if (!wallet.isUnlocked) {
-      await wallet.unlock(needsPass.value ? passphrase.value : undefined)
+      await wallet.unlock()
     }
     await wallet.archiveSiteDid(pendingRemove.value.origin)
     await loadSiteIdentities()
     pendingRemove.value = null
   } catch (err) {
-    const msg = err instanceof Error ? err.message : ''
-    if (msg.startsWith('PASSPHRASE_REQUIRED')) {
-      needsPass.value = true
-      removeError.value = t('security.siteIdentities.unlockNeeded')
-    } else {
-      removeError.value = t('security.siteIdentities.unlockNeeded')
-    }
+    removeError.value = t('security.siteIdentities.unlockNeeded')
   } finally {
     removing.value = false
   }
@@ -221,16 +211,6 @@ async function confirmRemove(): Promise<void> {
         <p class="text-sm leading-relaxed text-[#a8b4c4]">
           {{ t('security.siteIdentities.warnBody', { site: hostOf(pendingRemove.origin) }) }}
         </p>
-
-        <input
-          v-if="needsPass"
-          v-model="passphrase"
-          type="password"
-          autocomplete="current-password"
-          placeholder="Passphrase"
-          class="w-full rounded-md border border-[#243044] bg-[#0d1520] px-3 py-2 text-sm text-[#f1f4f8] outline-none focus:border-[#4a8ec8]"
-          @keyup.enter="confirmRemove"
-        />
 
         <p v-if="removeError" class="text-sm text-amber-300">{{ removeError }}</p>
 

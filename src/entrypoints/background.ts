@@ -9,8 +9,9 @@
  * 5. Keep the offscreen document alive via alarms
  */
 
-import { MESSAGE_ROUTES } from '@/background/router/routes'
-import type { KeyAdminCtx } from '@/background/ctx/ctx-bundles'
+import { dispatch } from '@/background/router/dispatch'
+import { createCounterpartyDidResolver } from '@/background/did/did-resolver'
+import { createDidWebFetch } from '@/background/did/did-web-fetch.adapter'
 import type { DidSyncResponseData } from '@/background/handlers/did-sync.handler'
 import { handleSignDocumentApprove } from '@/background/handlers/sign-document-approve.handler'
 import { handlePaymentApprove } from '@/background/handlers/payment-approve.handler'
@@ -19,13 +20,12 @@ import { handleSignAttesttoPdfApprove } from '@/background/handlers/sign-attestt
 import { handleAuthApprove } from '@/background/handlers/auth-approve.handler'
 import { createBuildBundle } from '@/background/ctx/build-bundle'
 import { createSigningAdapters } from '@/background/adapters/signing-adapters'
+import { DEFERRED_PRESENCE_PASSTHROUGH } from '@/background/crypto/gated-sign'
 import { createKeyAdminAdapters, createUntrustedAdapters } from '@/background/adapters/chrome-adapters'
 import { handleKeyRotate } from '@/background/handlers/key-rotate.handler'
-import { handleKeyBackup } from '@/background/handlers/key-backup.handler'
-import { handleKeyRestore } from '@/background/handlers/key-restore.handler'
 import { readVault, writeVault, readPublicVault, writePublicVault, syncPublicVault } from '@/utils/vault'
 import type { VaultData } from '@/stores/wallet'
-import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DIDCommInboundMessage, DidSyncMessage, KeyRotateMessage, KeyBackupMessage, KeyRestoreMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
+import type { CredentialOfferMessage, PushPresentationMessage, ProofAccessRequestMessage, CredentialApiRequestMessage, DidSyncMessage, PaymentRequestMessage, SignDocumentRequestMessage, SignAttesttoPdfRequestMessage } from '@/utils/messaging'
 import { isOriginTrusted, recordTrustedOrigin } from '@/utils/trusted-origins'
 import { isExtensionSender, getSenderOrigin } from '@/utils/message-guard'
 import { isPlatformOrigin } from '@/utils/platform-origins'
@@ -49,20 +49,13 @@ import {
   sendPaymentResponseToTab,
   sendChapiErrorToTab,
   sendChapiPresentation,
-  sendStoredCredentials,
-  sendResharePresentation,
   sendDidSyncResponse,
-  sendKeyRotateResponse,
-  sendKeyBackupResponse,
-  sendKeyRestoreResponse,
-  sendReshareError,
 } from '@/background/transport/tab-responses'
 import { createApprovalWindows, chromeApprovalWindowPlatform } from '@/background/consent/approval-window'
 import { createPendingConsent } from '@/background/consent/pending-consent'
 import { createPendingFlow, approveRejection } from '@/background/consent/pending-flow'
 import { createPendingStore, chromePendingStorage } from '@/background/consent/pending-store'
 import { handleCredentialOfferAccept } from '@/background/handlers/credential-offer-accept.handler'
-import { summarizeStoredCredentials, buildResharePresentation } from '@/background/handlers/stored-credential-reads.handler'
 import { handleCredentialOffer } from '@/background/handlers/credential-offer.handler'
 import { recordProofAccessRequest, recordPreparedPresentation, linkWalletAddress } from '@/background/handlers/vault-records.handler'
 import { approvalParams } from '@/utils/approval-params'
@@ -319,13 +312,34 @@ export default defineBackground(() => {
   })
 
   /**
+   * SOC-278 — the requester picks the `requestId`, and it is also the pending
+   * row's storage key. Refuse to proceed when that id is already live.
+   *
+   * Without this, a page could open an approval window for document A and then
+   * re-send with the same id and document B: `put` replaced the row underneath
+   * the window, and the user approved B while reading A. The window renders
+   * from the URL it was opened with; the effect runs against the stored row;
+   * the id joining them was attacker-controlled.
+   *
+   * Throwing rather than returning is deliberate — every call site is already
+   * wrapped in `answerOrFail`, which turns this into an `{ ok: false }` answer
+   * to the page. A silently-ignored duplicate would leave the caller waiting.
+   */
+  const claimPendingId = (stored: boolean, requestId: string): void => {
+    if (!stored) {
+      console.warn('[Attestto ID] Rejected duplicate pending request id', requestId)
+      throw new Error('A request with this id is already awaiting approval')
+    }
+  }
+
+  /**
    * Open the approval popup for a document signing request.
    */
   async function handleSigningRequest(
     signReq: SignDocumentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    await pendingSigningRequests.put(signReq.requestId, { signReq, senderTabId })
+    claimPendingId(await pendingSigningRequests.put(signReq.requestId, { signReq, senderTabId }), signReq.requestId)
     await approvalWindows.open({
       id: signReq.requestId,
       params: approvalParams.signing({
@@ -356,19 +370,6 @@ export default defineBackground(() => {
         throw new Error(`buildBundle('${tier}') not wired until its routes migrate (Story 1.13, later phase)`)
       },
     }) as T
-  const buildBundle = createBuildBundle({
-    signing: createSigningAdapters({
-      readVault,
-      writeVault,
-      syncPublicVault,
-      findOrCreateSiteDid,
-      publicJwkOf,
-      pinSite,
-    }),
-    untrusted: unwiredBundle('untrusted'),
-    consent: unwiredBundle('consent'),
-    keyAdmin: unwiredBundle('keyAdmin'),
-  })
 
   // KeyAdmin's concrete surface (store + P-256 keygen) and the untrusted tier's
   // chrome surface are built in `adapters/chrome-adapters.ts` (Story 1.13
@@ -377,6 +378,55 @@ export default defineBackground(() => {
   // F1 capability fence forbids.
   const keyAdminAdapters = createKeyAdminAdapters({ readVault, writeVault, syncPublicVault })
   const untrustedAdapters = createUntrustedAdapters()
+
+  /**
+   * SOC-280 — the router's own dependencies. Both are ROUTER-OWNED: they are
+   * passed to dispatch and never enter a ctx bundle, so no handler can reach
+   * them.
+   *
+   * `originPolicy` binds the SAME predicate the DID_SYNC case applied inline
+   * (`isPlatformOrigin || isOriginTrusted`) — the trust-on-first-use flow the
+   * product has always had. It moves behind the chokepoint rather than being
+   * reimplemented there; this is now the only place it is spelled out.
+   */
+  const originPolicy = {
+    isAuthorized: async (origin: string): Promise<boolean> =>
+      isPlatformOrigin(origin) || isOriginTrusted(origin),
+  }
+  const peerResolver = createCounterpartyDidResolver({
+    http: createDidWebFetch(),
+    clock: { now: () => Date.now() },
+  })
+
+  /** Every dispatch goes through here, so no call site can omit a dependency. */
+  const routeMessage = (
+    message: { type: string; payload?: unknown; id?: string },
+    sender: chrome.runtime.MessageSender | undefined,
+  ) => dispatch(message, sender, { buildBundle, originPolicy, peerResolver })
+
+  const buildBundle = createBuildBundle({
+    signing: createSigningAdapters({
+      // SOC-279 — a no-op, stated rather than defaulted. The real WebAuthn gate
+      // cannot run here (no `navigator.credentials` in a service worker); see
+      // the constant's own comment and the deferred UV-proof design note.
+      assertPresence: DEFERRED_PRESENCE_PASSTHROUGH,
+      readVault,
+      writeVault,
+      syncPublicVault,
+      findOrCreateSiteDid,
+      publicJwkOf,
+      pinSite,
+    }),
+    // SOC-280 — `untrusted` and `keyAdmin` are REAL now. They were throwing
+    // Proxies because their ctx types declared capabilities nothing supplied
+    // (`notify`/`http`, `vault`/`crypto`); those were unused and are gone, so
+    // the adapters satisfy the bundles directly. `consent` stays unwired — no
+    // consent route has migrated, and a Proxy that throws is a louder failure
+    // than a half-built bundle.
+    untrusted: untrustedAdapters,
+    consent: unwiredBundle('consent'),
+    keyAdmin: { ...keyAdminAdapters, clock: { now: () => Date.now() } },
+  })
 
   // ── DID Authentication (login via extension — ATT-123) ──────────
 
@@ -397,7 +447,7 @@ export default defineBackground(() => {
     // earlier fail-fast replaced that flow with a dead-end error message on the
     // page — the popup is fully actionable (Create DID / Cancel), so there is no
     // empty-list hang.
-    await pendingAuthRequests.put(authReq.requestId, { ...authReq, senderTabId })
+    claimPendingId(await pendingAuthRequests.put(authReq.requestId, { ...authReq, senderTabId }), authReq.requestId)
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendAuthErrorToTab)
   }
 
@@ -462,7 +512,7 @@ export default defineBackground(() => {
     // No fail-fast on missing identity — open the popup so its "Create DID"
     // flow can mint one and complete the sign-in in one step (see
     // handleAuthRequest). The popup is fully actionable, so no empty-list hang.
-    await pendingAuthRequests.put(authReq.requestId, {
+    claimPendingId(await pendingAuthRequests.put(authReq.requestId, {
       requestId: authReq.requestId,
       nonce: authReq.nonce,
       // The signed timestamp is minted at approval time (fresh per the verifier's
@@ -474,7 +524,7 @@ export default defineBackground(() => {
       audience: authReq.audience,
       envelopeNonce: authReq.requestId,
       trustedIssuers: authReq.trustedIssuers,
-    })
+    }), authReq.requestId)
     await openAuthApprovalWindow(authReq.requestId, authReq.origin, senderTabId, sendCwAuthErrorToTab)
   }
 
@@ -487,7 +537,7 @@ export default defineBackground(() => {
     req: SignAttesttoPdfRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    await pendingAttesttoPdfRequests.put(req.requestId, { req, senderTabId })
+    claimPendingId(await pendingAttesttoPdfRequests.put(req.requestId, { req, senderTabId }), req.requestId)
     await approvalWindows.open({
       id: req.requestId,
       params: approvalParams.attesttoPdf({
@@ -515,7 +565,7 @@ export default defineBackground(() => {
     payReq: PaymentRequestMessage['payload'],
     senderTabId: number | null,
   ): Promise<void> {
-    await pendingPaymentRequests.put(payReq.requestId, { payReq, senderTabId })
+    claimPendingId(await pendingPaymentRequests.put(payReq.requestId, { payReq, senderTabId }), payReq.requestId)
     await approvalWindows.open({
       id: payReq.requestId,
       params: approvalParams.payment({
@@ -590,7 +640,7 @@ export default defineBackground(() => {
     senderTabId: number | null,
   ): Promise<void> {
     // Store the raw request + sender tab for the approval page to use
-    await pendingChapiRawRequests.put(apiReq.requestId, { apiReq, senderTabId })
+    claimPendingId(await pendingChapiRawRequests.put(apiReq.requestId, { apiReq, senderTabId }), apiReq.requestId)
     await approvalWindows.open({
       id: apiReq.requestId,
       params: approvalParams.chapi({ id: apiReq.requestId, origin: apiReq.origin }),
@@ -653,6 +703,7 @@ export default defineBackground(() => {
         answer({ ok: false, error: err instanceof Error ? err.message : 'Internal error' })
       })
     }
+
 
     // Story 1.14 — only a user gesture may move the idle deadline. The predicate
     // (extension sender AND an allowlisted type) lives in `lock/user-gestures`;
@@ -724,23 +775,21 @@ export default defineBackground(() => {
         // The origin comes from the unspoofable `sender`, NEVER from the payload.
         const senderOrigin = sender?.origin ?? sender?.url ?? null
 
-        // The silent-acceptance gate lives in `handlers/credential-offer.handler.ts`
-        // (Story 1.13 Phase 9): an offer skips consent only when it is the
-        // identity-sync format AND the origin was approved before.
+        // Every offer asks the user. The silent-acceptance branch that used to
+        // live in `handlers/credential-offer.handler.ts` is gone — approving an
+        // origin once is not standing consent for what it sends afterwards.
         answerOrFail(handleCredentialOffer(offer, senderOrigin, {
-          isOriginTrusted,
-          stage: (notifId, staged, origin) => pendingOffers.put(notifId, { offer: staged, origin }),
-          accept: acceptCredentialOffer,
+          // The offer's `notifId` is minted here, not supplied by the page, so a
+          // duplicate is a clock collision rather than an attack.
+          stage: async (notifId, staged, origin) => {
+            await pendingOffers.put(notifId, { offer: staged, origin })
+          },
           requestConsent: openCredentialOfferApprovalWindow,
           newNotifId: () => `credential-offer-${Date.now()}`,
-        }).then((outcome) => {
-          sendResponse(
-            outcome.kind === 'autoAccepted'
-              ? { ok: true, autoAccepted: true }
-              : { ok: true, pendingConsent: true },
-          )
+        }).then(() => {
+          sendResponse({ ok: true, pendingConsent: true })
         }), 'CREDENTIAL_OFFER')
-        return true // async: the trust check and the window open are both awaited
+        return true // async: staging and the window open are both awaited
       }
 
       case 'WALLET_LINK': {
@@ -799,17 +848,12 @@ export default defineBackground(() => {
       }
 
       case 'DIDCOMM_INBOUND': {
-        // Story 1.9 — extracted to the DIDCOMM_INBOUND route (parity-tested in
-        // didcomm-inbound.handler.spec). Delegates DIRECTLY to `handle` (not
-        // through `dispatch`, whose empty `allowFrom` would reject — the legacy
-        // case did no sender-auth). Effects fire-and-forget, response stays sync —
-        // same as before. The inline ctx is a thin chrome adapter; the real
-        // capability-scoped bundle is built by the composition root (Story 1.13),
-        // which also removes this cast.
-        void MESSAGE_ROUTES.DIDCOMM_INBOUND.handle(
-          (message as DIDCommInboundMessage).payload,
-          untrustedAdapters as never,
-        )
+        // SOC-280 — routed through `dispatch`, so stage 6 actually runs the
+        // `senderResolvable` check this route has always declared. Effects stay
+        // fire-and-forget and the ack stays synchronous: the page gets no
+        // presentation back from this channel, and a slow DID resolution must
+        // not hold the message port open.
+        void routeMessage(message as { type: string; payload?: unknown }, sender)
         sendResponse({ ok: true })
         break
       }
@@ -817,103 +861,70 @@ export default defineBackground(() => {
       case 'CREDENTIAL_API_REQUEST': {
         const apiReq = message.payload as CredentialApiRequestMessage['payload']
 
-        if (apiReq.protocol === 'chapi') {
-          // CHAPI standard — open popup for user consent (Phantom-style)
-          answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
-            sendResponse({ ok: true })
-          }), 'CREDENTIAL_API_REQUEST')
-        } else {
-          // Attestto proprietary — forward to popup consent UI
-          chrome.notifications.create(`cred-api-${apiReq.requestId}`, {
-            type: 'basic',
-            iconUrl: chrome.runtime.getURL('icon/48.png'),
-            title: 'Identity Verification',
-            message: `${apiReq.origin} is requesting identity verification.`,
-            buttons: [{ title: 'Review' }, { title: 'Decline' }],
-            requireInteraction: true,
-          })
-
-          answerOrFail(chrome.runtime.sendMessage({
-            type: 'CREDENTIAL_API_REQUEST_FORWARD',
-            payload: apiReq,
-          }), 'CREDENTIAL_API_REQUEST')
+        // SOC-145 — BOTH protocols go through the approval window.
+        //
+        // The proprietary protocol is what `navigator.credentials.get` uses
+        // unless a relying party explicitly asks for CHAPI, and it used to take
+        // a different exit: an OS notification plus a
+        // `CREDENTIAL_API_REQUEST_FORWARD` broadcast. Nothing listened to that
+        // broadcast, and the notification's buttons reached a listener that was
+        // removed (see the note above `chrome.notifications` in this file). So
+        // the default path of a public API completed for nobody: the page's
+        // promise sat until its own 300s timeout and rejected with
+        // `NotAllowedError: User did not respond in time`, which is exactly what
+        // a user ignoring the prompt looks like. A relying party had no way to
+        // tell "the wallet has no handler" from "the human walked away".
+        //
+        // `handleChapiRequest` was already protocol-agnostic — it stores the raw
+        // request with its sender tab and opens the window — so the fix is to
+        // stop branching here. The protocol difference lives where it belongs,
+        // in what CHAPI_APPROVE builds.
+        answerOrFail(handleChapiRequest(apiReq, sender.tab?.id ?? null).then(() => {
           sendResponse({ ok: true })
-        }
+        }), 'CREDENTIAL_API_REQUEST')
         break
       }
 
-      case 'LIST_STORED_CREDENTIALS': {
-        const listReqId = message.payload?.requestId as string
-        const listSenderTabId = sender.tab?.id ?? null
-        answerOrFail(readVault().then((vault) => {
-          sendStoredCredentials(listSenderTabId, listReqId, summarizeStoredCredentials(vault))
-          sendResponse({ ok: true })
-        }), 'LIST_STORED_CREDENTIALS')
-        break
-      }
 
-      case 'RESHARE_STORED_VP': {
-        const resharePayload = message.payload as {
-          requestId: string
-          credentialId: string
-          selectedFields: string[]
-        }
-        const reshareSenderTabId = sender.tab?.id ?? null
 
-        answerOrFail(readVault().then((vault) => {
-          const result = buildResharePresentation(vault, resharePayload)
-          if (!result.ok) {
-            sendReshareError(reshareSenderTabId, resharePayload.requestId, result.error)
-            sendResponse({ ok: false })
-            return
-          }
-          sendResharePresentation(reshareSenderTabId, resharePayload.requestId, result.presentation)
-          sendResponse({ ok: true })
-        }), 'RESHARE_STORED_VP')
-        break
-      }
-
-      // DID_SYNC writes holderDid / verificationMethod into the vault. It is a
-      // legitimate platform→extension flow, so it is not hard-rejected — but the
-      // sender origin MUST be authorized, resolved from the unspoofable `sender`
-      // (never the page-supplied payload.origin). Platform origins pass silently;
-      // previously user-trusted origins pass; everything else is rejected
-      // (SOC-9). Trust-on-first-use approval UX for unknown origins is a
-      // follow-up (no current origin needs it — the platform is allowlisted).
+      // DID_SYNC writes holderDid / verificationMethod into the vault — a
+      // legitimate platform→extension flow, but only from an authorized origin.
+      //
+      // SOC-280 — the origin gate that used to live here is GONE from this case.
+      // It is now `allowFrom: { policy: 'platform-or-trusted' }` on the route,
+      // evaluated by the router's `originPolicy` port against the unspoofable
+      // `sender`. Same predicate, one home. Stage 6 also runs `vmBinding` for
+      // the first time, so a page can no longer name a verification method the
+      // claimed DID's document does not authorise.
+      //
+      // What stays here is transport: the router returns the response envelope,
+      // this case turns it into a DID_SYNC_RESPONSE on the originating tab.
       case 'DID_SYNC': {
         const syncReq = message.payload as DidSyncMessage['payload']
         const senderTabId = sender.tab?.id ?? null
-        const senderOrigin = getSenderOrigin(sender)
 
-        // Inline ctx adapter over the real chrome/vault surface (the composition
-        // root, Story 1.13, replaces this + the `as never` boundary cast with the
-        // router's `buildBundle`). The handler returns the DID_SYNC_RESPONSE data;
-        // this case owns transport (`sendDidSyncResponse`) and the runtime ack.
-        const didSyncCtx: Pick<KeyAdminCtx, 'store' | 'keygen' | 'clock'> = {
-          ...keyAdminAdapters,
-          clock: { now: () => Date.now() },
-        }
-
-        const runSync = () =>
-          MESSAGE_ROUTES.DID_SYNC.handle(syncReq, didSyncCtx as never).then((data) => {
-            const r = data as DidSyncResponseData
+        answerOrFail(
+          routeMessage(message as { type: string; payload?: unknown }, sender).then((res) => {
+            if (!res.ok) {
+              console.warn('[Attestto ID] Rejected DID_SYNC', res.error, getSenderOrigin(sender))
+              // The page keeps the error vocabulary it already knew: an
+              // authorization refusal reads as `origin_not_authorized`
+              // regardless of which stage refused, and everything else is a
+              // generic failure. Router error codes are internal.
+              const wire =
+                res.error === 'forbidden-origin' || res.error === 'forbidden-sender'
+                  ? 'origin_not_authorized'
+                  : 'sync_failed'
+              sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, wire)
+              sendResponse({ ok: false, error: wire })
+              return
+            }
+            const r = res.data as DidSyncResponseData
             sendDidSyncResponse(senderTabId, r.requestId, r.publicKeyJwk, r.holderDid, r.error)
             sendResponse({ ok: true })
-          })
-
-        if (isPlatformOrigin(senderOrigin)) {
-          answerOrFail(runSync(), 'DID_SYNC')
-        } else {
-          answerOrFail(isOriginTrusted(senderOrigin).then((trusted) => {
-            if (trusted) {
-              answerOrFail(runSync(), 'DID_SYNC')
-            } else {
-              console.warn('[Attestto ID] Rejected DID_SYNC from unauthorized origin', senderOrigin)
-              sendDidSyncResponse(senderTabId, syncReq.requestId, null, null, 'origin_not_authorized')
-              sendResponse({ ok: false, error: 'origin_not_authorized' })
-            }
-          }), 'DID_SYNC')
-        }
+          }),
+          'DID_SYNC',
+        )
         break
       }
 
@@ -922,50 +933,58 @@ export default defineBackground(() => {
       // invoke them. A web page always carries sender.tab and is rejected here
       // (SOC-2 / SOC-3 / SOC-8). The page bridge no longer forwards these types,
       // so this guard is defense-in-depth for any future/internal caller.
+      //
+      // SOC-144 — these three answer over `sendResponse`, not `chrome.tabs`.
+      //
+      // They used to hand their result to `sendKey*Response(tabId, …)`, which
+      // posts with `chrome.tabs.sendMessage`. The only sender permitted here is
+      // an extension page, and an extension page carries no `sender.tab`, so
+      // `tabId` was `null` on every real call and the transport dropped the
+      // result with a console warning. The permitted caller and the answerable
+      // caller were disjoint sets: a tab-based reply for an Options-UI-only
+      // operation is a category error.
+      //
+      // The result now travels on the channel the caller is already awaiting.
+      // The `return true` is for consistency with every other async case here;
+      // it is not load-bearing, because the listener returns `true`
+      // unconditionally at the end regardless. Only the transport was broken.
       case 'KEY_ROTATE': {
         if (!isExtensionSender(sender)) {
           console.warn('[Attestto ID] Rejected KEY_ROTATE from non-extension sender', getSenderOrigin(sender))
           sendResponse({ ok: false, error: 'forbidden_sender' })
           break
         }
-        const rotateReq = message.payload as KeyRotateMessage['payload']
-        const rotateTabId = sender.tab?.id ?? null
         answerOrFail(handleKeyRotate(keyAdminAdapters).then((result) => {
-          sendKeyRotateResponse(rotateTabId, rotateReq.requestId, result.newPublicKeyJwk, result.oldPublicKeyJwk, result.error)
-          sendResponse({ ok: true })
+          sendResponse(
+            result.error
+              ? { ok: false, error: result.error }
+              : { ok: true, newPublicKeyJwk: result.newPublicKeyJwk, oldPublicKeyJwk: result.oldPublicKeyJwk },
+          )
         }), 'KEY_ROTATE')
-        break
+        return true // async
       }
 
-      case 'KEY_BACKUP': {
-        if (!isExtensionSender(sender)) {
-          console.warn('[Attestto ID] Rejected KEY_BACKUP from non-extension sender', getSenderOrigin(sender))
-          sendResponse({ ok: false, error: 'forbidden_sender' })
-          break
-        }
-        const backupReq = message.payload as KeyBackupMessage['payload']
-        const backupTabId = sender.tab?.id ?? null
-        answerOrFail(handleKeyBackup(keyAdminAdapters).then((result) => {
-          sendKeyBackupResponse(backupTabId, backupReq.requestId, result.shares, result.error)
-          sendResponse({ ok: true })
-        }), 'KEY_BACKUP')
-        break
-      }
-
-      case 'KEY_RESTORE': {
-        if (!isExtensionSender(sender)) {
-          console.warn('[Attestto ID] Rejected KEY_RESTORE from non-extension sender', getSenderOrigin(sender))
-          sendResponse({ ok: false, error: 'forbidden_sender' })
-          break
-        }
-        const restoreReq = message.payload as KeyRestoreMessage['payload']
-        const restoreTabId = sender.tab?.id ?? null
-        answerOrFail(handleKeyRestore({ shareA: restoreReq.shareA, shareB: restoreReq.shareB }, keyAdminAdapters).then((result) => {
-          sendKeyRestoreResponse(restoreTabId, restoreReq.requestId, result.error)
-          sendResponse({ ok: true })
-        }), 'KEY_RESTORE')
-        break
-      }
+      // `KEY_BACKUP` and `KEY_RESTORE` were removed here (SOC-144).
+      //
+      // They split the RAW private key 2-of-3 and reassembled it. Two problems,
+      // and the second is why they went rather than got a UI:
+      //
+      // 1. Two shares reconstructed the signing key outright — no passphrase,
+      //    no ciphertext in between. A guardian held a piece of a key.
+      // 2. They recovered the key and NOTHING ELSE. Credentials hang off
+      //    `LinkedIdentity`, so a user who completed this recovery got a signer
+      //    back with nothing to present.
+      //
+      // `services/vault-backup.ts` already had the version that works:
+      // `exportShamirBackup` encrypts the WHOLE vault and splits the content
+      // key, so two shares are useless without the file and a restore returns
+      // credentials, identities and site DIDs. Its restore half was already
+      // wired into the lock screen; only the export button was missing, and
+      // this change adds it. Two implementations of one feature, and the
+      // unreachable one was the weaker one.
+      //
+      // `KEY_ROTATE` stays: replacing a compromised signing key is a different
+      // job from surviving device loss.
 
       case 'CREDENTIAL_ACCEPTED':
       case 'CREDENTIAL_REJECTED':
@@ -1244,8 +1263,13 @@ export default defineBackground(() => {
             {
               challenge: pending.apiReq.challenge,
               nonce: pending.apiReq.nonce,
-              domain: pending.apiReq.domain,
+              // SOC-145 — the proprietary protocol names the verifier in
+              // `audience` where CHAPI uses `domain`. Mapped here so the handler
+              // sees one shape; `domain` still wins when both are present, which
+              // is only ever a CHAPI request.
+              domain: pending.apiReq.domain ?? pending.apiReq.audience ?? null,
               origin: pending.apiReq.origin,
+              requestedFields: pending.apiReq.requestedFields ?? null,
             },
             chapiCtx as never,
           ).then((result) => {

@@ -39,19 +39,20 @@ function makeAdapters(overrides: {
   const gateSpy = vi.fn<PresenceGate>(overrides.assertPresence ?? accept)
   const adapters: BundleAdapters = {
     untrusted: {
-      notify: { show: vi.fn(async () => {}) },
-      http: { fetch: vi.fn(async () => ({})) },
       notifications: { create: vi.fn(async () => {}) },
       runtime: { sendMessage: vi.fn(async () => {}), getURL: vi.fn(() => 'x') },
     },
     consent: {
-      pending: { put: vi.fn(async () => {}), get: vi.fn(async () => null), markConsumed: vi.fn(async () => {}), takePending: vi.fn(async () => null), claimForProcessing: vi.fn(async () => ({ status: 'missing' as const })) },
+      pending: { put: vi.fn(async () => true), get: vi.fn(async () => null), markConsumed: vi.fn(async () => {}), takePending: vi.fn(async () => null), claimForProcessing: vi.fn(async () => ({ status: 'missing' as const })) },
       notify: { show: vi.fn(async () => {}) },
       clock: { now: vi.fn(() => 0) },
     },
     keyAdmin: {
-      vault: { read: vi.fn(async () => ({ kind: 'v' })), write: vi.fn(async () => {}) },
-      crypto: { sign: vi.fn(async () => sig(9)) },
+      // SOC-280 — `vault` and `crypto` are gone from KeyAdminCtx: nothing used
+      // them, and an unused signing surface on the key tier is a capability
+      // waiting to be picked up by mistake. SOC-243 narrowed `Crypto` itself to
+      // {sign} in the same window; both are strictly smaller surfaces and both
+      // hold.
       store: { read: vi.fn(async () => null), write: vi.fn(async () => {}), syncPublic: vi.fn(async () => {}) },
       keygen: { generateP256: vi.fn(async () => ({ privateKeyJwk: {}, publicKeyJwk: {} })) },
       clock: { now: vi.fn(() => 0) },
@@ -74,7 +75,7 @@ describe('createBuildBundle — tag → bundle', () => {
   it('returns the right bundle shape per tag', () => {
     const { adapters } = makeAdapters()
     const build = createBuildBundle(adapters)
-    expect(build('untrusted').notify).toBeDefined()
+    expect(build('untrusted').notifications).toBeDefined()
     expect(build('consent').pending).toBeDefined()
     expect(build('keyAdmin').keygen).toBeDefined()
     const s = build('signing')

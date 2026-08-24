@@ -71,24 +71,50 @@ identity call to action linked OUT to the platform, and `LockScreenView` — the
 sole caller of `wallet.setup()` — was never routed. Found by running the
 extension, not by any test.
 
-## Credential offer consent (identity format = per-origin trust)
+## The consent rules (these govern; code that disagrees is the bug)
 
-`CREDENTIAL_OFFER` messages with `format === 'attestto-id'` are accepted under a **trust-on-first-use** model gated by the **sender origin**:
+Written down 2026-08-14 after a security review gated a capability that should
+never have existed. Every reviewer before that read the code as the spec, because
+these rules were nowhere a reviewer could reach them.
 
-1. First sight of `attestto-id` from a given origin → OS notification asks the user to approve. Notification copy explicitly tells the user that approving trusts the site for future syncs.
-2. On approve → `recordTrustedOrigin(origin)` stamps the origin into `chrome.storage.local[STORAGE_KEYS.TRUSTED_ORIGINS]`, then runs the normal offer acceptance.
-3. Subsequent `attestto-id` offers from the same origin → silent auto-accept, no notification.
+1. **A page is untrusted by default, and may only present itself.** It cannot ask
+   what the wallet holds. It cannot ask for a credential. There is no page-facing
+   read path into the vault, and adding one is not a hardening problem to be
+   solved with a gate — it is out of scope by design.
+2. **No DID, no conversation.** An origin that does not present a DID does not
+   communicate with the extension at all.
+3. **A trusted DID may ASK — and it asks the USER.** "Trusted" means ours, or on
+   the whitelist of trusted issuers. Trust buys the right to make a request, not
+   the right to an answer.
+4. **There is never an auto-accept. Literally never.** No setting passes data to
+   a site automatically, and none may be added. Approving an origin once is not
+   standing consent for what it sends afterwards.
 
-**Why:** the previous "auto-accept any attestto-id from any origin" approach (shipped morning of 2026-06-25, audited & reverted same day) let any web page push an arbitrary `didUri` into `linkedIdentities[]` with no user gesture. The fix preserves the silent-sync UX users expect from a logged-in platform while ensuring the *first* sync from each origin is an explicit user decision.
+The user is the only party that decides what leaves the wallet, every time.
+
+### What this replaced
+
+This section previously described trust-on-first-use for `attestto-id` credential
+offers: first offer from an origin raised a notification, and after approval every
+later offer from that origin was **accepted silently**. That was written as a
+hardening of an older hole (auto-accepting any `attestto-id` from any origin), so
+it read as the safe version of a bad idea rather than as the bad idea.
+
+Removed 2026-08-14. `handleCredentialOffer` now has no branch: every offer, every
+format, every origin goes to the approval window. `CredentialOfferCtx` no longer
+exposes `isOriginTrusted` or `accept`, so a silent path is unexpressible rather
+than merely untaken.
+
+Origin trust still exists and still means something — it authorizes the `DID_SYNC`
+channel (`allowFrom: { policy: 'platform-or-trusted' }`). Authorization for a
+channel is not consent for a payload.
 
 **Where:**
-- `src/utils/trusted-origins.ts` — `isOriginTrusted` / `recordTrustedOrigin` / `revokeTrustedOrigin` over a single chrome.storage.local entry.
-- `background.ts` `CREDENTIAL_OFFER` handler — captures `sender.origin`, gates the auto-accept on `isOriginTrusted`, otherwise falls through to OS notification.
-- `background.ts` `acceptCredentialOffer` — records origin as trusted only when the format is `attestto-id` (one-off VC issuance is not recurring sync, so no benefit to persisting trust).
-
-**Non-identity formats (`sd-jwt`, `json-ld`)** always require explicit accept via OS notification — they are one-off issuance events, not recurring sync.
-
-**Architectural debt:** CORTEX currently sends `ATTESTTO_CREDENTIAL_OFFER` for identity sync; should send `ATTESTTO_DID_SYNC` instead (which `handleDidSync` routes natively into `linkedIdentities[]` without going through the credential channel). When CORTEX is fixed, the entire `attestto-id` branch — including the trust-on-first-use gate — can be deleted in favor of the direct sync path.
+- `src/utils/trusted-origins.ts` — `isOriginTrusted` / `recordTrustedOrigin` /
+  `revokeTrustedOrigin`. Consumed by the router's origin policy, not by consent.
+- `src/background/handlers/credential-offer.handler.ts` — the single-outcome
+  intake decision, with the deleted branch documented in its header.
+- `src/background/handlers/credential-offer.handler.spec.ts` — asserts absence.
 
 ## Sync flow (extension ↔ platform)
 

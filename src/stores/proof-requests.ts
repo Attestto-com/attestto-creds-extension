@@ -11,7 +11,6 @@ import { readVault, writeVault } from '@/utils/vault'
 import { useWalletStore } from '@/stores/wallet'
 import { useCredentialsStore } from '@/stores/credentials'
 import { createSdJwtPresentation } from '@/services/sdjwt'
-import { es256KeySigner } from '@/services/jws'
 import type { ProofAccessRequest, PreparedPresentation } from '@/types/credential'
 
 export const useProofRequestsStore = defineStore('proofRequests', () => {
@@ -61,15 +60,14 @@ export const useProofRequestsStore = defineStore('proofRequests', () => {
     const credential = credentialsStore.getById(request.credentialId)
     if (!credential) return null
 
-    const privateKey = walletStore.getPrivateKey()
-    if (!privateKey) return null
+    if (!walletStore.isUnlocked) return null
 
     try {
       let presentation: string
 
-      // Popup-side signing (post-unlock): a local key signer. Background-side signing
-      // routes through the gated primitive; popup gating is a separate future story.
-      const sign = es256KeySigner(privateKey)
+      // SOC-279 — the store's gated signer. The private key stays inside the
+      // wallet store and a WebAuthn user verification runs before each signature.
+      const sign = walletStore.createGatedSigner()
 
       if (credential.format === 'sd-jwt') {
         presentation = await createSdJwtPresentation(

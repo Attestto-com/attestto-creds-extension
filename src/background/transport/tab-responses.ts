@@ -16,7 +16,6 @@
  * extension page, which has no tab). There is nowhere to deliver, so the send is
  * dropped — loudly for the request/response flows where the caller is waiting.
  */
-import type { KeyBackupShares } from '@/background/handlers/key-backup.handler'
 import type { WalletAuthResponse } from '@/services/did-auth'
 
 /**
@@ -178,48 +177,17 @@ export function sendDidSyncResponse(
   })
 }
 
-// ── Key administration (Options-UI-only) ─────────────────────────
-// NOTE: an extension page carries no `sender.tab`, so `tabId` is null for every
-// real caller of these three and the send is always dropped. The content script
-// deliberately has no bridge for them either (SOC-2/3/8). They are kept at
-// parity with the pre-extraction behaviour; see SOC ticket on the dead
-// KEY_ROTATE / KEY_BACKUP / KEY_RESTORE surface.
-
-export function sendKeyRotateResponse(
-  tabId: number | null,
-  requestId: string,
-  newPublicKeyJwk: JsonWebKey | null,
-  oldPublicKeyJwk: JsonWebKey | null,
-  error: string | null,
-): void {
-  if (!deliverable(tabId, 'KEY_ROTATE_RESPONSE', requestId)) return
-  notifyTab(tabId, {
-    type: 'KEY_ROTATE_RESPONSE',
-    payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
-  })
-}
-
-export function sendKeyBackupResponse(
-  tabId: number | null,
-  requestId: string,
-  shares: KeyBackupShares | null,
-  error: string | null,
-): void {
-  if (!deliverable(tabId, 'KEY_BACKUP_RESPONSE', requestId)) return
-  notifyTab(tabId, { type: 'KEY_BACKUP_RESPONSE', payload: { requestId, shares, error } })
-}
-
-export function sendKeyRestoreResponse(
-  tabId: number | null,
-  requestId: string,
-  error: string | null,
-): void {
-  if (!deliverable(tabId, 'KEY_RESTORE_RESPONSE', requestId)) return
-  notifyTab(tabId, {
-    type: 'KEY_RESTORE_RESPONSE',
-    payload: { requestId, success: error === null, error },
-  })
-}
+// ── Key administration — REMOVED (SOC-144) ───────────────────────
+// `sendKeyRotateResponse` / `sendKeyBackupResponse` / `sendKeyRestoreResponse`
+// lived here and could never deliver. Only an extension page may invoke those
+// three operations, and an extension page carries no `sender.tab`, so `tabId`
+// was null on every real call and `deliverable()` dropped the reply. A
+// tab-based transport for an Options-UI-only operation is a category error, and
+// the content script deliberately bridges none of them (SOC-2/3/8).
+//
+// The three cases in `background.ts` now answer over `sendResponse` — the
+// channel the caller is already awaiting. Nothing calls these, so they are gone
+// rather than left as a surface that reads as working.
 
 // ── Re-share of a stored VP (RESHARE_STORED_VP_RESPONSE) ─────────
 
