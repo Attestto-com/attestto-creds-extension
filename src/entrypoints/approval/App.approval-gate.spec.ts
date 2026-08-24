@@ -19,7 +19,7 @@
  *    This is the ATT-1098 gate. If it regresses, an unlocked vault signs with
  *    no human present, because the session key is already cached.
  * 2. Verification is skipped ONLY for a PRF unlock, which performed a fresh
- *    WebAuthn user-verification to derive the key. A passphrase unlock proves
+ *    WebAuthn user-verification to derive the key. An already-unlocked vault proves
  *    knowledge of a secret, not presence, so it must still be challenged. The
  *    skip exists to avoid a double biometric prompt; it must not become a way
  *    to reach a signature with one.
@@ -43,7 +43,6 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 const requireUserVerification = vi.fn()
-const getKdfMethod = vi.fn()
 const recordTrustedOrigin = vi.fn()
 const setPreferredIdentity = vi.fn()
 const unlock = vi.fn()
@@ -65,7 +64,6 @@ const walletState = {
 vi.mock('@/stores/wallet', () => ({ useWalletStore: () => walletState }))
 vi.mock('@/utils/webauthn', () => ({
   requireUserVerification: (...a: unknown[]) => requireUserVerification(...a),
-  getKdfMethod: (...a: unknown[]) => getKdfMethod(...a),
 }))
 vi.mock('@/utils/trusted-origins', () => ({
   isOriginTrusted: vi.fn(async () => false),
@@ -104,7 +102,6 @@ beforeEach(() => {
   walletState.isUnlocked = false
   walletState.linkedIdentities = []
   requireUserVerification.mockResolvedValue(undefined)
-  getKdfMethod.mockResolvedValue('passphrase')
 
   ;(globalThis as Record<string, unknown>).chrome = {
     runtime: {
@@ -155,10 +152,10 @@ describe('approval window — the signing gate', () => {
     expect(closed, 'the window closed on a refused verification').toBe(0)
   })
 
-  it('still challenges the user when the vault unlocked by passphrase', async () => {
-    walletState.isUnlocked = false
-    unlock.mockResolvedValue(undefined)
-    getKdfMethod.mockResolvedValue('passphrase')
+  it('challenges the user when the vault was ALREADY unlocked', async () => {
+    // Nothing verified anyone in this interaction — the session key was already
+    // cached from an earlier one. This is the case the gate exists for.
+    walletState.isUnlocked = true
 
     const wrapper = await mountApproval(PAYMENT_URL)
     await (wrapper.vm as unknown as { approve: () => Promise<void> }).approve()
@@ -166,15 +163,18 @@ describe('approval window — the signing gate', () => {
 
     expect(
       requireUserVerification,
-      'a passphrase unlock proves knowledge of a secret, not that a human is present',
+      'a cached session key proves nothing about who is at the keyboard now',
     ).toHaveBeenCalledTimes(1)
     expect(approvalsSent().map((m) => m.type)).toEqual(['PAYMENT_APPROVE'])
   })
 
-  it('skips the second prompt only when the unlock itself verified the user (PRF)', async () => {
+  it('🔒 skips the second prompt when the unlock itself verified the user', async () => {
+    // The unlock is a WebAuthn assertion with `userVerification: 'required'`
+    // (pinned in webauthn.unlock.spec.ts), so it already satisfies the gate.
+    // Prompting again asks the same human for the same fingerprint twice in one
+    // interaction — the double-prompt this flow was reported for.
     walletState.isUnlocked = false
     unlock.mockResolvedValue(undefined)
-    getKdfMethod.mockResolvedValue('prf')
 
     const wrapper = await mountApproval(PAYMENT_URL)
     await (wrapper.vm as unknown as { approve: () => Promise<void> }).approve()
@@ -182,7 +182,7 @@ describe('approval window — the signing gate', () => {
 
     expect(
       requireUserVerification,
-      'a PRF unlock already performed a fresh WebAuthn user-verification',
+      'the unlock already performed a fresh WebAuthn user-verification',
     ).not.toHaveBeenCalled()
     expect(approvalsSent().map((m) => m.type)).toEqual(['PAYMENT_APPROVE'])
   })

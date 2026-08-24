@@ -10,23 +10,34 @@
  *   3. Vault encrypted with that AES key
  *   4. Only encrypted vault + credential ID + PRF salt stored at rest
  *   5. Unlock: WebAuthn get() with same PRF salt → same secret → same key
+ *
+ * ── There is no passphrase here, and that is the design ──────────────────
+ *
+ * The vault KDF used to fall back to Argon2id over a user passphrase whenever
+ * PRF looked unavailable. That fallback is DELETED, for two reasons:
+ *
+ *   1. It made the wallet's core claim uncheckable. A passphrase unlock yields
+ *      a signature indistinguishable from a passkey-backed one, so "passkey-
+ *      protected" became a statement nobody could verify — the exact defect the
+ *      workspace rule names. With PRF as the only path, the claim is true by
+ *      construction rather than by hope.
+ *   2. It bought recovery the wallet does not need. The vault is DISPOSABLE:
+ *      it holds a device-local key and re-issuable credentials, never bearer
+ *      assets. A lost device is replaced by installing the extension again,
+ *      minting a fresh DID, and re-binding that DID to the user's account
+ *      through the platform's normal link flow. The account is the recovery
+ *      anchor; a passphrase never was.
+ *
+ * The cost is deliberate and stated plainly: an authenticator that cannot do
+ * PRF cannot hold a vault, and setup FAILS with `PRF_UNSUPPORTED` instead of
+ * silently downgrading. Refusing is honest; downgrading is not.
+ *
+ * Argon2id still exists in `passphrase-kdf.ts` — `services/vault-backup.ts`
+ * encrypts an explicitly exported backup FILE with it. That is a deliberate
+ * export from Settings, never part of setup, login, or an approval.
  */
 
 import { STORAGE_KEYS } from '@/config/app'
-import { deriveKeyFromPassphrase, generateAndStoreSalt, readSalt } from './passphrase-kdf'
-
-export type KdfMethod = 'prf' | 'passphrase'
-
-/** Read which KDF method was selected at setup time. */
-export async function getKdfMethod(): Promise<KdfMethod | null> {
-  const stored = await chrome.storage.local.get(STORAGE_KEYS.KDF_METHOD)
-  const method = stored[STORAGE_KEYS.KDF_METHOD] as KdfMethod | undefined
-  return method ?? null
-}
-
-async function setKdfMethod(method: KdfMethod): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEYS.KDF_METHOD]: method })
-}
 
 // ── Encoding Helpers ────────────────────────────────────
 
@@ -55,7 +66,17 @@ interface PrfValues {
 }
 
 interface AuthExtensionsOutput {
-  prf?: { results?: PrfValues }
+  /**
+   * `enabled` is reported by `create()`, `results` by `get()` — and conflating
+   * them is what made this file demand a passphrase from PRF-capable hardware.
+   *
+   * Chrome does not evaluate `prf.eval` during registration on a platform
+   * authenticator. It answers `{ enabled: true }`, meaning "PRF works here, ask
+   * again in an assertion". The old code read only `results.first` off the
+   * REGISTRATION response, got undefined, and concluded PRF was unsupported.
+   * Touch ID, Windows Hello and iCloud Keychain all land in that branch.
+   */
+  prf?: { enabled?: boolean; results?: PrfValues }
 }
 
 // ── HKDF Key Derivation ─────────────────────────────────
@@ -103,9 +124,20 @@ async function deriveAesKey(prfSecret: ArrayBuffer, salt: ArrayBuffer): Promise<
 export interface SetupResult {
   /** AES key (base64) for vault encryption — already cached in session */
   aesKeyBase64: string
-  /** Which KDF method was actually used */
-  method: KdfMethod
 }
+
+/**
+ * Setup found an authenticator that cannot produce a PRF secret.
+ *
+ * Fail-closed and terminal: there is no passphrase to fall back to, by design
+ * (see the module header). The UI turns this into "this browser/device cannot
+ * secure a wallet — use another one", never into a password field.
+ */
+export const PRF_UNSUPPORTED =
+  'PRF_UNSUPPORTED: That passkey cannot secure a wallet. It does not support the PRF ' +
+  'extension, which is what encrypts your vault. Try again and choose a different option ' +
+  'when your browser asks — a phone or a security key will work. Some browsers\' built-in ' +
+  'passkey managers do not support it.'
 
 /**
  * Ask an ALREADY-REGISTERED credential for a PRF secret.
@@ -141,15 +173,17 @@ async function tryPrfAssertion(
 }
 
 /**
- * Register a new passkey and derive the vault key.
+ * Register a passkey and derive the vault key from its PRF secret.
  *
- * If the authenticator supports the WebAuthn PRF extension → use it (HKDF over PRF output).
- * If not → fall back to Argon2id over a user-supplied passphrase (must be provided).
+ * One prompt-shape, one outcome: PRF or `PRF_UNSUPPORTED`. There is no
+ * passphrase parameter and no downgrade path — see the module header.
  *
- * @param passphrase  Required ONLY if PRF turns out to be unsupported. Supplying one
- *                    on a PRF-capable device does not downgrade the vault — PRF wins.
+ * On a fresh setup macOS/Windows show the authenticator TWICE in a row: once to
+ * create the credential, once to evaluate PRF over it. That second prompt is
+ * inherent to how browsers expose the extension (registration reports `enabled`,
+ * only an assertion yields `results`) and cannot be collapsed by this code.
  */
-export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
+export async function setupPasskey(): Promise<SetupResult> {
   // If a previous setup attempt created a passkey but failed mid-flow (e.g. PRF
   // unsupported AND no passphrase was supplied), the credential ID is already
   // persisted. Reusing it here prevents stacking orphan passkeys in the user's
@@ -161,52 +195,46 @@ export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
   const existingCredId = existing[STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID] as string | undefined
   const existingSalt = existing[STORAGE_KEYS.PRF_SALT] as string | undefined
 
-  if (existingCredId) {
+  if (existingCredId && existingSalt) {
     /**
      * A passkey is already in the keychain from a previous attempt. Reuse it
-     * rather than minting another — re-registering stacks orphan credentials.
+     * rather than minting another — re-registering stacks orphan credentials
+     * the user then sees forever in their password manager.
      *
-     * 🩸 PASSKEY-FIRST. This branch used to read
-     * `if (existingCredId && passphrase)` and go straight to passphrase KDF,
-     * on the reasoning that "PRF must have been unsupported, otherwise setup
-     * would have completed".
-     *
-     * That reasoning is wrong. The credential ID is persisted IMMEDIATELY on
-     * creation, before PRF support is known, so a first attempt that was
-     * cancelled or interrupted for ANY reason leaves one behind. On a
-     * PRF-capable device, a retry with a passphrase in the form would then
-     * permanently downgrade the vault to passphrase mode, and the passkey —
-     * still registered, still prompting the user — would play no part in
-     * unlocking it.
-     *
-     * So: ask the authenticator. A passphrase is a fallback for hardware that
-     * cannot do PRF, never a shortcut taken because one was available.
+     * The credential ID is persisted IMMEDIATELY on creation, before PRF
+     * support is known, so ANY interrupted first attempt leaves one behind.
+     * Asking the authenticator is therefore the only correct move here.
      */
-    if (existingSalt) {
-      const prfResult = await tryPrfAssertion(existingCredId, existingSalt)
-      if (prfResult) {
-        const aesKeyBase64 = await deriveAesKey(prfResult, fromBase64Url(existingSalt))
-        await setKdfMethod('prf')
-        await chrome.storage.session.set({ [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64 })
-        return { aesKeyBase64, method: 'prf' }
-      }
+    const prfResult = await tryPrfAssertion(existingCredId, existingSalt)
+    if (prfResult) {
+      const aesKeyBase64 = await deriveAesKey(prfResult, fromBase64Url(existingSalt))
+      await chrome.storage.session.set({ [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64 })
+      return { aesKeyBase64 }
     }
 
-    // PRF genuinely unavailable on this authenticator. Now the passphrase is
-    // the only deterministic path, and it must be present.
-    if (!passphrase) {
-      throw new Error(
-        'PRF_REQUIRES_PASSPHRASE: This authenticator does not support WebAuthn PRF. ' +
-        'Please set a passphrase to encrypt your vault — it will be required to unlock.',
-      )
-    }
-    const salt = await generateAndStoreSalt()
-    const aesKeyBase64 = await deriveKeyFromPassphrase(passphrase, salt)
-    await setKdfMethod('passphrase')
-    await chrome.storage.session.set({
-      [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64,
-    })
-    return { aesKeyBase64, method: 'passphrase' }
+    /**
+     * 🩸 THE DEAD END. This credential cannot produce a PRF secret, so it can
+     * never open a vault — and until now its id stayed in storage.
+     *
+     * That made setup permanently unrecoverable from the UI. Every retry took
+     * this branch, and `allowCredentials` PINS the assertion to exactly this
+     * credential, so the browser went straight to its own prompt for the one
+     * passkey that cannot work, with no picker and no way to choose a different
+     * authenticator. The user could press "Set up" forever and see the same
+     * refusal. Observed in Brave, whose built-in passkey store does not
+     * implement the PRF/hmac-secret extension.
+     *
+     * So we forget it. We cannot DELETE the credential — WebAuthn gives a site
+     * no API to remove one; that is the user's password manager to clean up —
+     * but we can stop pointing at it, which is what actually traps them. The
+     * next attempt falls through to `create()` and the browser offers the full
+     * picker again, including a phone or security key that does support PRF.
+     */
+    await chrome.storage.local.remove([
+      STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID,
+      STORAGE_KEYS.PRF_SALT,
+    ])
+    throw new Error(PRF_UNSUPPORTED)
   }
 
   const prfSalt = crypto.getRandomValues(new Uint8Array(32))
@@ -225,7 +253,19 @@ export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
         { alg: -257, type: 'public-key' },  // RS256
       ],
       authenticatorSelection: {
-        authenticatorAttachment: 'platform',
+        // `authenticatorAttachment: 'platform'` was here and is deliberately
+        // gone. It restricted the ceremony to THIS device's built-in store, so
+        // on a browser whose built-in store lacks PRF — Brave's, for one — the
+        // prompt appeared instantly with no picker and no way to choose
+        // anything else. There was no authenticator the user could reach that
+        // would have worked.
+        //
+        // Unconstrained, the browser offers its full picker: the platform
+        // authenticator, a phone over hybrid, or a security key. The latter two
+        // implement hmac-secret and so satisfy PRF. Nothing is weakened —
+        // `userVerification: 'required'` still forces a verified human, which is
+        // the property the signing gate depends on, and it is enforced whatever
+        // the user picks.
         userVerification: 'required',
         residentKey: 'required',
       },
@@ -248,66 +288,54 @@ export async function setupPasskey(passphrase?: string): Promise<SetupResult> {
   })
 
   const extensions = (credential.getClientExtensionResults?.() ?? {}) as AuthExtensionsOutput
-  const prfResult = extensions.prf?.results?.first
-  let aesKeyBase64: string
-  let method: KdfMethod
 
-  if (prfResult) {
-    // PRF supported — deterministically derive key from PRF output.
-    // Vault is recoverable after any browser restart via passkey re-prompt.
-    aesKeyBase64 = await deriveAesKey(prfResult, prfSalt.buffer)
-    method = 'prf'
-  } else {
-    // PRF NOT supported — require passphrase for deterministic recovery.
-    if (!passphrase) {
-      throw new Error(
-        'PRF_REQUIRES_PASSPHRASE: This authenticator does not support WebAuthn PRF. ' +
-        'Please set a passphrase to encrypt your vault — it will be required to unlock.',
-      )
-    }
-    const salt = await generateAndStoreSalt()
-    aesKeyBase64 = await deriveKeyFromPassphrase(passphrase, salt)
-    method = 'passphrase'
+  /**
+   * 🩸 The registration response is NOT authoritative about PRF support.
+   *
+   * Chrome answers `create()` with `prf: { enabled: true }` and no `results` on
+   * every platform authenticator — the secret is only ever produced by an
+   * assertion. Reading `results.first` here and giving up was the bug: it
+   * declared PRF unsupported on hardware that supports it perfectly, which is
+   * how a password field ended up in a flow that is supposed to have none.
+   *
+   * So `results` is a fast path, not the test. When it is absent we ASK, via
+   * the same assertion the returning-user unlock uses. Only an explicit
+   * `enabled === false` is taken as a real answer and short-circuits the extra
+   * prompt; `undefined` is treated as "unknown, go and find out", because
+   * browsers disagree about reporting it at all.
+   */
+  let prfResult = extensions.prf?.results?.first ?? null
+
+  if (!prfResult && extensions.prf?.enabled !== false) {
+    prfResult = await tryPrfAssertion(toBase64Url(credential.rawId), toBase64Url(prfSalt.buffer))
   }
 
-  await setKdfMethod(method)
+  if (!prfResult) {
+    throw new Error(PRF_UNSUPPORTED)
+  }
+
+  const aesKeyBase64 = await deriveAesKey(prfResult, prfSalt.buffer)
 
   // Cache the derived key in session storage (cleared on browser close)
   await chrome.storage.session.set({
     [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64,
   })
 
-  return { aesKeyBase64, method }
+  return { aesKeyBase64 }
 }
 
 
 // ── WebAuthn Unlock (returning user) ────────────────────
 
 /**
- * Unlock the vault. Routes by the KDF method recorded at setup time:
- *   - 'prf'        → WebAuthn assertion + PRF → HKDF-derived AES key
- *   - 'passphrase' → passphrase + Argon2id → AES key
+ * Unlock the vault: WebAuthn assertion + PRF → HKDF-derived AES key.
  *
- * The passphrase parameter is REQUIRED if the vault was set up with passphrase KDF.
- * Throws a tagged error (`PASSPHRASE_REQUIRED`) if unlock requires a passphrase but
- * none was supplied — the unlock UI uses that to know to prompt.
+ * One path, no parameters, no branch on a recorded KDF method — there is only
+ * one method. The assertion runs with `userVerification: 'required'`, so a
+ * successful unlock IS a fresh user-verification; callers rely on that to avoid
+ * prompting the user a second time for the same interaction.
  */
-export async function unlockWithPasskey(passphrase?: string): Promise<string> {
-  const method = (await getKdfMethod()) ?? 'prf' // legacy vaults default to prf
-
-  if (method === 'passphrase') {
-    if (!passphrase) {
-      throw new Error('PASSPHRASE_REQUIRED: This vault was set up with a passphrase. Enter it to unlock.')
-    }
-    const salt = await readSalt()
-    const aesKeyBase64 = await deriveKeyFromPassphrase(passphrase, salt)
-    await chrome.storage.session.set({
-      [STORAGE_KEYS.SESSION_KEY]: aesKeyBase64,
-    })
-    return aesKeyBase64
-  }
-
-  // PRF path
+export async function unlockWithPasskey(): Promise<string> {
   const stored = await chrome.storage.local.get([
     STORAGE_KEYS.WEBAUTHN_CREDENTIAL_ID,
     STORAGE_KEYS.PRF_SALT,
@@ -346,12 +374,13 @@ export async function unlockWithPasskey(passphrase?: string): Promise<string> {
   const prfResult = extensions.prf?.results?.first
 
   if (!prfResult) {
-    // Vault was supposedly set up with PRF, but this unlock attempt returned none.
-    // Most common cause: a legacy vault from before passphrase-recovery shipped.
-    // No safe path forward — the vault is unrecoverable. User must reset.
+    // The vault exists but this authenticator will not reproduce its key. No
+    // passphrase escape hatch exists, and that is correct: the vault is
+    // disposable. Reset and set up again — a fresh DID re-binds to the user's
+    // account through the normal link flow.
     throw new Error(
-      'PRF_UNAVAILABLE: Your authenticator did not return a PRF secret. ' +
-      'If this is a legacy vault, it cannot be unlocked and the wallet must be reset.',
+      'PRF_UNAVAILABLE: Your passkey did not return the secret that unlocks this vault. ' +
+      'Reset the wallet and set it up again.',
     )
   }
 

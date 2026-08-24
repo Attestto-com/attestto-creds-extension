@@ -30,8 +30,13 @@ export interface SigningAdapterDeps {
   ) => Promise<{ siteDids: Record<string, SiteDidEntry>; entry: SiteDidEntry; created: boolean; key: string }>
   publicJwkOf: (entry: SiteDidEntry) => { kty: string; crv: string; x: string; y: string }
   pinSite: (host: string) => Promise<unknown>
-  /** Passthrough by default (parity); the composition root can inject the real gate later. */
-  assertPresence?: PresenceGate
+  /**
+   * REQUIRED (SOC-279). There is no default: a missing gate used to fall back to
+   * an anonymous no-op, so the shipped build silently signed without one and the
+   * composition root read as complete. The worker binds
+   * `DEFERRED_PRESENCE_PASSTHROUGH`, which is a no-op with a name and a reason.
+   */
+  assertPresence: PresenceGate
 }
 
 /** Sign `payload` with a P-256 private JWK (ECDSA/SHA-256). The one raw ES256 signer. */
@@ -54,7 +59,7 @@ async function ed25519RawSign(key: CryptoKey, payload: Uint8Array): Promise<Sign
 }
 
 export function createSigningAdapters(deps: SigningAdapterDeps): SigningAdapters {
-  const assertPresence: PresenceGate = deps.assertPresence ?? (async () => {})
+  const { assertPresence } = deps
 
   const rootRawSign: RawSign = async (payload) => {
     const v = await deps.readVault()
@@ -112,7 +117,6 @@ export function createSigningAdapters(deps: SigningAdapterDeps): SigningAdapters
     clock: { now: () => Date.now() },
     pin: { pin: async (host: string) => { await deps.pinSite(host) } },
     // AD-11a pairwise derivation is not wired here (Epic 2); no signing handler calls it.
-    deriveForOrigin: async () => { throw new Error('deriveForOrigin not wired (AD-11a, Epic 2)') },
     assertPresence,
     rootRawSign,
     provisionEd25519,

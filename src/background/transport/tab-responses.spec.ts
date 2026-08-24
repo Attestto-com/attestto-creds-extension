@@ -257,15 +257,25 @@ describe('no originating tab', () => {
 })
 
 /**
- * The `key administration transport` describe that lived here is gone (SOC-144).
+ * The `key administration transport` describe that lived here is gone, and the
+ * three senders with it (SOC-144).
  *
- * It asserted the shape of three senders that could never deliver: only an
- * extension page may invoke rotate/backup/restore, and an extension page has no
- * `sender.tab`, so every real call was dropped. The tests passed by calling them
- * with a synthetic tab id no caller could produce — green for a transport that
- * had never carried anything.
+ * Its cases asserted the wire shape of senders that could never deliver — only
+ * an extension page may invoke rotate/backup/restore, and an extension page has
+ * no `sender.tab`, so every real call was dropped. They passed by supplying a
+ * synthetic tab id no caller could produce: green for a transport that had
+ * never carried anything.
  *
- * The three cases now answer over `sendResponse`; their reachability is proven
- * in `__tests__/entrypoints/key-admin-transport.spec.ts`, through the real
- * dispatch, with an extension-page sender shape.
+ * The two halves of the fix came from different branches and both hold:
+ *
+ *   - `KEY_ROTATE` survives and now answers over `sendResponse`, the channel its
+ *     caller already awaits. Reachability is proven end-to-end in
+ *     `__tests__/entrypoints/key-admin-transport.spec.ts`, through the real
+ *     dispatch with an extension-page sender shape.
+ *   - `KEY_BACKUP` and `KEY_RESTORE` are gone entirely, so there is no transport
+ *     left to fix. They split the RAW private key 2-of-3 — a guardian held a
+ *     piece of the signing key — and recovery returned a signer and nothing
+ *     else, because credentials hang off `LinkedIdentity`.
+ *     `services/vault-backup.ts` already had the version that works: it
+ *     encrypts the whole vault and splits its content key.
  */

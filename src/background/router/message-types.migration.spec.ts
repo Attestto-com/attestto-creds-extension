@@ -63,7 +63,8 @@ describe('MIGRATION GUARD — delete with the legacy switch in Story 1.13', () =
   it('extracts the real dispatched case labels from the switch AST (referent is non-empty)', () => {
     // Sanity on the referent itself: if extraction silently returns {} the
     // ⊇ assertion below would pass vacuously. Guard the guard.
-    expect(dispatched.size).toBeGreaterThanOrEqual(40)
+    // 38 since SOC-277 removed the two page-facing vault reads.
+    expect(dispatched.size).toBeGreaterThanOrEqual(38)
   })
 
   it('MessageType ⊇ every type the background switch dispatches', () => {

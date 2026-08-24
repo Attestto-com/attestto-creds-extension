@@ -27,8 +27,13 @@
 import type { Pending } from '@/background/ports/ports'
 
 export interface PendingFlow<T> {
-  /** Stash a row. Overwrites any row with the same id. */
-  put(id: string, data: T): Promise<void>
+  /**
+   * Stash a row. Returns false, writing nothing, when a live row already holds
+   * this id — see the `Pending.put` contract and SOC-278. Callers that accept a
+   * requester-supplied id MUST treat false as a rejected request rather than
+   * carrying on to open an approval window.
+   */
+  put(id: string, data: T): Promise<boolean>
   /** Read without consuming — answers a `*_GET_PENDING`. */
   peek(id: string | undefined): Promise<T | null>
   /**
@@ -87,7 +92,7 @@ export function createPendingFlow<T>(store: Pending): PendingFlow<T> {
 
   return {
     async put(id, data) {
-      await store.put({ id, consumed: false, payload: data })
+      return store.put({ id, consumed: false, payload: data })
     },
 
     async peek(id) {

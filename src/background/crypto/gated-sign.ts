@@ -46,6 +46,33 @@ export type PresenceGate = (payload: Uint8Array) => Promise<void>
 export type RawSign = (payload: Uint8Array) => Promise<Signature>
 
 /**
+ * SOC-279 — the gate the service worker binds TODAY, and it verifies nothing.
+ *
+ * This exists so the deferral has a name. `createSigningAdapters` used to default
+ * a missing `assertPresence` to an anonymous `async () => {}`, so the shipped
+ * build silently took a no-op gate and the composition root looked complete.
+ * Passing this explicitly makes "there is no liveness check in the background"
+ * a statement someone wrote down, not a default nobody read.
+ *
+ * Why it cannot simply be replaced with the real gate: `navigator.credentials`
+ * does not exist in an MV3 service worker, so `requireUserVerification` CANNOT
+ * run here — importing it into `background.ts` would throw at runtime and break
+ * every signing path. Liveness currently lives in the approval window
+ * (`approval/App.vue`), which does a real WebAuthn UV before dispatching any
+ * `*_APPROVE`.
+ *
+ * The gap that leaves: a caller that sends `*_APPROVE` straight to the worker,
+ * bypassing the window, gets a signature with no user present. Closing it needs
+ * the cross-process UV-proof protocol — the popup mints a short-lived,
+ * single-use proof bound to the payload hash and the worker verifies and
+ * consumes it. That is designed but deliberately deferred; see
+ * `_bmad-output/planning-artifacts/deferred/uv-proof-cross-process-liveness.md`
+ * and SOC-279. `signing-presence-gate.blocker.spec.ts` pins this state so the
+ * swap cannot happen by accident.
+ */
+export const DEFERRED_PRESENCE_PASSTHROUGH: PresenceGate = async () => {}
+
+/**
  * Build the single gated signing primitive. Both deps are required. The returned
  * `sign` asserts presence, then signs — never the reverse, never without.
  */
