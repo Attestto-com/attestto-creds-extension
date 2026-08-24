@@ -153,7 +153,11 @@ describe('background.ts dispatch — every case is reachable and answers', () =>
     // Guard the guard. If AST extraction silently returned [], every assertion
     // below would pass vacuously by iterating nothing — the exact shape of
     // vacuous green this repo keeps finding.
-    expect(TYPES.length).toBeGreaterThanOrEqual(40)
+    // 38, down from 40: SOC-277 removed LIST_STORED_CREDENTIALS and
+    // RESHARE_STORED_VP — the two page-facing vault READS. The floor tracks
+    // reality so this stays a real constraint; the intent (a file that
+    // dispatches nothing satisfies every other rule) is unchanged.
+    expect(TYPES.length).toBeGreaterThanOrEqual(38)
   })
 
   it.each(dispatchedTypes())('%s is dispatched and answers the caller', async (type) => {

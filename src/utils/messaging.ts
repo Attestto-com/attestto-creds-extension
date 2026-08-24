@@ -165,50 +165,36 @@ export interface KeyRotateMessage {
 }
 
 /**
- * Key Backup — extension splits its private key into 2-of-3 Shamir sub-shares
- * for social recovery. Returns the 3 shares (device, cloud, guardian) as base64url.
+ * Key Backup / Key Restore were removed (SOC-144).
  *
- * ## Each share is a piece of the RAW private key (SOC-241)
+ * They split the raw private key 2-of-3. `services/vault-backup.ts` does the
+ * job properly — it encrypts the whole vault and splits the CONTENT key, so a
+ * share is worthless without the file and a restore brings back credentials and
+ * identities, not just a signer. Reachable from the Backup options view and the
+ * lock screen's restore panel; it never needed a message type.
  *
- * This comment used to claim the key was AES-256-GCM encrypted before splitting,
- * so that a share was a piece of ciphertext. `key-backup.handler.ts` has never
- * done that: it serializes `vault.privateKeyJwk` and splits the bytes, and
- * `key-restore.handler.ts` reconstructs and parses a JWK directly. The code is
- * the decided design (Eduardo, 2026-08-12); the comment was the error, and is
- * corrected rather than used to justify changing the code.
+ * ## What SOC-241 established, kept because it still applies
  *
- * The property that follows, stated plainly because a reader was previously
- * told the opposite: **any TWO shares reconstruct the signing key.** No
- * passphrase, no second factor, no key derivation — `combine2of3` and a JSON
- * parse. Two share-holders colluding, or two compromised at once, is a full
- * identity compromise.
+ * This comment once claimed the key was AES-256-GCM encrypted BEFORE splitting,
+ * so that a share was a piece of ciphertext. The deleted handlers never did
+ * that: they serialized `vault.privateKeyJwk` and split the bytes. The comment
+ * was the error, not the code — which is why the fix was to correct the record
+ * and then delete the capability, rather than to trust the record and keep it.
  *
- * That is what makes share PLACEMENT a security control rather than a storage
- * detail. Nobody may end up holding two, and no single party's breach may yield
- * two. Whoever wires the recovery UI owns that invariant; it is not enforced
- * here, and this type cannot enforce it.
+ * The property that correction surfaced outlives the handlers, because
+ * `vault-backup.ts` is also 2-of-3: **any TWO shares reconstruct the secret.**
+ * No passphrase, no second factor — `combine2of3` and a parse. What changed is
+ * WHICH secret and what it is worth alone. Two shares of the old scheme handed
+ * over the signing key outright; two shares of the new one yield a content key
+ * that decrypts nothing without the backup file.
+ *
+ * That is a real improvement and not a reason to relax: two share-holders
+ * colluding, or two compromised at once, plus the file, is still a full
+ * compromise. Share PLACEMENT stays a security control rather than a storage
+ * detail — nobody may end up holding two, and no single party's breach may
+ * yield two. Whoever wires the recovery UI owns that invariant; it is not
+ * enforced here, and no type can enforce it.
  */
-export interface KeyBackupMessage {
-  type: 'KEY_BACKUP'
-  payload: {
-    requestId: string
-    origin: string
-  }
-}
-
-/**
- * Key Restore — extension receives 2 sub-shares and reconstructs the private key.
- * Used after device loss when recovering from cloud+guardian or device+guardian.
- */
-export interface KeyRestoreMessage {
-  type: 'KEY_RESTORE'
-  payload: {
-    requestId: string
-    shareA: { data: string; index: number } // base64url encoded
-    shareB: { data: string; index: number } // base64url encoded
-    origin: string
-  }
-}
 
 /**
  * Payment Request — page sends payment details to extension for approval + signing.
@@ -322,8 +308,6 @@ export type ExtensionMessage =
   | CredentialApiRequestMessage
   | DidSyncMessage
   | KeyRotateMessage
-  | KeyBackupMessage
-  | KeyRestoreMessage
   | PaymentRequestMessage
   | SignDocumentRequestMessage
   | SignAttesttoPdfRequestMessage

@@ -1,50 +1,44 @@
 /**
- * Story 1.13 Phase 9 — the credential-offer intake decision.
+ * The credential-offer intake decision.
  *
- * This is the gate that decides whether a credential lands in the wallet WITHOUT
- * the user seeing anything. Both conditions must hold to skip consent:
+ * There is exactly one outcome: the user is asked. Every offer, every format,
+ * every origin, every time.
  *
- *   1. the offer is `attestto-id` — the recurring identity-sync format, the only
- *      one for which silent acceptance is a UX feature rather than a hole; and
- *   2. the origin is already trusted, i.e. the user approved a previous offer
- *      from it through the approval window.
+ * ── What was here before, and why it is gone (Eduardo, 2026-08-14) ─────────
  *
- * Anything else goes to the approval window. Historically the hole this closes
- * was auto-accepting ANY `attestto-id` payload from ANY origin, which let a page
- * push a `didUri` into `linkedIdentities[]` with no user gesture (see the repo
- * CLAUDE.md).
+ * This used to skip consent when the offer was `attestto-id` AND the origin had
+ * been approved once before, on the reasoning that silent acceptance was a UX
+ * feature for recurring identity sync. It was written as a hardening of an older
+ * hole (auto-accepting ANY `attestto-id` from ANY origin), so it read as the
+ * safe version of a bad idea rather than as the bad idea itself.
  *
- * The origin passed in must come from the unspoofable `sender`, never from the
- * message payload — the caller is responsible for that, and it is the reason
- * this function takes `origin` as an argument rather than reading it off the
- * offer.
+ * The rule it violated: a page is untrusted by default and may only present
+ * itself. A trusted origin may ASK — and the ask goes to the USER, who accepts
+ * every time. There is no setting that passes data to a site automatically and
+ * there must not be one, in either direction. Approving an origin once is not
+ * standing consent for everything it sends afterwards.
  *
- * Staging order is load-bearing: the pending row must exist before either branch
- * runs, because both `accept` and `requestConsent` look the offer up by id.
+ * So the branch is deleted rather than narrowed. `isOriginTrusted` no longer
+ * takes part in this decision at all — origin trust still gates DID_SYNC, which
+ * is authorization for a channel, not consent for a payload.
+ *
+ * Staging order is load-bearing: the pending row must exist before the window
+ * opens, because the approval window looks the offer up by id.
  */
 import type { CredentialOfferMessage } from '@/utils/messaging'
 
 type Offer = CredentialOfferMessage['payload']
 
-/** The identity-sync format — the only one eligible for silent acceptance. */
-export const SILENT_SYNC_FORMAT = 'attestto-id'
-
-export type CredentialOfferOutcome =
-  | { kind: 'autoAccepted'; credentialId: string | null }
-  | { kind: 'pendingConsent'; notifId: string }
+/** The only outcome. Kept as a tagged object so callers read as intent, not boolean. */
+export type CredentialOfferOutcome = { kind: 'pendingConsent'; notifId: string }
 
 export interface CredentialOfferCtx {
-  /** Has the user previously approved this origin for silent identity sync? */
-  isOriginTrusted(origin: string | null): Promise<boolean>
   /**
    * Put the offer in the pending store under `notifId`. Must be AWAITED before
-   * either branch: since Story 1.15 the row is written to `storage.session`, and
-   * both branches below depend on it already being readable — the accept branch
-   * takes it, the consent branch opens a window whose cleanup can take it.
+   * the window opens: the row lives in `storage.session` and the window's
+   * cleanup can take it.
    */
   stage(notifId: string, offer: Offer, origin: string | null): Promise<void>
-  /** Accept a staged offer, returning the new credential id (or null on failure). */
-  accept(notifId: string): Promise<string | null>
   /** Open the approval window for a staged offer. */
   requestConsent(notifId: string, offer: Offer, origin: string | null): Promise<void>
   /** Pending-map key. Injected so the decision is deterministic under test. */
@@ -58,19 +52,7 @@ export async function handleCredentialOffer(
 ): Promise<CredentialOfferOutcome> {
   const notifId = ctx.newNotifId()
   await ctx.stage(notifId, offer, origin)
-
-  // A non-identity offer (sd-jwt, json-ld) is a one-off issuance event. It never
-  // auto-accepts, no matter how trusted the origin is — trust was granted for
-  // recurring identity sync, not for silently accepting arbitrary credentials.
-  if (offer.format !== SILENT_SYNC_FORMAT) {
-    await ctx.requestConsent(notifId, offer, origin)
-    return { kind: 'pendingConsent', notifId }
-  }
-
-  if (await ctx.isOriginTrusted(origin)) {
-    return { kind: 'autoAccepted', credentialId: await ctx.accept(notifId) }
-  }
-
+  // No branch. There is nothing to decide: the user decides.
   await ctx.requestConsent(notifId, offer, origin)
   return { kind: 'pendingConsent', notifId }
 }
