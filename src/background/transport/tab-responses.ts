@@ -177,33 +177,17 @@ export function sendDidSyncResponse(
   })
 }
 
-// ── Key administration (Options-UI-only) ─────────────────────────
-// NOTE: an extension page carries no `sender.tab`, so `tabId` is null for every
-// real caller of these three and the send is always dropped. The content script
-// deliberately has no bridge for them either (SOC-2/3/8). They are kept at
-// parity with the pre-extraction behaviour; see SOC ticket on the dead
-// KEY_ROTATE surface.
-
-export function sendKeyRotateResponse(
-  tabId: number | null,
-  requestId: string,
-  newPublicKeyJwk: JsonWebKey | null,
-  oldPublicKeyJwk: JsonWebKey | null,
-  error: string | null,
-): void {
-  if (!deliverable(tabId, 'KEY_ROTATE_RESPONSE', requestId)) return
-  notifyTab(tabId, {
-    type: 'KEY_ROTATE_RESPONSE',
-    payload: { requestId, newPublicKeyJwk, oldPublicKeyJwk, error },
-  })
-}
-
-// `sendKeyBackupResponse` / `sendKeyRestoreResponse` were removed with the
-// operations they served (SOC-144). `sendKeyRotateResponse` above is kept
-// because KEY_ROTATE remains — though note it shares the defect this file
-// documents at `deliverable()`: an extension page has no tab, so a rotate reply
-// is dropped too. That is SOC-144's transport half, fixed separately in the
-// KEY_ROTATE case itself.
+// ── Key administration — REMOVED (SOC-144) ───────────────────────
+// `sendKeyRotateResponse` / `sendKeyBackupResponse` / `sendKeyRestoreResponse`
+// lived here and could never deliver. Only an extension page may invoke those
+// three operations, and an extension page carries no `sender.tab`, so `tabId`
+// was null on every real call and `deliverable()` dropped the reply. A
+// tab-based transport for an Options-UI-only operation is a category error, and
+// the content script deliberately bridges none of them (SOC-2/3/8).
+//
+// The three cases in `background.ts` now answer over `sendResponse` — the
+// channel the caller is already awaiting. Nothing calls these, so they are gone
+// rather than left as a surface that reads as working.
 
 // ── Re-share of a stored VP (RESHARE_STORED_VP_RESPONSE) ─────────
 
