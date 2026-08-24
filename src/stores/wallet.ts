@@ -161,14 +161,13 @@ export const useWalletStore = defineStore('wallet', () => {
 
   /**
    * First-time setup: register a passkey and create an empty vault.
-   * If PRF is supported by the authenticator → use it (touch-ID unlock).
-   * If not → the supplied passphrase is used via Argon2id (passphrase-prompt unlock).
    *
-   * @param passphrase  Required iff PRF is unavailable. The setup view should always
-   *                    pass it (if user filled the field) so we can route correctly.
+   * Passkey or nothing. An authenticator that cannot produce a PRF secret gets
+   * a tagged `PRF_UNSUPPORTED` failure — there is no passphrase to fall back to
+   * and no downgrade to offer (see `utils/webauthn.ts`).
    */
-  async function setup(passphrase?: string): Promise<void> {
-    const setupResult = await setupPasskey(passphrase)
+  async function setup(): Promise<void> {
+    const setupResult = await setupPasskey()
     const aesKeyBase64 = setupResult.aesKeyBase64
 
     // Generate vault signing keypair
@@ -222,11 +221,10 @@ export const useWalletStore = defineStore('wallet', () => {
    * If there is no vault at all (truly fresh device), it behaves like `setup()`
    * and mints a new signing key so the enroll still leaves a usable vault.
    *
-   * @param passphrase  Required iff the authenticator does not support PRF —
-   *                    surfaced as a tagged `PRF_REQUIRES_PASSPHRASE` error, same
-   *                    as `setup()`.
+   * Fails with `PRF_UNSUPPORTED` on an authenticator without PRF, same as
+   * `setup()`. No passphrase path.
    */
-  async function enrollPasskey(passphrase?: string): Promise<void> {
+  async function enrollPasskey(): Promise<void> {
     // Read the current vault BEFORE setupPasskey swaps the session key. If the
     // vault is unlocked (createDid/legacy session key present) this returns its
     // contents; if there is no vault it returns null and we mint a fresh one.
@@ -235,7 +233,7 @@ export const useWalletStore = defineStore('wallet', () => {
     // Register the passkey and derive the new vault key. This also caches the
     // derived key in session storage, so the re-encrypt below is under the key
     // future passkey unlocks will reproduce.
-    const setupResult = await setupPasskey(passphrase)
+    const setupResult = await setupPasskey()
     const aesKeyBase64 = setupResult.aesKeyBase64
 
     let vault: VaultData
@@ -278,19 +276,17 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
-   * Unlock the vault.
-   * - If vault was set up with PRF: triggers passkey assertion, PRF re-derives the AES key.
-   * - If vault was set up with passphrase: requires the passphrase param (Argon2id re-derives).
+   * Unlock the vault: passkey assertion → PRF → the AES key.
    *
-   * If `passphrase` is needed but not provided, throws an error tagged `PASSPHRASE_REQUIRED`
-   * so the unlock UI can prompt for it and call unlock again.
+   * The passkey assertion IS the user-verification for this interaction —
+   * callers must not prompt again for the same action.
    */
-  async function unlock(passphrase?: string): Promise<void> {
+  async function unlock(): Promise<void> {
     // If no passkey registered, fall back to legacy unlock (session key)
     const passkeyExists = await hasPasskey()
 
     if (passkeyExists) {
-      await unlockWithPasskey(passphrase)
+      await unlockWithPasskey()
     }
 
     // Read vault with the session key (set by unlockWithPasskey or legacy)
@@ -334,12 +330,13 @@ export const useWalletStore = defineStore('wallet', () => {
   }
 
   /**
-   * **Destructive.** Wipe ALL wallet state — vault, public mirror, passkey credential ID,
-   * PRF salt, passphrase salt, KDF method, trusted origins, site preferences, session key.
+   * **Destructive.** Wipe ALL wallet state — vault, public mirror, passkey
+   * credential ID, PRF salt, trusted origins, site preferences, session key.
    *
-   * Used to escape a vault that can't be unlocked (e.g., legacy vaults set up before
-   * passphrase recovery shipped, where PRF turned out to be unavailable). The user is
-   * then sent back through onboarding.
+   * This is the ONLY recovery mechanism, and it is sufficient: the vault holds a
+   * device-local key and re-issuable credentials, never bearer assets. A reset
+   * user sets up a fresh passkey, mints a fresh DID, and re-binds that DID to
+   * their account through the platform's normal link flow.
    */
   async function resetWallet(): Promise<void> {
     await chrome.storage.local.clear()
@@ -381,7 +378,7 @@ export const useWalletStore = defineStore('wallet', () => {
    * verification). The site's next sign-in mints a fresh `did:jwk`.
    *
    * Mutates the encrypted vault → requires an unlocked session. Throws
-   * `PASSPHRASE_REQUIRED`-style `LOCKED` if called while locked.
+   * a tagged `LOCKED` if called while locked.
    */
   async function archiveSiteDid(origin: string): Promise<void> {
     const vault = await readVault()
@@ -416,29 +413,20 @@ export const useWalletStore = defineStore('wallet', () => {
    * user-verification for every signature) those vaults could unlock but never
    * sign. Enrolling the passkey here closes that gap at the source.
    *
-   * @param passphrase  Required only when the authenticator lacks WebAuthn PRF
-   *                    — surfaced as a tagged `PRF_REQUIRES_PASSPHRASE` error
-   *                    (fresh enroll) or `PASSPHRASE_REQUIRED` (existing
-   *                    passphrase-KDF vault), same contract as `setup()`/
-   *                    `unlock()`. Callers should reveal a passphrase field and
-   *                    retry.
+   * Fails with `PRF_UNSUPPORTED` on an authenticator without PRF.
    */
-  async function createDid(passphrase?: string): Promise<void> {
+  async function createDid(): Promise<void> {
     // Obtain the vault key via the SETUP primitive — never unlockWithPasskey.
-    // createDid establishes a BRAND-NEW vault, so setupPasskey is correct: it
-    // probes PRF and, when the authenticator lacks it, routes to Argon2id over a
-    // passphrase, surfacing the RECOVERABLE `PRF_REQUIRES_PASSPHRASE` error that
-    // createDidAndRetry catches to reveal the passphrase field.
+    // createDid establishes a BRAND-NEW vault, so setupPasskey is correct.
     //
-    // unlockWithPasskey is wrong here: it assumes a pre-existing PRF vault and,
-    // on a non-PRF authenticator (or a partially-set-up vault with no recorded
-    // KDF method), throws the UNRECOVERABLE `PRF_UNAVAILABLE` ("legacy vault must
-    // be reset"). setupPasskey persists the credential ID immediately, so a prior
-    // aborted attempt can leave an orphan credential with no vault/KDF method;
-    // routing that through unlockWithPasskey surfaced that reset error on a fresh
-    // no-DID create screen. setupPasskey instead reuses any such orphan credential
-    // (with the passphrase) rather than stacking a new one.
-    const aesKeyBase64 = (await setupPasskey(passphrase)).aesKeyBase64
+    // unlockWithPasskey is wrong here: it assumes a vault already exists and
+    // throws the terminal `PRF_UNAVAILABLE` ("reset the wallet") when one does
+    // not. setupPasskey persists the credential ID immediately, so a previously
+    // aborted attempt can leave an orphan credential with no vault behind it;
+    // routing that through unlockWithPasskey surfaced a reset prompt on a fresh
+    // no-DID create screen. setupPasskey reuses that orphan credential instead
+    // of stacking another one in the user's keychain.
+    const aesKeyBase64 = (await setupPasskey()).aesKeyBase64
 
     const keyPair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },

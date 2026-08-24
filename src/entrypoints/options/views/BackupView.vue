@@ -21,8 +21,6 @@ const { t } = useI18n()
 const wallet = useWalletStore()
 
 const unlocked = ref(false)
-const needsPassphrase = ref(false)
-const unlockPass = ref('')
 const unlockError = ref('')
 
 const pass = ref('')
@@ -66,15 +64,9 @@ function downloadText(text: string, filename: string, type = 'application/json')
 async function doUnlock(): Promise<void> {
   unlockError.value = ''
   try {
-    await wallet.unlock(needsPassphrase.value ? unlockPass.value : undefined)
+    await wallet.unlock()
     unlocked.value = (await readVault()) !== null
-    unlockPass.value = ''
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    if (msg.startsWith('PASSPHRASE_REQUIRED')) {
-      needsPassphrase.value = true
-      return
-    }
+  } catch {
     unlockError.value = t('backup.error')
   }
 }
@@ -181,17 +173,6 @@ function downloadShares(): void {
         {{ t('backup.lockedTitle') }}
       </p>
       <p class="mt-1 text-sm text-[#a8b4c4]">{{ t('backup.lockedBody') }}</p>
-
-      <label v-if="needsPassphrase" class="mt-3 block">
-        <span class="text-xs font-medium text-[#a8b4c4]">{{ t('backup.unlockPassphrase') }}</span>
-        <input
-          v-model="unlockPass"
-          type="password"
-          autocomplete="current-password"
-          class="mt-1 w-full rounded-md border border-[#243044] bg-[#0d1520] px-3 py-2 text-sm text-[#f1f4f8] outline-none focus:border-[#4a8ec8]"
-          @keyup.enter="doUnlock"
-        />
-      </label>
 
       <p v-if="unlockError" class="mt-2 text-sm text-red-300">{{ unlockError }}</p>
 

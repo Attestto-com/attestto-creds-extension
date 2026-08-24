@@ -147,15 +147,17 @@ describe('createDid — PRF create-path routing (ATT-1128 regression)', () => {
     expect(setupPasskey).toHaveBeenCalledTimes(1)
   })
 
-  it('passes the recovery passphrase through to setupPasskey on retry', async () => {
+  it('routes a retry through setupPasskey, never unlockWithPasskey', async () => {
     vi.mocked(hasPasskey).mockResolvedValue(true)
     // Reject so we stop before the crypto/vault machinery; we only assert routing.
     vi.mocked(setupPasskey).mockRejectedValue(new Error('stop-after-routing'))
 
     const wallet = useWalletStore()
 
-    await expect(wallet.createDid('correct horse battery')).rejects.toThrow('stop-after-routing')
-    expect(setupPasskey).toHaveBeenCalledWith('correct horse battery')
+    await expect(wallet.createDid()).rejects.toThrow('stop-after-routing')
+    expect(setupPasskey).toHaveBeenCalledWith()
+    // unlockWithPasskey assumes a vault already exists and would surface the
+    // terminal "reset the wallet" error on a fresh create screen.
     expect(unlockWithPasskey).not.toHaveBeenCalled()
   })
 })
