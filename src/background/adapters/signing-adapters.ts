@@ -117,7 +117,6 @@ export function createSigningAdapters(deps: SigningAdapterDeps): SigningAdapters
     clock: { now: () => Date.now() },
     pin: { pin: async (host: string) => { await deps.pinSite(host) } },
     // AD-11a pairwise derivation is not wired here (Epic 2); no signing handler calls it.
-    deriveForOrigin: async () => { throw new Error('deriveForOrigin not wired (AD-11a, Epic 2)') },
     assertPresence,
     rootRawSign,
     provisionEd25519,

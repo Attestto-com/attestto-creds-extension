@@ -50,15 +50,38 @@ export interface Signature {
 }
 
 /**
- * The ONE signing primitive (AD-11c) plus per-origin derivation. Referenced by
- * BOTH `SigningCtx` and `KeyAdminCtx` as the *same* type — so no second/ungated
- * `sign` is expressible. `sign` returns a `Signature`, never the key (AD-2). The
- * WebAuthn liveness gate lives *inside* `sign` — Story 1.6 fills it.
+ * The ONE signing primitive (AD-11c). Referenced by BOTH `SigningCtx` and
+ * `KeyAdminCtx` as the *same* type — so no second/ungated `sign` is
+ * expressible. `sign` returns a `Signature`, never the key (AD-2). The WebAuthn
+ * liveness gate lives *inside* `sign` — Story 1.6 fills it.
+ *
+ * ## `deriveForOrigin` was removed, not deferred (SOC-243)
+ *
+ * This port also declared `deriveForOrigin(origin): Promise<VaultRecord>` — a
+ * pairwise `did:jwk` derived from the root key, keyed on a canonical origin
+ * (AD-11a). It was never implemented; the adapter threw "not wired (Epic 2)",
+ * and `generateSiteDid` mints a random key per site instead.
+ *
+ * It is gone because the design it belongs to was rejected, not because it was
+ * hard. Deriving every site identity from one root key makes that key a MASTER
+ * KEY over every relying party the citizen uses: whoever holds it — including
+ * us, in any recovery flow that touches key material — can derive and
+ * impersonate everywhere. Independent random per-site keys mean a root
+ * compromise yields the holder identity and nothing at the sites. The blast
+ * radius is the whole argument.
+ *
+ * The recovery story that replaces it: site DIDs are deliberately
+ * unrecoverable, and after device loss each relying party rebinds its own
+ * account to a freshly minted pairwise DID, proven by a credential the citizen
+ * still holds (credentials bind to `LinkedIdentity`, not to site DIDs, so they
+ * survive). Specified in SOC-243.
+ *
+ * Leaving the declaration in place would have kept a typed, type-asserted,
+ * ctx-plumbed contract that reads as planned work — the exact shape this repo
+ * keeps finding and removing.
  */
 export interface Crypto {
   sign(payload: Uint8Array): Promise<Signature>
-  /** Pairwise `did:jwk` derivation, keyed on a canonical origin (AD-11a / AD-15). */
-  deriveForOrigin(origin: CanonicalOrigin): Promise<VaultRecord>
 }
 
 /**
